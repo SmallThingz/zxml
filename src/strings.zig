@@ -1,7 +1,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const meta = @import("meta.zig");
+const tables = @import("tables.zig");
 
+/// Copied from std.mem
 const use_vectors = switch (builtin.zig_backend) {
   // These backends don't support vectors yet.
   .stage2_aarch64,
@@ -13,12 +15,13 @@ const use_vectors = switch (builtin.zig_backend) {
   else => true,
 };
 
+/// Copied from std.mem
 const use_vectors_for_comparison = use_vectors and
   !builtin.fuzz and // The naive memory comparison implementation is more useful for fuzzers to find interesting inputs.
   !std.debug.inValgrind() // https://github.com/ziglang/zig/issues/17717
 ;
 
-const Parser = struct {
+pub const Parser = struct {
   /// This functions is called on all all escape sequences that are encountered. The input points to character after `&`, character_references are handles separately.
   /// This must do the following:
   /// - in case of success => advance the input slice beyond the escape sequences, write the result to output and advance the output slice by the number of bytes written.
@@ -145,14 +148,6 @@ const Parser = struct {
       return slice.len;
     }
 
-    const HEX_DECODE_ARRAY = blk: {
-      var all: [256]u8 = [_]u8{0xff} ** 256;
-      for ('0'..('9' + 1)) |c| all[c] = c - '0';
-      for ('A'..('F' + 1)) |c| all[c] = c - 'A' + 10;
-      for ('a'..('f' + 1)) |c| all[c] = c - 'a' + 10;
-      break :blk all;
-    };
-
     /// Parses a uint from a buffer ending in ;, advances the buffer past the ;
     /// returns error if an invalid digit is encountered or if the buffer is too long
     inline fn @"parseUint;,ValidFirstDigit,len>1"(buf: *[]u8) Error!u32 {
@@ -161,22 +156,22 @@ const Parser = struct {
 
       var result: u32 = 0;
 
-      outer: while (true) {
+      while (true) {
         inline for (0 .. 3) |_| { // Each pass adds 3-4 bits, so we are good for this many loops without an overflow check
           const b = buf.*[0];
-          if (HEX_DECODE_ARRAY[b] > 9) {
+          if (tables.HEX_DECODE_ARRAY[b] > 9) {
             @branchHint(std.builtin.BranchHint.unlikely);
             if (b == ';') {
               @branchHint(std.builtin.BranchHint.likely);
-              return result;
+              return result; // Note that the caller increments beyond ';'
             } else {
               @branchHint(std.builtin.BranchHint.cold);
               return Error.InvalidEscapeSequence;
             }
           }
-          result = result * 10 + HEX_DECODE_ARRAY[b]; // This will never overflow because of the check below
+          result = result * 10 + tables.HEX_DECODE_ARRAY[b]; // This will never overflow because of the check below
           buf.* = buf.*[1..];
-          if (buf.len == 0) break :outer;
+          if (buf.len == 0) return Error.UnexpectedEndOfData;
         }
 
         if (result >= (1 << 22)) {
@@ -185,7 +180,7 @@ const Parser = struct {
         }
       }
 
-      return Error.UnexpectedEndOfData;
+      unreachable;
     }
 
     /// Parses a uint from a buffer ending in ;, advances the buffer past the ;
@@ -194,22 +189,22 @@ const Parser = struct {
       if (buf.len < 2) return Error.UnexpectedEndOfData;
       var result: u32 = 0;
 
-      outer: while (true) {
+      while (true) {
         inline for (0 .. 2) |_| { // Each pass adds 4 bits, so we are good for this many loops without an overflow check
           const b = buf.*[0];
-          if (HEX_DECODE_ARRAY[b] == 255) {
+          if (tables.HEX_DECODE_ARRAY[b] == 255) {
             @branchHint(std.builtin.BranchHint.unlikely);
             if (b == ';') {
               @branchHint(std.builtin.BranchHint.likely);
-              return result;
+              return result; // Note that the caller increments beyond ';'
             } else {
               @branchHint(std.builtin.BranchHint.cold);
               return Error.InvalidEscapeSequence;
             }
           }
-          result = result << 4 | HEX_DECODE_ARRAY[b];
+          result = result << 4 | tables.HEX_DECODE_ARRAY[b];
           buf.* = buf.*[1..];
-          if (buf.len == 0) break :outer;
+          if (buf.len == 0) return Error.UnexpectedEndOfData;
         }
 
         if (result >= (1 << 22)) {
@@ -218,7 +213,7 @@ const Parser = struct {
         }
       }
 
-      return Error.UnexpectedEndOfData;
+      unreachable;
     }
 
     pub fn defaultHandler(comptime options: Options, input: *[]u8, output: *[]u8) Error!void {
@@ -233,8 +228,9 @@ const Parser = struct {
       const ogin = input.*;
       const result = blk: switch (input.*[0]) {
         '0'...'9' => {
-          var incp = input.*[skip0(input.*)..];
-          const result = @"parseUint;,ValidFirstDigit,len>1"(&incp) catch |e| {
+          const sz = skip0(input.*);
+          var incp = input.*[sz..];
+          const result = if (sz != 0 and incp.len > 0 and incp[0] == ';') 0 else @"parseUint;,ValidFirstDigit,len>1"(&incp) catch |e| {
             if (options.on_invalid_character_reference == .@"error") return e;
             continue :blk 0;
           };
@@ -243,8 +239,9 @@ const Parser = struct {
           break :blk result;
         },
         'x' => {
-          var incp = input.*[1 + skip0(input.*[1..])..];
-          const result = @"parseHex;"(&incp) catch |e| {
+          const sz = skip0(input.*[1..]);
+          var incp = input.*[1 + sz..];
+          const result = if (sz != 0 and incp.len > 0 and incp[0] == ';') 0 else @"parseHex;"(&incp) catch |e| {
             if (options.on_invalid_character_reference == .@"error") return e;
             continue :blk 0;
           };
@@ -421,12 +418,11 @@ const Parser = struct {
 
   /// returns null if there is no escape sequence in the given string but the string ends instead
   inline fn @"indexOf@general"(comptime self: @This(), slice: []const u8) IndexOfResult {
-    std.debug.assert(self.options.normalize_whitespace or self.options.utf8);
-
     const special_table = comptime blk: {
       const len = if (self.options.utf8) 128 else 256;
       var values = [_]enum (u8) {none = 0, escape = 1, end = 2, whitespace = 3}{.none} ** len;
-      for (if (self.character_reference_handler != null or self.escape_sequence_handler != null) [_]u8{'@', self.options.ending_sequence.char()} else [_]u8{self.options.ending_sequence.char()}) |v| values[v] = .end;
+      if (self.character_reference_handler != null or self.escape_sequence_handler != null) values['@'] = .escape;
+      values[self.options.ending_sequence.char()] = .end;
       if (self.options.normalize_whitespace) {
         for ([_]u8{0x09, 0x0A, 0x0D, 0x20}) |v| values[v] = .whitespace;
       }
@@ -434,33 +430,19 @@ const Parser = struct {
       break :blk values;
     };
 
+    comptime {
+      std.debug.assert(self.options.normalize_whitespace or self.options.utf8);
+      std.debug.assert(special_table[self.options.ending_sequence.char()] != .whitespace);
+    }
+
     var i: usize = 0;
 
     while (i < slice.len) {
       const c = slice[i];
 
       if (comptime self.options.utf8) {
-        const _jump_length_table = comptime blk: {
-          var jl: 128[u8] = undefined;
-          for (0 .. 128) |v| {
-            jl[v] = switch (@clz(~v)) {
-              2 => 1,
-              3 => 2,
-              4 => 3,
-              1, 5, 6, 7, 8 => 0,
-              else => unreachable,
-            };
-          }
-          break :blk jl;
-        };
-
-        const jump_length_table = comptime blk: {
-          const ptr: []const u8 = &_jump_length_table;
-          break :blk (ptr.ptr - 128)[0 .. 256];
-        };
-
         if (c > 0x7f) {
-          const jump = jump_length_table[c];
+          const jump = tables.utfSkipLength(c);
           if (comptime self.options.on_invalid_utf8 == .@"error") {
             if (jump == 0) return .{ .invalid_utf8 = {} };
           }
@@ -553,7 +535,7 @@ const Parser = struct {
   }
 
   /// Modifies the string in-place, returning the new length of the parsed string.
-  pub fn parseString(comptime self: @This(), input: *[]u8) ![]u8 {
+  pub fn parse(comptime self: @This(), input: *[]u8) ![]u8 {
     const start_ptr = input.ptr;
     var output = input.*;
 
@@ -567,7 +549,7 @@ const Parser = struct {
       return output[0 .. end];
     }
 
-    const whitespace = if (!self.options.normalize_whitespace) struct {pub fn get(_: u8) bool {unreachable;}} else meta.Table(&[_]u8{0x09, 0x0A, 0x0D, 0x20}, 256);
+    const whitespace = if (!self.options.normalize_whitespace) meta.TableStub else meta.Table(&[_]u8{0x09, 0x0A, 0x0D, 0x20}, 256);
 
     const result = blk: switch (self.@"indexOf@"(input)) {
       .invalid_utf8 => return error.InvalidUtf8,
@@ -589,7 +571,7 @@ const Parser = struct {
         std.debug.assert(self.options.normalize_whitespace);
         output[const_index] = ' ';
         var index = const_index + 1;
-        output = output [index ..];
+        output = output[index ..];
 
         while (index < input.len and whitespace.get(input[index])): (index += 1) {}
         if (index == input.len) {
@@ -619,9 +601,10 @@ const Parser = struct {
       .@"@" => |index| continue :blk self.handleEscape(input, output, index, false),
       .@" " => |const_index| {
         std.debug.assert(self.options.normalize_whitespace);
+        std.mem.copyForwards(u8, output, input.*[0..const_index]);
         output[const_index] = ' ';
         var index = const_index + 1;
-        output = output [index ..];
+        output = output[index ..];
 
         while (index < input.len and whitespace.get(input[index])): (index += 1) {}
         if (index == input.len) {
