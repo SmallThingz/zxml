@@ -25,6 +25,11 @@ fn Parser(comptime opts: ParseOptions) type {
 
         const Self = @This();
 
+        const strict_mode = opts.mode == .strict;
+        const strict_or_validate = strict_mode or opts.validate_closing_tags;
+        const decode_entities = opts.decode_entities_on_parse;
+        const normalize_text = opts.normalize_text_whitespace;
+
         fn parse(self: *Self) ParseError!void {
             if (opts.mode == .turbo and
                 opts.scan_only_turbo and
@@ -45,12 +50,18 @@ fn Parser(comptime opts: ParseOptions) type {
 
             while (self.i < self.input.len) {
                 if (self.input[self.i] != '<') {
-                    try self.parseText();
+                    const lt = scanner.findByte(self.input, self.i, '<') orelse {
+                        try self.parseTextRange(self.i, self.input.len);
+                        self.i = self.input.len;
+                        break;
+                    };
+                    try self.parseTextRange(self.i, lt);
+                    self.i = lt;
                     continue;
                 }
 
                 if (self.i + 1 >= self.input.len) {
-                    if (self.isStrict()) return error.UnexpectedEndOfData;
+                    if (strict_mode) return error.UnexpectedEndOfData;
                     self.i += 1;
                     break;
                 }
@@ -63,7 +74,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 }
             }
 
-            if (self.isStrict() and self.doc.parse_stack.items.len > 1) {
+            if (strict_mode and self.doc.parse_stack.items.len > 1) {
                 return error.UnexpectedEndOfData;
             }
 
@@ -83,33 +94,33 @@ fn Parser(comptime opts: ParseOptions) type {
             self.i = self.input.len;
         }
 
-        fn parseText(self: *Self) ParseError!void {
-            const start = self.i;
-            self.i = scanner.findByte(self.input, self.i, '<') orelse self.input.len;
-            if (self.i <= start) return;
+        fn parseTextRange(self: *Self, start: usize, end: usize) ParseError!void {
+            if (end <= start) return;
 
-            if (!opts.decode_entities_on_parse and !opts.normalize_text_whitespace) {
+            if (!decode_entities and !normalize_text) {
                 const parent_fast = self.currentParent();
                 const idx_fast = try self.doc.appendNode(.text, parent_fast, opts.store_parent_pointers);
                 var n_fast = &self.doc.nodes.items[idx_fast];
-                n_fast.value = .{ .start = @intCast(start), .end = @intCast(self.i) };
+                n_fast.value = .{ .start = @intCast(start), .end = @intCast(end) };
                 n_fast.subtree_end = idx_fast;
                 return;
             }
 
-            const strict_decode = self.isStrict();
-            var text_len: usize = self.i - start;
-            var text = self.input[start..self.i];
+            const text = self.input[start..end];
+            var text_len: usize = text.len;
 
-            if (opts.decode_entities_on_parse) {
-                text_len = entities.decodeInPlace(text, strict_decode) catch |e| switch (e) {
+            if (decode_entities and normalize_text) {
+                text_len = entities.decodeAndNormalizeInPlace(text, strict_mode) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
-            }
-
-            if (opts.normalize_text_whitespace) {
-                text_len = entities.normalizeWhitespaceInPlace(text[0..text_len]);
+            } else if (decode_entities) {
+                text_len = entities.decodeInPlaceIfEntity(text, strict_mode) catch |e| switch (e) {
+                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
+                    error.UnterminatedEntity => return error.UnterminatedEntity,
+                };
+            } else if (normalize_text) {
+                text_len = entities.normalizeWhitespaceInPlace(text);
             }
 
             if (text_len == 0) return;
@@ -127,14 +138,13 @@ fn Parser(comptime opts: ParseOptions) type {
 
             if (self.i >= self.input.len) return error.UnexpectedEndOfData;
             if (!tables.isNameStart(self.input[self.i])) {
-                if (self.isStrict()) return error.ExpectedElementName;
+                if (strict_mode) return error.ExpectedElementName;
                 self.i = (scanner.findByte(self.input, self.i, '>') orelse self.input.len);
                 if (self.i < self.input.len) self.i += 1;
                 return;
             }
 
             const name_start = self.i;
-            self.i += 1;
             while (self.i < self.input.len and tables.isNameChar(self.input[self.i])) : (self.i += 1) {}
             const name_end = self.i;
 
@@ -143,6 +153,8 @@ fn Parser(comptime opts: ParseOptions) type {
             var node = &self.doc.nodes.items[idx];
             node.open_start = @intCast(open_start);
             node.name = .{ .start = @intCast(name_start), .end = @intCast(name_end) };
+
+            const attr_start_idx: u32 = @intCast(self.doc.attrs.items.len);
 
             while (self.i < self.input.len) {
                 self.skipWhitespace();
@@ -153,6 +165,8 @@ fn Parser(comptime opts: ParseOptions) type {
                     self.i += 1;
                     node = &self.doc.nodes.items[idx];
                     node.open_end = @intCast(self.i);
+                    node.attr_start = attr_start_idx;
+                    node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
                     try self.doc.parse_stack.append(self.doc.allocator, idx);
                     return;
                 }
@@ -164,6 +178,8 @@ fn Parser(comptime opts: ParseOptions) type {
                     node.close_start = @intCast(self.i);
                     node.close_end = @intCast(self.i);
                     node.subtree_end = idx;
+                    node.attr_start = attr_start_idx;
+                    node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
                     return;
                 }
 
@@ -182,7 +198,6 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             const name_start = self.i;
-            self.i += 1;
             while (self.i < self.input.len and tables.isNameChar(self.input[self.i])) : (self.i += 1) {}
             const name_end = self.i;
 
@@ -203,7 +218,7 @@ fn Parser(comptime opts: ParseOptions) type {
                     self.i += 1;
                     value_start = self.i;
                     const quote_pos = scanner.findByte(self.input, self.i, quote) orelse {
-                        if (self.isStrict()) return error.ExpectedQuote;
+                        if (strict_mode) return error.ExpectedQuote;
                         value_end = self.input.len;
                         self.i = self.input.len;
                         try self.finalizeAttribute(node_idx, name_start, name_end, value_start, value_end);
@@ -212,7 +227,7 @@ fn Parser(comptime opts: ParseOptions) type {
                     value_end = quote_pos;
                     self.i = quote_pos + 1;
                 } else {
-                    if (self.isStrict()) return error.ExpectedQuote;
+                    if (strict_mode) return error.ExpectedQuote;
                     value_start = self.i;
                     while (self.i < self.input.len and tables.isAttrUnquotedValueChar(self.input[self.i])) : (self.i += 1) {}
                     value_end = self.i;
@@ -224,10 +239,9 @@ fn Parser(comptime opts: ParseOptions) type {
 
         fn finalizeAttribute(self: *Self, node_idx: u32, name_start: usize, name_end: usize, value_start: usize, value_end: usize) ParseError!void {
             var final_value_end = value_end;
-            if (opts.decode_entities_on_parse and value_end >= value_start) {
+            if (decode_entities and value_end >= value_start) {
                 const value = self.input[value_start..value_end];
-                const strict_decode = self.isStrict();
-                const decoded_len = entities.decodeInPlace(value, strict_decode) catch |e| switch (e) {
+                const decoded_len = entities.decodeInPlaceIfEntity(value, strict_mode) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
@@ -244,7 +258,7 @@ fn Parser(comptime opts: ParseOptions) type {
         }
 
         fn parseClosingTag(self: *Self) ParseError!void {
-            if (!self.isStrict() and !opts.validate_closing_tags) {
+            if (!strict_mode and !opts.validate_closing_tags) {
                 return self.parseClosingTagTurbo();
             }
 
@@ -255,20 +269,19 @@ fn Parser(comptime opts: ParseOptions) type {
             if (self.i >= self.input.len) return error.UnexpectedEndOfData;
 
             if (!tables.isNameStart(self.input[self.i])) {
-                if (self.isStrict() or opts.validate_closing_tags) return error.InvalidClosingTagName;
+                if (strict_or_validate) return error.InvalidClosingTagName;
                 self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
                 if (self.i < self.input.len) self.i += 1;
                 return;
             }
 
             const name_start = self.i;
-            self.i += 1;
             while (self.i < self.input.len and tables.isNameChar(self.input[self.i])) : (self.i += 1) {}
             const name_end = self.i;
             const close_name = self.input[name_start..name_end];
 
             const gt = scanner.findByte(self.input, self.i, '>') orelse {
-                if (self.isStrict()) return error.UnexpectedEndOfData;
+                if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             };
@@ -276,23 +289,24 @@ fn Parser(comptime opts: ParseOptions) type {
             const close_end: u32 = @intCast(self.i);
 
             if (self.doc.parse_stack.items.len <= 1) {
-                if (self.isStrict() or opts.validate_closing_tags) return error.InvalidClosingTagName;
+                if (strict_or_validate) return error.InvalidClosingTagName;
                 return;
             }
 
-            const strict_close = self.isStrict() or opts.validate_closing_tags;
             const top_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1];
             const top = &self.doc.nodes.items[top_idx];
             const top_name = top.name.slice(self.input);
 
-            if (strict_close) {
-                if (!std.mem.eql(u8, top_name, close_name)) return error.InvalidClosingTagName;
+            if (strict_or_validate) {
+                if (top_name.len != close_name.len or !std.mem.eql(u8, top_name, close_name)) {
+                    return error.InvalidClosingTagName;
+                }
                 _ = self.doc.parse_stack.pop();
                 self.closeNode(top_idx, @intCast(close_start), close_end);
                 return;
             }
 
-            if (std.mem.eql(u8, top_name, close_name)) {
+            if (top_name.len == close_name.len and std.mem.eql(u8, top_name, close_name)) {
                 _ = self.doc.parse_stack.pop();
                 self.closeNode(top_idx, @intCast(close_start), close_end);
                 return;
@@ -303,11 +317,11 @@ fn Parser(comptime opts: ParseOptions) type {
             while (s > 1) {
                 s -= 1;
                 const idx = self.doc.parse_stack.items[s];
-                const node_name = self.doc.nodes.items[idx].name.slice(self.input);
-                if (std.mem.eql(u8, node_name, close_name)) {
-                    pos_opt = s;
-                    break;
-                }
+                const node = &self.doc.nodes.items[idx];
+                const node_name = node.name.slice(self.input);
+                if (node_name.len != close_name.len or !std.mem.eql(u8, node_name, close_name)) continue;
+                pos_opt = s;
+                break;
             }
 
             if (pos_opt) |pos| {
@@ -339,7 +353,7 @@ fn Parser(comptime opts: ParseOptions) type {
             self.i += 2; // <?
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
-                if (self.isStrict()) return error.ExpectedPiTarget;
+                if (strict_mode) return error.ExpectedPiTarget;
                 self.i = scanner.findSequence(self.input, self.i, "?>") orelse self.input.len;
                 if (self.i < self.input.len) self.i += 2;
                 return;
@@ -354,7 +368,7 @@ fn Parser(comptime opts: ParseOptions) type {
             const value_start = self.i;
 
             const end = scanner.findSequence(self.input, self.i, "?>") orelse {
-                if (self.isStrict()) return error.UnexpectedEndOfData;
+                if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             };
@@ -403,7 +417,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 return;
             }
 
-            if (self.isStrict()) return error.ExpectedGt;
+            if (strict_mode) return error.ExpectedGt;
             self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
             if (self.i < self.input.len) self.i += 1;
         }
@@ -412,7 +426,7 @@ fn Parser(comptime opts: ParseOptions) type {
             const node_start = self.i;
             const value_start = self.i + 4;
             const end = scanner.findSequence(self.input, value_start, "-->") orelse {
-                if (self.isStrict()) return error.UnexpectedEndOfData;
+                if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             };
@@ -435,7 +449,7 @@ fn Parser(comptime opts: ParseOptions) type {
             const node_start = self.i;
             const value_start = self.i + 9;
             const end = scanner.findSequence(self.input, value_start, "]]>") orelse {
-                if (self.isStrict()) return error.UnexpectedEndOfData;
+                if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             };
@@ -486,7 +500,7 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             if (j >= self.input.len) {
-                if (self.isStrict()) return error.UnexpectedEndOfData;
+                if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             }
@@ -535,11 +549,6 @@ fn Parser(comptime opts: ParseOptions) type {
 
         fn skipWhitespace(self: *Self) void {
             while (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) : (self.i += 1) {}
-        }
-
-        fn isStrict(self: *const Self) bool {
-            _ = self;
-            return opts.mode == .strict;
         }
     };
 }

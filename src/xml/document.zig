@@ -241,10 +241,6 @@ pub const Document = struct {
             .value = value,
         });
 
-        var owner = &self.nodes.items[owner_idx];
-        if (owner.attr_len == 0) owner.attr_start = idx;
-        owner.attr_len += 1;
-
         return idx;
     }
 

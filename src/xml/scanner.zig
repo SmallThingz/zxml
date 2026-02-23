@@ -1,8 +1,21 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const tables = @import("tables.zig");
 
 pub inline fn findByte(haystack: []const u8, start: usize, needle: u8) ?usize {
     return findByteDispatch(haystack, start, needle);
+}
+
+pub inline fn findNameEnd(input: []const u8, start: usize) usize {
+    var i = start;
+    while (i < input.len and tables.NameCharTable[input[i]]) : (i += 1) {}
+    return i;
+}
+
+pub inline fn findAttrUnquotedEnd(input: []const u8, start: usize) usize {
+    var i = start;
+    while (i < input.len and tables.AttrUnquotedValueCharTable[input[i]]) : (i += 1) {}
+    return i;
 }
 
 pub fn findSequence(haystack: []const u8, start: usize, needle: []const u8) ?usize {

@@ -135,3 +135,61 @@ test "store parent pointers option" {
     const b2 = doc.nodeAt(2) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(@as(?*const Node, null), b2.parentNode());
 }
+
+test "attribute-heavy element parses and preserves lookups" {
+    var xml = std.ArrayList(u8).empty;
+    defer xml.deinit(std.testing.allocator);
+
+    try xml.appendSlice(std.testing.allocator, "<root");
+    const w = xml.writer(std.testing.allocator);
+    var i: usize = 0;
+    while (i < 64) : (i += 1) {
+        try w.print(" a{d}='v{d}'", .{ i, i });
+    }
+    try xml.appendSlice(std.testing.allocator, "></root>");
+
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(xml.items, .{ .mode = .strict, .validate_closing_tags = true });
+
+    const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("v0", root.getAttributeValue("a0").?);
+    try std.testing.expectEqualStrings("v63", root.getAttributeValue("a63").?);
+    try std.testing.expectEqual(@as(u32, 64), root.attr_len);
+}
+
+test "strict deep balanced close tags" {
+    var xml = std.ArrayList(u8).empty;
+    defer xml.deinit(std.testing.allocator);
+
+    try xml.appendSlice(std.testing.allocator, "<r>");
+    const w = xml.writer(std.testing.allocator);
+    var i: usize = 0;
+    while (i < 128) : (i += 1) {
+        try w.print("<n{d}>", .{i});
+    }
+    i = 128;
+    while (i > 0) {
+        i -= 1;
+        try w.print("</n{d}>", .{i});
+    }
+    try xml.appendSlice(std.testing.allocator, "</r>");
+
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(xml.items, .{
+        .mode = .strict,
+        .validate_closing_tags = true,
+        .store_parent_pointers = true,
+    });
+
+    try std.testing.expectEqual(@as(usize, 129), countKind(&doc, .element));
+}
+
+fn countKind(doc: *const Document, kind: NodeType) usize {
+    var n: usize = 0;
+    for (doc.nodes.items) |node| {
+        if (node.kind == kind) n += 1;
+    }
+    return n;
+}

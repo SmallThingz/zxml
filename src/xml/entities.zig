@@ -5,70 +5,140 @@ pub const DecodeError = error{
     UnterminatedEntity,
 };
 
+const EntityDecode = struct {
+    consumed: usize,
+    bytes: [4]u8,
+    len: usize,
+};
+
 pub fn decodeInPlace(buf: []u8, strict: bool) DecodeError!usize {
+    return decodeInPlaceFrom(buf, strict, 0);
+}
+
+pub fn decodeInPlaceIfEntity(buf: []u8, strict: bool) DecodeError!usize {
+    const first = std.mem.indexOfScalar(u8, buf, '&') orelse return buf.len;
+    return decodeInPlaceFrom(buf, strict, first);
+}
+
+pub fn decodeAndNormalizeInPlace(buf: []u8, strict: bool) DecodeError!usize {
+    const first = std.mem.indexOfScalar(u8, buf, '&');
+    if (first == null) {
+        return normalizeWhitespaceInPlace(buf);
+    }
+
     var src: usize = 0;
     var dst: usize = 0;
+    var in_ws = false;
 
     while (src < buf.len) {
         if (buf[src] != '&') {
-            buf[dst] = buf[src];
+            emitNormalized(&dst, &in_ws, buf[src], buf);
+            src += 1;
+            continue;
+        }
+
+        const decoded = try decodeEntity(buf, src, strict);
+        if (decoded) |d| {
+            var j: usize = 0;
+            while (j < d.len) : (j += 1) {
+                emitNormalized(&dst, &in_ws, d.bytes[j], buf);
+            }
+            src += d.consumed;
+            continue;
+        }
+
+        emitNormalized(&dst, &in_ws, '&', buf);
+        src += 1;
+    }
+
+    return dst;
+}
+
+fn decodeInPlaceFrom(buf: []u8, strict: bool, start: usize) DecodeError!usize {
+    var src: usize = start;
+    var dst: usize = start;
+
+    while (src < buf.len) {
+        if (buf[src] != '&') {
+            if (dst != src) buf[dst] = buf[src];
             src += 1;
             dst += 1;
             continue;
         }
 
-        const semi = std.mem.indexOfScalarPos(u8, buf, src + 1, ';') orelse {
-            if (strict) return error.UnterminatedEntity;
-            buf[dst] = buf[src];
-            src += 1;
-            dst += 1;
-            continue;
-        };
-
-        const body = buf[src + 1 .. semi];
-        if (body.len == 0) {
-            if (strict) return error.InvalidNumericCharacterEntity;
-            buf[dst] = buf[src];
-            src += 1;
-            dst += 1;
+        const decoded = try decodeEntity(buf, src, strict);
+        if (decoded) |d| {
+            std.mem.copyForwards(u8, buf[dst .. dst + d.len], d.bytes[0..d.len]);
+            src += d.consumed;
+            dst += d.len;
             continue;
         }
 
-        if (decodeNamed(body)) |c| {
-            buf[dst] = c;
-            dst += 1;
-            src = semi + 1;
-            continue;
-        }
-
-        if (body[0] == '#') {
-            const cp = parseNumericEntity(body[1..]) catch |e| {
-                if (strict) return e;
-                buf[dst] = buf[src];
-                src += 1;
-                dst += 1;
-                continue;
-            };
-
-            const written = std.unicode.utf8Encode(cp, buf[dst..]) catch {
-                if (strict) return error.InvalidNumericCharacterEntity;
-                buf[dst] = buf[src];
-                src += 1;
-                dst += 1;
-                continue;
-            };
-            dst += written;
-            src = semi + 1;
-            continue;
-        }
-
-        if (strict) return error.InvalidNumericCharacterEntity;
-        buf[dst] = buf[src];
+        if (dst != src) buf[dst] = '&';
         src += 1;
         dst += 1;
     }
 
     return dst;
+}
+
+fn decodeEntity(buf: []const u8, start: usize, strict: bool) DecodeError!?EntityDecode {
+    const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
+        if (strict) return error.UnterminatedEntity;
+        return null;
+    };
+
+    const body = buf[start + 1 .. semi];
+    if (body.len == 0) {
+        if (strict) return error.InvalidNumericCharacterEntity;
+        return null;
+    }
+
+    if (decodeNamed(body)) |c| {
+        return .{
+            .consumed = semi - start + 1,
+            .bytes = .{ c, 0, 0, 0 },
+            .len = 1,
+        };
+    }
+
+    if (body[0] == '#') {
+        const cp = parseNumericEntity(body[1..]) catch |e| {
+            if (strict) return e;
+            return null;
+        };
+
+        var out: [4]u8 = undefined;
+        const written = std.unicode.utf8Encode(cp, &out) catch {
+            if (strict) return error.InvalidNumericCharacterEntity;
+            return null;
+        };
+
+        return .{
+            .consumed = semi - start + 1,
+            .bytes = out,
+            .len = written,
+        };
+    }
+
+    if (strict) return error.InvalidNumericCharacterEntity;
+    return null;
+}
+
+fn emitNormalized(dst: *usize, in_ws: *bool, c: u8, out: []u8) void {
+    const ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
+    if (ws) {
+        if (!in_ws.*) {
+            out[dst.*] = ' ';
+            dst.* += 1;
+            in_ws.* = true;
+        }
+        return;
+    }
+
+    out[dst.*] = c;
+    dst.* += 1;
+    in_ws.* = false;
 }
 
 pub fn normalizeWhitespaceInPlace(buf: []u8) usize {
