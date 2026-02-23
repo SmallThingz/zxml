@@ -51,6 +51,7 @@ pub inline fn isWhitespace(c: u8) bool {
 }
 
 pub inline fn isNameStart(c: u8) bool {
+    if (c >= 0x80) return true;
     return ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == ':');
 }
 

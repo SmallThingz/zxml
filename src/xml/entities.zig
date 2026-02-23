@@ -54,6 +54,23 @@ pub fn decodeAndNormalizeInPlace(noalias buf: []u8, strict: bool) DecodeError!us
     return dst;
 }
 
+pub fn validateEntities(noalias buf: []const u8, strict: bool) DecodeError!void {
+    var src = std.mem.indexOfScalar(u8, buf, '&') orelse return;
+    while (src < buf.len) {
+        if (buf[src] != '&') {
+            src += 1;
+            continue;
+        }
+
+        const decoded = try decodeEntity(buf, src, strict);
+        if (decoded) |d| {
+            src += d.consumed;
+        } else {
+            src += 1;
+        }
+    }
+}
+
 fn decodeInPlaceFrom(noalias buf: []u8, strict: bool, start: usize) DecodeError!usize {
     var src: usize = start;
     var dst: usize = start;

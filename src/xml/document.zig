@@ -1,5 +1,6 @@
 const std = @import("std");
 const parser = @import("parser.zig");
+const entities = @import("entities.zig");
 
 pub const InvalidIndex: u32 = std.math.maxInt(u32);
 
@@ -74,12 +75,15 @@ pub const Attribute = struct {
     doc: *Document,
     name: Span,
     value: Span,
+    value_processed: bool = true,
 
     pub fn nameSlice(self: *const @This()) []const u8 {
         return self.name.slice(self.doc.source);
     }
 
     pub fn valueSlice(self: *const @This()) []const u8 {
+        const doc = @constCast(self.doc);
+        doc.ensureAttributeValueProcessed(@constCast(self));
         return self.value.slice(self.doc.source);
     }
 };
@@ -90,12 +94,12 @@ pub const Node = struct {
 
     name: Span = .{},
     value: Span = .{},
+    value_processed: bool = true,
 
     attr_start: u32 = 0,
     attr_len: u32 = 0,
 
     first_child: u32 = InvalidIndex,
-    last_child: u32 = InvalidIndex,
     next_sibling: u32 = InvalidIndex,
     parent: u32 = InvalidIndex,
 
@@ -104,6 +108,8 @@ pub const Node = struct {
     }
 
     pub fn valueSlice(self: *const @This()) []const u8 {
+        const doc = @constCast(self.doc);
+        doc.ensureNodeValueProcessed(@constCast(self));
         return self.value.slice(self.doc.source);
     }
 
@@ -112,7 +118,14 @@ pub const Node = struct {
     }
 
     pub fn lastChild(self: *const @This()) ?*const @This() {
-        return self.doc.nodeAt(self.last_child);
+        var idx = self.first_child;
+        if (idx == InvalidIndex) return null;
+        while (true) {
+            const next = self.doc.nodes.items[idx].next_sibling;
+            if (next == InvalidIndex) break;
+            idx = next;
+        }
+        return self.doc.nodeAt(idx);
     }
 
     pub fn nextSibling(self: *const @This()) ?*const @This() {
@@ -151,7 +164,7 @@ pub const Node = struct {
         while (i < end) : (i += 1) {
             const attr = &self.doc.attrs.items[i];
             if (std.mem.eql(u8, attr.name.slice(self.doc.source), name)) {
-                return attr.value.slice(self.doc.source);
+                return attr.valueSlice();
             }
         }
         return null;
@@ -174,6 +187,8 @@ pub const Document = struct {
     allocator: std.mem.Allocator,
     source: []u8 = &[_]u8{},
     reserved_input_hint_len: usize = 0,
+    postprocess_decode_entities: bool = false,
+    postprocess_normalize_text: bool = false,
 
     nodes: std.ArrayListUnmanaged(Node) = .{},
     attrs: std.ArrayListUnmanaged(Attribute) = .{},
@@ -200,6 +215,8 @@ pub const Document = struct {
     pub fn parse(noalias self: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
         self.clear();
         self.source = input;
+        self.postprocess_decode_entities = opts.decode_entities_on_parse;
+        self.postprocess_normalize_text = opts.normalize_text_whitespace;
         try parser.parseInto(self, input, opts);
     }
 
@@ -277,5 +294,43 @@ pub const Document = struct {
             try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
         }
         self.reserved_input_hint_len = input_len;
+    }
+
+    fn ensureNodeValueProcessed(self: *Document, node: *Node) void {
+        if (node.value_processed) return;
+        if (node.kind != .text) {
+            node.value_processed = true;
+            return;
+        }
+        if (!self.postprocess_decode_entities and !self.postprocess_normalize_text) {
+            node.value_processed = true;
+            return;
+        }
+
+        const value = node.value.sliceMut(self.source);
+        var final_len = value.len;
+        if (self.postprocess_decode_entities and self.postprocess_normalize_text) {
+            final_len = entities.decodeAndNormalizeInPlace(value, false) catch value.len;
+        } else if (self.postprocess_decode_entities) {
+            final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
+        } else if (self.postprocess_normalize_text) {
+            final_len = entities.normalizeWhitespaceInPlace(value);
+        }
+
+        node.value.end = node.value.start + @as(u32, @intCast(final_len));
+        node.value_processed = true;
+    }
+
+    fn ensureAttributeValueProcessed(self: *Document, attr: *Attribute) void {
+        if (attr.value_processed) return;
+        if (!self.postprocess_decode_entities) {
+            attr.value_processed = true;
+            return;
+        }
+
+        const value = attr.value.sliceMut(self.source);
+        const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
+        attr.value.end = attr.value.start + @as(u32, @intCast(final_len));
+        attr.value_processed = true;
     }
 };

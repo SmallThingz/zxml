@@ -73,38 +73,19 @@ fn Parser(comptime opts: ParseOptions) type {
         inline fn parseTextRange(noalias self: *Self, start: usize, end: usize) ParseError!void {
             if (end <= start) return;
 
-            if (!decode_entities and !normalize_text) {
-                const raw = self.input[start..end];
-                if (isWhitespaceOnlyFast(raw)) return;
-
-                const idx_fast = try self.appendChildNode(.text);
-                var n_fast = &self.doc.nodes.items[idx_fast];
-                n_fast.value = .{ .start = @intCast(start), .end = @intCast(end) };
-                return;
-            }
-
-            const text = self.input[start..end];
-            var text_len: usize = text.len;
-
-            if (decode_entities and normalize_text) {
-                text_len = entities.decodeAndNormalizeInPlace(text, strict_mode) catch |e| switch (e) {
+            const raw = self.input[start..end];
+            if (!decode_entities and !normalize_text and isWhitespaceOnlyFast(raw)) return;
+            if (decode_entities and strict_mode) {
+                entities.validateEntities(raw, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
-            } else if (decode_entities) {
-                text_len = entities.decodeInPlaceIfEntity(text, strict_mode) catch |e| switch (e) {
-                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
-                    error.UnterminatedEntity => return error.UnterminatedEntity,
-                };
-            } else if (normalize_text) {
-                text_len = entities.normalizeWhitespaceInPlace(text);
             }
-
-            if (text_len == 0) return;
 
             const idx = try self.appendChildNode(.text);
             var n = &self.doc.nodes.items[idx];
-            n.value = .{ .start = @intCast(start), .end = @intCast(start + text_len) };
+            n.value = .{ .start = @intCast(start), .end = @intCast(end) };
+            n.value_processed = !(decode_entities or normalize_text);
         }
 
         inline fn parseOpeningTag(noalias self: *Self) ParseError!void {
@@ -221,14 +202,12 @@ fn Parser(comptime opts: ParseOptions) type {
                 }
             }
 
-            var final_value_end = value_end;
-            if (decode_entities and value_end >= value_start) {
+            if (decode_entities and strict_mode and value_end >= value_start) {
                 const value = self.input[value_start..value_end];
-                const decoded_len = entities.decodeInPlaceIfEntity(value, strict_mode) catch |e| switch (e) {
+                entities.validateEntities(value, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
-                final_value_end = value_start + decoded_len;
             }
 
             try self.appendAttributeRaw(.{
@@ -236,7 +215,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 .end = @intCast(name_end),
             }, .{
                 .start = @intCast(value_start),
-                .end = @intCast(final_value_end),
+                .end = @intCast(value_end),
             });
         }
 
@@ -301,29 +280,6 @@ fn Parser(comptime opts: ParseOptions) type {
 
         inline fn parseClosingTagTurbo(noalias self: *Self) ParseError!void {
             self.i += 2; // </
-
-            if (self.doc.parse_stack.items.len > 1 and self.i < self.input.len and tables.isNameStart(self.input[self.i])) {
-                const top_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-                const top_name = self.doc.nodes.items[top_idx].name.slice(self.input);
-
-                if (self.i + top_name.len <= self.input.len and std.mem.eql(u8, self.input[self.i .. self.i + top_name.len], top_name)) {
-                    self.i += top_name.len;
-                    if (self.i < self.input.len and self.input[self.i] == '>') {
-                        self.i += 1;
-                        _ = self.popStack();
-                        return;
-                    }
-                    if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) {
-                        self.skipWhitespace();
-                        if (self.i < self.input.len and self.input[self.i] == '>') {
-                            self.i += 1;
-                            _ = self.popStack();
-                            return;
-                        }
-                    }
-                }
-            }
-
             const gt = scanner.findByte(self.input, self.i, '>') orelse {
                 self.i = self.input.len;
                 return;
@@ -535,6 +491,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 .doc = self.doc,
                 .name = name,
                 .value = value,
+                .value_processed = !decode_entities,
             };
         }
 
@@ -567,7 +524,6 @@ fn Parser(comptime opts: ParseOptions) type {
             if (entry.first_child != InvalidIndex) {
                 var node = &self.doc.nodes.items[entry.idx];
                 node.first_child = entry.first_child;
-                node.last_child = entry.last_child;
             }
             return entry.idx;
         }
