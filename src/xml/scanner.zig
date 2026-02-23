@@ -2,23 +2,23 @@ const std = @import("std");
 const builtin = @import("builtin");
 const tables = @import("tables.zig");
 
-pub inline fn findByte(haystack: []const u8, start: usize, needle: u8) ?usize {
+pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
     return findByteDispatch(haystack, start, needle);
 }
 
-pub inline fn findNameEnd(input: []const u8, start: usize) usize {
+pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
-    while (i < input.len and tables.NameCharTable[input[i]]) : (i += 1) {}
+    while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
     return i;
 }
 
-pub inline fn findAttrUnquotedEnd(input: []const u8, start: usize) usize {
+pub inline fn findAttrUnquotedEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
-    while (i < input.len and tables.AttrUnquotedValueCharTable[input[i]]) : (i += 1) {}
+    while (i < input.len and tables.isAttrUnquotedValueChar(input[i])) : (i += 1) {}
     return i;
 }
 
-pub fn findSequence(haystack: []const u8, start: usize, needle: []const u8) ?usize {
+pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: []const u8) ?usize {
     if (start >= haystack.len) return null;
     if (needle.len == 0) return start;
     if (needle.len == 1) return findByte(haystack, start, needle[0]);
@@ -76,14 +76,18 @@ pub fn findTagEndRespectQuotes(input: []const u8, start: usize) ?TagEnd {
 
 inline fn findByteDispatch(hay: []const u8, start: usize, needle: u8) ?usize {
     if (start >= hay.len) return null;
+    const rem = hay.len - start;
 
     if (comptime builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) {
+        if (rem < 64) return std.mem.indexOfScalarPos(u8, hay, start, needle);
         return findByteVec(32, hay, start, needle);
     }
     if (comptime builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .sse2)) {
+        if (rem < 32) return std.mem.indexOfScalarPos(u8, hay, start, needle);
         return findByteVec(16, hay, start, needle);
     }
     if (comptime builtin.cpu.arch == .aarch64) {
+        if (rem < 32) return std.mem.indexOfScalarPos(u8, hay, start, needle);
         return findByteVec(16, hay, start, needle);
     }
     return std.mem.indexOfScalarPos(u8, hay, start, needle);

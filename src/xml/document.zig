@@ -32,6 +32,12 @@ pub const ParseError = error{
     UnterminatedEntity,
 };
 
+pub const ParseStackEntry = struct {
+    idx: u32,
+    first_child: u32 = InvalidIndex,
+    last_child: u32 = InvalidIndex,
+};
+
 pub const NodeType = enum(u4) {
     document,
     element,
@@ -66,8 +72,6 @@ pub const Span = struct {
 
 pub const Attribute = struct {
     doc: *Document,
-    owner_index: u32,
-    index: u32,
     name: Span,
     value: Span,
 
@@ -82,27 +86,18 @@ pub const Attribute = struct {
 
 pub const Node = struct {
     doc: *Document,
-    index: u32,
     kind: NodeType,
 
     name: Span = .{},
     value: Span = .{},
-
-    open_start: u32 = 0,
-    open_end: u32 = 0,
-    close_start: u32 = 0,
-    close_end: u32 = 0,
 
     attr_start: u32 = 0,
     attr_len: u32 = 0,
 
     first_child: u32 = InvalidIndex,
     last_child: u32 = InvalidIndex,
-    prev_sibling: u32 = InvalidIndex,
     next_sibling: u32 = InvalidIndex,
     parent: u32 = InvalidIndex,
-
-    subtree_end: u32 = 0,
 
     pub fn nameSlice(self: *const @This()) []const u8 {
         return self.name.slice(self.doc.source);
@@ -125,7 +120,25 @@ pub const Node = struct {
     }
 
     pub fn prevSibling(self: *const @This()) ?*const @This() {
-        return self.doc.nodeAt(self.prev_sibling);
+        const self_index = self.indexOfSelf();
+
+        if (self.parent != InvalidIndex) {
+            const p = self.doc.nodeAt(self.parent) orelse return null;
+            var prev = InvalidIndex;
+            var cur = p.first_child;
+            while (cur != InvalidIndex and cur != self_index) {
+                prev = cur;
+                cur = self.doc.nodes.items[cur].next_sibling;
+            }
+            return self.doc.nodeAt(prev);
+        }
+
+        // Fallback when parent pointers are disabled: scan next-sibling links.
+        var i: u32 = 0;
+        while (i < self.doc.nodes.items.len) : (i += 1) {
+            if (self.doc.nodes.items[i].next_sibling == self_index) return &self.doc.nodes.items[i];
+        }
+        return null;
     }
 
     pub fn parentNode(self: *const @This()) ?*const @This() {
@@ -148,15 +161,23 @@ pub const Node = struct {
         if (self.attr_len == 0) return null;
         return &self.doc.attrs.items[self.attr_start];
     }
+
+    fn indexOfSelf(self: *const @This()) u32 {
+        const base = @intFromPtr(self.doc.nodes.items.ptr);
+        const here = @intFromPtr(self);
+        const stride = @sizeOf(@This());
+        return @intCast((here - base) / stride);
+    }
 };
 
 pub const Document = struct {
     allocator: std.mem.Allocator,
     source: []u8 = &[_]u8{},
+    reserved_input_hint_len: usize = 0,
 
     nodes: std.ArrayListUnmanaged(Node) = .{},
     attrs: std.ArrayListUnmanaged(Attribute) = .{},
-    parse_stack: std.ArrayListUnmanaged(u32) = .{},
+    parse_stack: std.ArrayListUnmanaged(ParseStackEntry) = .{},
 
     pub fn init(allocator: std.mem.Allocator) Document {
         return .{
@@ -171,12 +192,12 @@ pub const Document = struct {
     }
 
     pub fn clear(self: *Document) void {
-        self.nodes.clearRetainingCapacity();
-        self.attrs.clearRetainingCapacity();
-        self.parse_stack.clearRetainingCapacity();
+        self.nodes.items.len = 0;
+        self.attrs.items.len = 0;
+        self.parse_stack.items.len = 0;
     }
 
-    pub fn parse(self: *Document, input: []u8, comptime opts: ParseOptions) ParseError!void {
+    pub fn parse(noalias self: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
         self.clear();
         self.source = input;
         try parser.parseInto(self, input, opts);
@@ -202,53 +223,59 @@ pub const Document = struct {
         return &self.nodes.items[idx];
     }
 
-    pub fn appendNode(self: *Document, kind: NodeType, parent_idx: u32, store_parent: bool) !u32 {
+    pub fn appendNode(noalias self: *Document, kind: NodeType, parent_idx: u32, comptime store_parent: bool) !u32 {
+        if (self.nodes.items.len == self.nodes.capacity) {
+            try self.nodes.ensureUnusedCapacity(self.allocator, 1);
+        }
         const idx: u32 = @intCast(self.nodes.items.len);
-        var node = Node{
+        const node = Node{
             .doc = self,
-            .index = idx,
             .kind = kind,
             .parent = if (store_parent) parent_idx else InvalidIndex,
-            .subtree_end = idx,
         };
 
-        if (parent_idx != InvalidIndex) {
-            const parent = &self.nodes.items[parent_idx];
-            if (parent.last_child == InvalidIndex) {
-                node.prev_sibling = InvalidIndex;
-                parent.first_child = idx;
-                parent.last_child = idx;
-            } else {
-                node.prev_sibling = parent.last_child;
-                self.nodes.items[parent.last_child].next_sibling = idx;
-                parent.last_child = idx;
-            }
-        }
-
-        try self.nodes.append(self.allocator, node);
+        const out = self.nodes.addOneAssumeCapacity();
+        out.* = node;
         return idx;
     }
 
-    pub fn appendAttribute(self: *Document, owner_idx: u32, name: Span, value: Span) !u32 {
+    pub fn appendAttribute(noalias self: *Document, name: Span, value: Span) !u32 {
+        if (self.attrs.items.len == self.attrs.capacity) {
+            try self.attrs.ensureUnusedCapacity(self.allocator, 1);
+        }
         const idx: u32 = @intCast(self.attrs.items.len);
-        try self.attrs.append(self.allocator, .{
+        const out = self.attrs.addOneAssumeCapacity();
+        out.* = .{
             .doc = self,
-            .owner_index = owner_idx,
-            .index = idx,
             .name = name,
             .value = value,
-        });
+        };
 
         return idx;
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {
+        if (input_len <= self.reserved_input_hint_len and
+            self.nodes.capacity > 0 and
+            self.attrs.capacity > 0 and
+            self.parse_stack.capacity > 0)
+        {
+            return;
+        }
+
         const est_nodes = @max(@as(usize, 16), input_len / 14 + 8);
         const est_attrs = @max(@as(usize, 16), input_len / 32 + 8);
         const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
 
-        try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
-        try self.attrs.ensureTotalCapacity(self.allocator, est_attrs);
-        try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
+        if (est_nodes > self.nodes.capacity) {
+            try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
+        }
+        if (est_attrs > self.attrs.capacity) {
+            try self.attrs.ensureTotalCapacity(self.allocator, est_attrs);
+        }
+        if (est_stack > self.parse_stack.capacity) {
+            try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
+        }
+        self.reserved_input_hint_len = input_len;
     }
 };

@@ -11,16 +11,16 @@ const EntityDecode = struct {
     len: usize,
 };
 
-pub fn decodeInPlace(buf: []u8, strict: bool) DecodeError!usize {
+pub fn decodeInPlace(noalias buf: []u8, strict: bool) DecodeError!usize {
     return decodeInPlaceFrom(buf, strict, 0);
 }
 
-pub fn decodeInPlaceIfEntity(buf: []u8, strict: bool) DecodeError!usize {
+pub fn decodeInPlaceIfEntity(noalias buf: []u8, strict: bool) DecodeError!usize {
     const first = std.mem.indexOfScalar(u8, buf, '&') orelse return buf.len;
     return decodeInPlaceFrom(buf, strict, first);
 }
 
-pub fn decodeAndNormalizeInPlace(buf: []u8, strict: bool) DecodeError!usize {
+pub fn decodeAndNormalizeInPlace(noalias buf: []u8, strict: bool) DecodeError!usize {
     const first = std.mem.indexOfScalar(u8, buf, '&');
     if (first == null) {
         return normalizeWhitespaceInPlace(buf);
@@ -54,7 +54,7 @@ pub fn decodeAndNormalizeInPlace(buf: []u8, strict: bool) DecodeError!usize {
     return dst;
 }
 
-fn decodeInPlaceFrom(buf: []u8, strict: bool, start: usize) DecodeError!usize {
+fn decodeInPlaceFrom(noalias buf: []u8, strict: bool, start: usize) DecodeError!usize {
     var src: usize = start;
     var dst: usize = start;
 
@@ -82,7 +82,7 @@ fn decodeInPlaceFrom(buf: []u8, strict: bool, start: usize) DecodeError!usize {
     return dst;
 }
 
-fn decodeEntity(buf: []const u8, start: usize, strict: bool) DecodeError!?EntityDecode {
+fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError!?EntityDecode {
     const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
         if (strict) return error.UnterminatedEntity;
         return null;
@@ -125,7 +125,7 @@ fn decodeEntity(buf: []const u8, start: usize, strict: bool) DecodeError!?Entity
     return null;
 }
 
-fn emitNormalized(dst: *usize, in_ws: *bool, c: u8, out: []u8) void {
+fn emitNormalized(noalias dst: *usize, noalias in_ws: *bool, c: u8, noalias out: []u8) void {
     const ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
     if (ws) {
         if (!in_ws.*) {
@@ -141,7 +141,7 @@ fn emitNormalized(dst: *usize, in_ws: *bool, c: u8, out: []u8) void {
     in_ws.* = false;
 }
 
-pub fn normalizeWhitespaceInPlace(buf: []u8) usize {
+pub fn normalizeWhitespaceInPlace(noalias buf: []u8) usize {
     var src: usize = 0;
     var dst: usize = 0;
     var in_ws = false;

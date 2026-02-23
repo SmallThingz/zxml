@@ -47,19 +47,19 @@ pub const AttrUnquotedValueCharTable = blk: {
 };
 
 pub inline fn isWhitespace(c: u8) bool {
-    return WhitespaceTable[c];
+    return c == ' ' or c == '\t' or c == '\n' or c == '\r';
 }
 
 pub inline fn isNameStart(c: u8) bool {
-    return NameStartTable[c];
+    return ((c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or c == '_' or c == ':');
 }
 
 pub inline fn isNameChar(c: u8) bool {
-    return NameCharTable[c];
+    return isNameStart(c) or (c >= '0' and c <= '9') or c == '-' or c == '.';
 }
 
 pub inline fn isAttrUnquotedValueChar(c: u8) bool {
-    return AttrUnquotedValueCharTable[c];
+    return c != '<' and c != '>' and c != '&' and c != '"' and c != '\'' and c != '=' and c != '`' and c != ' ' and c != '\t' and c != '\n' and c != '\r';
 }
 
 pub fn eqlAsciiCaseInsensitive(a: []const u8, b: []const u8) bool {

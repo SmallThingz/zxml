@@ -8,31 +8,29 @@ fn run(path: []const u8, iterations: usize, mode: []const u8) !u64 {
 
     const input = try std.fs.cwd().readFileAlloc(alloc, path, std.math.maxInt(usize));
     defer alloc.free(input);
-
-    const working = try alloc.alloc(u8, input.len);
-    defer alloc.free(working);
-
-    var arena = std.heap.ArenaAllocator.init(alloc);
-    defer arena.deinit();
+    var doc = fastxml.Document.init(alloc);
+    defer doc.deinit();
 
     const start = std.time.nanoTimestamp();
-    var i: usize = 0;
-    while (i < iterations) : (i += 1) {
-        @memcpy(working, input);
-        var doc = fastxml.Document.init(arena.allocator());
-        defer doc.deinit();
-
-        if (std.mem.eql(u8, mode, "strict")) {
-            try doc.parse(working, .{ .mode = .strict, .validate_closing_tags = true, .store_parent_pointers = true });
-        } else {
-            try doc.parse(working, .{
+    if (std.mem.eql(u8, mode, "strict")) {
+        var i: usize = 0;
+        while (i < iterations) : (i += 1) {
+            try doc.parse(input, .{
+                .mode = .strict,
+                .validate_closing_tags = true,
+                .store_parent_pointers = false,
+                .include_misc_nodes = false,
+            });
+        }
+    } else {
+        var i: usize = 0;
+        while (i < iterations) : (i += 1) {
+            try doc.parse(input, .{
                 .mode = .turbo,
                 .store_parent_pointers = false,
                 .include_misc_nodes = false,
             });
         }
-
-        _ = arena.reset(.retain_capacity);
     }
     const end = std.time.nanoTimestamp();
     return @intCast(end - start);
