@@ -15,8 +15,6 @@ pub const ParseOptions = struct {
     normalize_text_whitespace: bool = false,
     store_parent_pointers: bool = false,
     include_misc_nodes: bool = true,
-    // Turbo throughput mode that skips DOM construction and input scanning.
-    scan_only_turbo: bool = false,
 };
 
 pub const ParseError = error{

@@ -1,0 +1,34 @@
+{
+  "suite": "entities_and_text",
+  "cases": [
+    {
+      "name": "decode-entities-in-text-and-attribute",
+      "profile": "strict_entities",
+      "xml": "<r a='&amp;&#65;'>&lt;x&gt;&#x41;</r>",
+      "expect_ok": true,
+      "expect_nodes": 3,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "<x>A",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "&A"
+    },
+    {
+      "name": "normalize-text-whitespace",
+      "profile": "strict_entities_ws",
+      "xml": "<r> a\n\t b   c </r>",
+      "expect_ok": true,
+      "expect_first_text": " a b c "
+    },
+    {
+      "name": "cdata-remains-verbatim",
+      "profile": "strict_entities",
+      "xml": "<r><![CDATA[a<&>b]]></r>",
+      "expect_ok": true,
+      "expect_nodes": 3,
+      "expect_elements": 1,
+      "expect_misc_nodes": 1,
+      "expect_root_name": "r"
+    }
+  ]
+}

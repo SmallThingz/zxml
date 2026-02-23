@@ -1,0 +1,74 @@
+{
+  "suite": "security_owasp_nist_core",
+  "cases": [
+    {
+      "name": "sec-xxe-reference-not-expanded-default",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<!DOCTYPE r [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><r>&xxe;</r>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_first_text": "&xxe;"
+    },
+    {
+      "name": "sec-xxe-reference-rejected-in-strict-entities",
+      "profile": "strict_entities",
+      "xml": "<!DOCTYPE r [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><r>&xxe;</r>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "sec-xxe-reference-literal-in-turbo-entities",
+      "profile": "turbo_entities",
+      "xml": "<!DOCTYPE r [<!ENTITY xxe SYSTEM 'file:///etc/passwd'>]><r>&xxe;</r>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_first_text": "&xxe;"
+    },
+    {
+      "name": "sec-billion-laughs-reference-not-expanded-default",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<!DOCTYPE lolz [<!ENTITY lol0 'lol'><!ENTITY lol1 '&lol0;&lol0;'><!ENTITY lol2 '&lol1;&lol1;'><!ENTITY lol3 '&lol2;&lol2;'>]><root>&lol3;</root>",
+      "expect_ok": true,
+      "expect_root_name": "root",
+      "expect_first_text": "&lol3;"
+    },
+    {
+      "name": "sec-billion-laughs-reference-rejected-in-strict-entities",
+      "profile": "strict_entities",
+      "xml": "<!DOCTYPE lolz [<!ENTITY lol0 'lol'><!ENTITY lol1 '&lol0;&lol0;'><!ENTITY lol2 '&lol1;&lol1;'><!ENTITY lol3 '&lol2;&lol2;'>]><root>&lol3;</root>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "sec-doctype-internal-subset-balanced",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<!DOCTYPE r [<!ELEMENT r ANY><!ATTLIST r id CDATA #IMPLIED>]><r id='1'/>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "id",
+      "expect_root_attr_value": "1"
+    },
+    {
+      "name": "sec-malformed-doctype-strict-fails",
+      "profile": "strict",
+      "xml": "<!DOCTYPE r [<!ELEMENT r ANY><r/>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "sec-malformed-doctype-turbo-tolerated",
+      "profile": "turbo_default",
+      "xml": "<!DOCTYPE r [<!ELEMENT r ANY><r/>",
+      "expect_ok": true,
+      "expect_elements": 0
+    },
+    {
+      "name": "sec-entity-bomb-like-numeric-sequence",
+      "profiles": ["strict_entities", "turbo_entities"],
+      "xml": "<r>&#65;&#66;&#67;&#68;&#69;&#70;&#71;&#72;&#73;&#74;</r>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_first_text": "ABCDEFGHIJ"
+    }
+  ]
+}

@@ -1,0 +1,154 @@
+{
+  "suite": "cross_mode_error_matrix",
+  "cases": [
+    {
+      "name": "unexpected-end-open-tag-both-fail",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<a><b",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "strict-mismatched-close-fails",
+      "profile": "strict",
+      "xml": "<a><b></a>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
+    },
+    {
+      "name": "turbo-mismatched-close-pass",
+      "profile": "turbo_default",
+      "xml": "<a><b></a>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "a"
+    },
+    {
+      "name": "turbo-validate-mismatched-close-fails",
+      "profile": "turbo_validate",
+      "xml": "<a><b></a>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
+    },
+    {
+      "name": "strict-invalid-close-name-fails",
+      "profile": "strict",
+      "xml": "<a></1>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
+    },
+    {
+      "name": "turbo-invalid-close-name-pass",
+      "profile": "turbo_default",
+      "xml": "<a></1>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "a"
+    },
+    {
+      "name": "strict-unterminated-quote-fails",
+      "profile": "strict",
+      "xml": "<a x='1></a>",
+      "expect_ok": false,
+      "expect_error": "ExpectedQuote"
+    },
+    {
+      "name": "turbo-unterminated-quote-fails",
+      "profile": "turbo_default",
+      "xml": "<a x='1></a>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "strict-unterminated-pi-fails",
+      "profile": "strict",
+      "xml": "<?p x <r/>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "turbo-unterminated-pi-pass",
+      "profile": "turbo_default",
+      "xml": "<?p x <r/>",
+      "expect_ok": true,
+      "expect_elements": 0
+    },
+    {
+      "name": "strict-unterminated-comment-fails",
+      "profile": "strict",
+      "xml": "<r><!--x</r>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "turbo-unterminated-comment-pass",
+      "profile": "turbo_default",
+      "xml": "<r><!--x</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "strict-unterminated-cdata-fails",
+      "profile": "strict",
+      "xml": "<r><![CDATA[x</r>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "turbo-unterminated-cdata-pass",
+      "profile": "turbo_default",
+      "xml": "<r><![CDATA[x</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "strict-unterminated-doctype-fails",
+      "profile": "strict",
+      "xml": "<!DOCTYPE r [<!ELEMENT r ANY><r/>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "turbo-unterminated-doctype-pass",
+      "profile": "turbo_default",
+      "xml": "<!DOCTYPE r [<!ELEMENT r ANY><r/>",
+      "expect_ok": true,
+      "expect_elements": 0
+    },
+    {
+      "name": "strict-unquoted-attr-fails",
+      "profile": "strict",
+      "xml": "<r a=1></r>",
+      "expect_ok": false,
+      "expect_error": "ExpectedQuote"
+    },
+    {
+      "name": "turbo-unquoted-attr-pass",
+      "profile": "turbo_default",
+      "xml": "<r a=1></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "1"
+    },
+    {
+      "name": "strict-invalid-surrogate-entity-fails",
+      "profile": "strict_entities",
+      "xml": "<r>&#xD800;</r>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "turbo-invalid-surrogate-entity-literal",
+      "profile": "turbo_entities",
+      "xml": "<r>&#xD800;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "&#xD800;"
+    }
+  ]
+}

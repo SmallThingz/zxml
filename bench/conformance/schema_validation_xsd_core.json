@@ -1,0 +1,97 @@
+{
+  "suite": "schema_validation_xsd_core",
+  "cases": [
+    {
+      "name": "xsd-int-type-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Amount>42</Amount></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Amount",
+      "expect_field_type": "int",
+      "expect_field_type_valid": true
+    },
+    {
+      "name": "xsd-int-type-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Amount>42x</Amount></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Amount",
+      "expect_field_type": "int",
+      "expect_field_type_valid": false
+    },
+    {
+      "name": "xsd-date-type-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Date>2026-02-23</Date></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Date",
+      "expect_field_type": "date",
+      "expect_field_type_valid": true
+    },
+    {
+      "name": "xsd-date-type-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Date>2026-13-99</Date></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Date",
+      "expect_field_type": "date",
+      "expect_field_type_valid": false
+    },
+    {
+      "name": "xsd-string-type-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Customer>alice</Customer></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Customer",
+      "expect_field_type": "string",
+      "expect_field_type_valid": true
+    },
+    {
+      "name": "xsd-pattern-regex-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Code>ABC123</Code></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Code",
+      "expect_field_pattern": "^[A-Z]{3}[0-9]{3}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "xsd-pattern-regex-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Code>Abc123</Code></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_field_name": "Code",
+      "expect_field_pattern": "^[A-Z]{3}[0-9]{3}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "xsd-cardinality-minmax-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Item>1</Item><Item>2</Item></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_element_name": "Item",
+      "expect_element_min": 1,
+      "expect_element_max": 3,
+      "expect_cardinality_valid": true
+    },
+    {
+      "name": "xsd-cardinality-max-violation-detected",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Order><Item>1</Item><Item>2</Item><Item>3</Item><Item>4</Item></Order>",
+      "expect_ok": true,
+      "expect_root_name": "Order",
+      "expect_element_name": "Item",
+      "expect_element_min": 1,
+      "expect_element_max": 3,
+      "expect_cardinality_valid": false
+    }
+  ]
+}

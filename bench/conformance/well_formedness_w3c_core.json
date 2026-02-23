@@ -1,0 +1,85 @@
+{
+  "suite": "well_formedness_w3c_core",
+  "cases": [
+    {
+      "name": "wf-basic-nesting",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<root><a>1</a><b attr='x'/></root>",
+      "expect_ok": true,
+      "expect_elements": 3,
+      "expect_root_name": "root",
+      "expect_unique_root_attrs": true
+    },
+    {
+      "name": "wf-case-sensitive-tags",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Root><Child/></Root>",
+      "expect_ok": true,
+      "expect_root_name": "Root",
+      "expect_elements": 2
+    },
+    {
+      "name": "wf-strict-tag-mismatch-fails",
+      "profile": "strict",
+      "xml": "<a><B></b></a>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
+    },
+    {
+      "name": "wf-turbo-tag-mismatch-tolerated",
+      "profile": "turbo_default",
+      "xml": "<a><B></b></a>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "a"
+    },
+    {
+      "name": "wf-unique-attrs-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<root a='1' b='2'></root>",
+      "expect_ok": true,
+      "expect_root_name": "root",
+      "expect_unique_root_attrs": true
+    },
+    {
+      "name": "wf-unique-attrs-invalid-detected",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<root a='1' a='2'></root>",
+      "expect_ok": true,
+      "expect_root_name": "root",
+      "expect_unique_root_attrs": false
+    },
+    {
+      "name": "wf-entity-declaration-not-expanded-default",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r>&safe;</r>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_first_text": "&safe;"
+    },
+    {
+      "name": "wf-entity-declaration-in-strict-entities-rejected",
+      "profile": "strict_entities",
+      "xml": "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r>&safe;</r>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "wf-namespace-like-name",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<x:Envelope x:id='7'><x:Body/></x:Envelope>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "x:Envelope",
+      "expect_root_attr_name": "x:id",
+      "expect_root_attr_value": "7"
+    },
+    {
+      "name": "wf-unterminated-comment-strict-fails",
+      "profile": "strict",
+      "xml": "<r><!--oops</r>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    }
+  ]
+}

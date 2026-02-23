@@ -1,0 +1,66 @@
+{
+  "suite": "integrity_xml_dsig_core",
+  "cases": [
+    {
+      "name": "dsig-structure-present",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Envelope><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='c14n'/></ds:SignedInfo><ds:SignatureValue>ABCD1234</ds:SignatureValue></ds:Signature></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_element_name": "ds:Signature",
+      "expect_element_min": 1,
+      "expect_element_max": 1,
+      "expect_cardinality_valid": true
+    },
+    {
+      "name": "dsig-digestvalue-pattern-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Envelope><ds:DigestValue>ABCDEF12</ds:DigestValue></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_field_name": "ds:DigestValue",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "dsig-digestvalue-pattern-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Envelope><ds:DigestValue>ABCdef12</ds:DigestValue></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_field_name": "ds:DigestValue",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "dsig-signaturevalue-pattern-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Envelope><ds:SignatureValue>QWERTY12</ds:SignatureValue></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_field_name": "ds:SignatureValue",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "dsig-signaturevalue-pattern-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Envelope><ds:SignatureValue>QWERTY-2</ds:SignatureValue></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_field_name": "ds:SignatureValue",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "dsig-c14n-whitespace-normalized",
+      "profiles": ["strict_entities_ws", "turbo_entities_ws"],
+      "xml": "<Envelope><ds:SignedInfo>  A\n\tB   C  </ds:SignedInfo></Envelope>",
+      "expect_ok": true,
+      "expect_root_name": "Envelope",
+      "expect_field_name": "ds:SignedInfo",
+      "expect_field_pattern": "^ A B C $",
+      "expect_field_pattern_valid": true
+    }
+  ]
+}

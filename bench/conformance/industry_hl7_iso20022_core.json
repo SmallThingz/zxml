@@ -1,0 +1,85 @@
+{
+  "suite": "industry_hl7_iso20022_core",
+  "cases": [
+    {
+      "name": "hl7-message-basic-structure",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<HL7Message><MSH><Version>2.5</Version></MSH><PID><PatientID>12345</PatientID></PID></HL7Message>",
+      "expect_ok": true,
+      "expect_root_name": "HL7Message",
+      "expect_element_name": "PID",
+      "expect_element_min": 1,
+      "expect_cardinality_valid": true
+    },
+    {
+      "name": "hl7-patient-id-regex-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<HL7Message><PID><PatientID>123456</PatientID></PID></HL7Message>",
+      "expect_ok": true,
+      "expect_root_name": "HL7Message",
+      "expect_field_name": "PatientID",
+      "expect_field_pattern": "^[0-9]{6}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "hl7-patient-id-regex-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<HL7Message><PID><PatientID>123A56</PatientID></PID></HL7Message>",
+      "expect_ok": true,
+      "expect_root_name": "HL7Message",
+      "expect_field_name": "PatientID",
+      "expect_field_pattern": "^[0-9]{6}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "nemsis-date-field-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<NEMSIS><eTimes.03>2026-02-23</eTimes.03></NEMSIS>",
+      "expect_ok": true,
+      "expect_root_name": "NEMSIS",
+      "expect_field_name": "eTimes.03",
+      "expect_field_type": "date",
+      "expect_field_type_valid": true
+    },
+    {
+      "name": "iso20022-payment-structure",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Document><FIToFICstmrCdtTrf><GrpHdr><MsgId>ABC123</MsgId></GrpHdr><CdtTrfTxInf><PmtId><EndToEndId>XYZ987</EndToEndId></PmtId></CdtTrfTxInf></FIToFICstmrCdtTrf></Document>",
+      "expect_ok": true,
+      "expect_root_name": "Document",
+      "expect_element_name": "CdtTrfTxInf",
+      "expect_element_min": 1,
+      "expect_cardinality_valid": true
+    },
+    {
+      "name": "iso20022-bic-pattern-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Document><BICFI>DEUTDEFF</BICFI></Document>",
+      "expect_ok": true,
+      "expect_root_name": "Document",
+      "expect_field_name": "BICFI",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "iso20022-bic-pattern-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Document><BICFI>deutdeff</BICFI></Document>",
+      "expect_ok": true,
+      "expect_root_name": "Document",
+      "expect_field_name": "BICFI",
+      "expect_field_pattern": "^[A-Z0-9]{8}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "iso20022-settlement-date-order",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Document><TradeDate>2026-02-20</TradeDate><SettlementDate>2026-02-22</SettlementDate></Document>",
+      "expect_ok": true,
+      "expect_root_name": "Document",
+      "expect_date_before_left": "TradeDate",
+      "expect_date_before_right": "SettlementDate",
+      "expect_date_before_valid": true
+    }
+  ]
+}

@@ -1,0 +1,33 @@
+{
+  "suite": "well_formed_core",
+  "cases": [
+    {
+      "name": "nested-elements-and-attributes",
+      "profile": "strict",
+      "xml": "<root><a>1</a><b k='v'/></root>",
+      "expect_ok": true,
+      "expect_nodes": 5,
+      "expect_elements": 3,
+      "expect_root_name": "root",
+      "expect_first_text": "1"
+    },
+    {
+      "name": "misc-nodes-enabled",
+      "profile": "strict",
+      "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><r><!--c--><![CDATA[x]]><?p q?></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 5,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "misc-nodes-disabled",
+      "profile": "strict_misc_off",
+      "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><r><!--c--><![CDATA[x]]><?p q?></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 0,
+      "expect_root_name": "r"
+    }
+  ]
+}

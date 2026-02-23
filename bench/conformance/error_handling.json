@@ -1,0 +1,41 @@
+{
+  "suite": "error_handling",
+  "cases": [
+    {
+      "name": "strict-mismatched-close",
+      "profile": "strict",
+      "xml": "<a><b></a>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
+    },
+    {
+      "name": "strict-unterminated-quote",
+      "profile": "strict",
+      "xml": "<a x='1></a>",
+      "expect_ok": false,
+      "expect_error": "ExpectedQuote"
+    },
+    {
+      "name": "strict-invalid-numeric-entity",
+      "profile": "strict_entities",
+      "xml": "<a>&#x110000;</a>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "strict-unexpected-end",
+      "profile": "strict",
+      "xml": "<a><b></b>",
+      "expect_ok": false,
+      "expect_error": "UnexpectedEndOfData"
+    },
+    {
+      "name": "turbo-allows-mismatched-close",
+      "profile": "turbo_default",
+      "xml": "<a><b></a>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "a"
+    }
+  ]
+}

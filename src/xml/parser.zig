@@ -31,19 +31,6 @@ fn Parser(comptime opts: ParseOptions) type {
         const normalize_text = opts.normalize_text_whitespace;
 
         fn parse(self: *Self) ParseError!void {
-            if (opts.mode == .turbo and
-                opts.scan_only_turbo and
-                !opts.store_parent_pointers and
-                !opts.decode_entities_on_parse and
-                !opts.normalize_text_whitespace)
-            {
-                try self.doc.nodes.ensureTotalCapacity(self.doc.allocator, 1);
-                _ = try self.doc.appendNode(.document, InvalidIndex, false);
-                self.scanOnlyTurboNoTree();
-                self.doc.nodes.items[0].subtree_end = 0;
-                return;
-            }
-
             try self.doc.reserveForInput(self.input.len);
             _ = try self.doc.appendNode(.document, InvalidIndex, false);
             try self.doc.parse_stack.append(self.doc.allocator, 0);
@@ -86,12 +73,6 @@ fn Parser(comptime opts: ParseOptions) type {
 
             self.doc.nodes.items[0].subtree_end = if (self.doc.nodes.items.len == 0) 0 else @intCast(self.doc.nodes.items.len - 1);
             self.doc.parse_stack.clearRetainingCapacity();
-        }
-
-        fn scanOnlyTurboNoTree(self: *Self) void {
-            // Explicit benchmark mode: treat input as opaque bytes and return a
-            // document-only tree in O(1).
-            self.i = self.input.len;
         }
 
         fn parseTextRange(self: *Self, start: usize, end: usize) ParseError!void {

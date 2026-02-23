@@ -1,0 +1,85 @@
+{
+  "suite": "business_rules_schematron_core",
+  "cases": [
+    {
+      "name": "br-departure-before-arrival-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Trip><DepartureDate>2026-02-20</DepartureDate><ArrivalDate>2026-02-21</ArrivalDate></Trip>",
+      "expect_ok": true,
+      "expect_root_name": "Trip",
+      "expect_date_before_left": "DepartureDate",
+      "expect_date_before_right": "ArrivalDate",
+      "expect_date_before_valid": true
+    },
+    {
+      "name": "br-departure-before-arrival-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Trip><DepartureDate>2026-02-22</DepartureDate><ArrivalDate>2026-02-21</ArrivalDate></Trip>",
+      "expect_ok": true,
+      "expect_root_name": "Trip",
+      "expect_date_before_left": "DepartureDate",
+      "expect_date_before_right": "ArrivalDate",
+      "expect_date_before_valid": false
+    },
+    {
+      "name": "br-invoice-has-at-least-one-line",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Invoice><Line>1</Line><Line>2</Line></Invoice>",
+      "expect_ok": true,
+      "expect_root_name": "Invoice",
+      "expect_element_name": "Line",
+      "expect_element_min": 1,
+      "expect_cardinality_valid": true
+    },
+    {
+      "name": "br-invoice-missing-lines-detected",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Invoice></Invoice>",
+      "expect_ok": true,
+      "expect_root_name": "Invoice",
+      "expect_element_name": "Line",
+      "expect_element_min": 1,
+      "expect_cardinality_valid": false
+    },
+    {
+      "name": "br-flight-code-regex-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Flight><FlightCode>AA123</FlightCode></Flight>",
+      "expect_ok": true,
+      "expect_root_name": "Flight",
+      "expect_field_name": "FlightCode",
+      "expect_field_pattern": "^[A-Z]{2}[0-9]{3}$",
+      "expect_field_pattern_valid": true
+    },
+    {
+      "name": "br-flight-code-regex-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Flight><FlightCode>Aa123</FlightCode></Flight>",
+      "expect_ok": true,
+      "expect_root_name": "Flight",
+      "expect_field_name": "FlightCode",
+      "expect_field_pattern": "^[A-Z]{2}[0-9]{3}$",
+      "expect_field_pattern_valid": false
+    },
+    {
+      "name": "br-amount-is-int-valid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Settlement><Amount>1000</Amount></Settlement>",
+      "expect_ok": true,
+      "expect_root_name": "Settlement",
+      "expect_field_name": "Amount",
+      "expect_field_type": "int",
+      "expect_field_type_valid": true
+    },
+    {
+      "name": "br-amount-is-int-invalid",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<Settlement><Amount>1000USD</Amount></Settlement>",
+      "expect_ok": true,
+      "expect_root_name": "Settlement",
+      "expect_field_name": "Amount",
+      "expect_field_type": "int",
+      "expect_field_type_valid": false
+    }
+  ]
+}

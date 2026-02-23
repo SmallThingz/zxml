@@ -79,7 +79,7 @@ test "strict mismatched close tag fails" {
     try std.testing.expectError(ParseError.InvalidClosingTagName, doc.parse(&src, .{ .mode = .strict, .validate_closing_tags = true }));
 }
 
-test "turbo scan-only mode skips tree construction" {
+test "turbo mode builds dom by default" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
 
@@ -88,12 +88,13 @@ test "turbo scan-only mode skips tree construction" {
         .mode = .turbo,
         .store_parent_pointers = false,
         .include_misc_nodes = false,
-        .scan_only_turbo = true,
     });
 
-    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
-    const root_node = doc.root() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(NodeType.document, root_node.kind);
+    try std.testing.expectEqual(@as(usize, 5), doc.nodes.items.len);
+    const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(NodeType.element, root.kind);
+    try std.testing.expectEqualStrings("root", root.nameSlice());
+    try std.testing.expectEqualStrings("1", root.firstChild().?.nextSibling().?.getAttributeValue("x").?);
 }
 
 test "entity decode on parse" {

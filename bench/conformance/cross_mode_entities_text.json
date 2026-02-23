@@ -1,0 +1,120 @@
+{
+  "suite": "cross_mode_entities_text",
+  "cases": [
+    {
+      "name": "decode-disabled-literal",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r>&lt;x&gt;&#65;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "&lt;x&gt;&#65;"
+    },
+    {
+      "name": "decode-enabled-text",
+      "profiles": ["strict_entities", "turbo_entities"],
+      "xml": "<r>&lt;x&gt;&#65;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "<x>A"
+    },
+    {
+      "name": "decode-enabled-attr-and-text",
+      "profiles": ["strict_entities", "turbo_entities"],
+      "xml": "<r a='&amp;&#x41;'>&lt;x&gt;&#65;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "&A",
+      "expect_first_text": "<x>A"
+    },
+    {
+      "name": "normalize-whitespace-with-decode",
+      "profiles": ["strict_entities_ws", "turbo_entities_ws"],
+      "xml": "<r>  a \n\t b   c  </r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": " a b c "
+    },
+    {
+      "name": "numeric-decimal-and-hex",
+      "profiles": ["strict_entities", "turbo_entities"],
+      "xml": "<r>&#66;&#x43;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "BC"
+    },
+    {
+      "name": "unknown-named-entity-strict-fails",
+      "profile": "strict_entities",
+      "xml": "<r>&bogus;</r>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "unknown-named-entity-turbo-literal",
+      "profile": "turbo_entities",
+      "xml": "<r>&bogus;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "&bogus;"
+    },
+    {
+      "name": "unterminated-entity-strict-fails",
+      "profile": "strict_entities",
+      "xml": "<r>&amp</r>",
+      "expect_ok": false,
+      "expect_error": "UnterminatedEntity"
+    },
+    {
+      "name": "unterminated-entity-turbo-literal",
+      "profile": "turbo_entities",
+      "xml": "<r>&amp</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "&amp"
+    },
+    {
+      "name": "invalid-numeric-strict-fails",
+      "profile": "strict_entities",
+      "xml": "<r>&#x110000;</r>",
+      "expect_ok": false,
+      "expect_error": "InvalidNumericCharacterEntity"
+    },
+    {
+      "name": "invalid-numeric-turbo-literal",
+      "profile": "turbo_entities",
+      "xml": "<r>&#x110000;</r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "&#x110000;"
+    },
+    {
+      "name": "decode-disabled-attr-literal",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r a='&amp;'></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "&amp;"
+    },
+    {
+      "name": "decode-enabled-attr",
+      "profiles": ["strict_entities", "turbo_entities"],
+      "xml": "<r a='&amp;'></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "&"
+    }
+  ]
+}

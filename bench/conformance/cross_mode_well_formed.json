@@ -1,0 +1,114 @@
+{
+  "suite": "cross_mode_well_formed",
+  "cases": [
+    {
+      "name": "basic-nested-text",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<root><a>1</a><b/></root>",
+      "expect_ok": true,
+      "expect_elements": 3,
+      "expect_root_name": "root",
+      "expect_first_text": "1"
+    },
+    {
+      "name": "attributes-single-double",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<root a='x' b=\"y\"><c/></root>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "root",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "x"
+    },
+    {
+      "name": "namespace-like-names",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<ns:root ns:id='42'><ns:child/></ns:root>",
+      "expect_ok": true,
+      "expect_elements": 2,
+      "expect_root_name": "ns:root",
+      "expect_root_attr_name": "ns:id",
+      "expect_root_attr_value": "42"
+    },
+    {
+      "name": "deep-tree",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r><a><b><c><d><e/></d></c></b></a></r>",
+      "expect_ok": true,
+      "expect_elements": 6,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "self-closing-heavy",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r><a/><b/><c/></r>",
+      "expect_ok": true,
+      "expect_elements": 4,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "misc-nodes-enabled",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><!--c--><?pi x?><r><![CDATA[z]]></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 5,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "misc-nodes-disabled",
+      "profiles": ["strict_misc_off", "turbo_misc_off"],
+      "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><!--c--><?pi x?><r><![CDATA[z]]></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 0,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "text-around-root",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "pre<r>t</r>post",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": "pre"
+    },
+    {
+      "name": "processing-instruction-before-root",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<?x y?><r/>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 1,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "cdata-kept-as-misc-node",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r><![CDATA[a<b>&c]]></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_misc_nodes": 1,
+      "expect_root_name": "r"
+    },
+    {
+      "name": "whitespace-preserved-by-default",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r> a\n\t b </r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_first_text": " a\n\t b "
+    },
+    {
+      "name": "attribute-name-with-colon-and-dash",
+      "profiles": ["strict", "turbo_default"],
+      "xml": "<r x:y-z='1'></r>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "x:y-z",
+      "expect_root_attr_value": "1"
+    }
+  ]
+}
