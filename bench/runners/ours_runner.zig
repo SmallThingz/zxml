@@ -9,7 +9,7 @@ const Mode = enum {
 
 fn run(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: Mode) !u64 {
     const options: fastxml.ParseOptions = .{};
-    const Document = fastxml.GetDocument(options);
+    const Document = fastxml.Types(options).Document;
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
     var doc = Document.init(alloc);

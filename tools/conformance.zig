@@ -272,7 +272,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     const case_alloc = arena.allocator();
 
     const options: fastxml.ParseOptions = .{};
-    const Document = fastxml.GetDocument(options);
+    const Document = fastxml.Types(options).Document;
     var doc = Document.init(case_alloc);
     defer doc.deinit();
 

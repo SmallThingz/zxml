@@ -50,7 +50,7 @@ Minimal parse:
 const std = @import("std");
 const fastxml = @import("fastxml");
 const options: fastxml.ParseOptions = .{};
-const Document = options.GetDocument();
+const Document = fastxml.Types(options).Document;
 
 pub fn main() !void {
     var src = "<root id='r'><child>text</child></root>".*;
@@ -73,17 +73,16 @@ pub fn main() !void {
 - `fastxml.ParseOptions`
 - `fastxml.ParseMode`
 - `fastxml.ParseError`
-- `fastxml.GetDocument(options)`
-- `fastxml.GetNode(options)`
-- `fastxml.GetAttribute(options)`
-
-Default exports are aliases for `const options: fastxml.ParseOptions = .{};`.
+- `fastxml.Types(options).Document`
+- `fastxml.Types(options).Node`
+- `fastxml.Types(options).Attribute`
 
 ```zig
 const options: fastxml.ParseOptions = .{};
-const Document = options.GetDocument();
-const Node = options.GetNode();
-const Attribute = options.GetAttribute();
+const types = fastxml.Types(options);
+const Document = types.Document;
+const Node = types.Node;
+const Attribute = types.Attribute;
 ```
 
 `Document.parse` is comptime-specialized:
