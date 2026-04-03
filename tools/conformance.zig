@@ -182,6 +182,7 @@ fn runCase(alloc: std.mem.Allocator, obj: std.json.ObjectMap, case_idx: usize) !
         .expect_element_max = valueInt(obj, "expect_element_max"),
         .expect_cardinality_valid = valueBoolOpt(obj, "expect_cardinality_valid"),
         .expect_field_name = valueString(obj, "expect_field_name"),
+        .expect_field_text = valueString(obj, "expect_field_text"),
         .expect_field_type = valueString(obj, "expect_field_type"),
         .expect_field_type_valid = valueBoolOpt(obj, "expect_field_type_valid"),
         .expect_field_pattern = valueString(obj, "expect_field_pattern"),
@@ -244,6 +245,7 @@ const CaseSpec = struct {
     expect_element_max: ?usize,
     expect_cardinality_valid: ?bool,
     expect_field_name: ?[]const u8,
+    expect_field_text: ?[]const u8,
     expect_field_type: ?[]const u8,
     expect_field_type_valid: ?bool,
     expect_field_pattern: ?[]const u8,
@@ -269,7 +271,9 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     defer arena.deinit();
     const case_alloc = arena.allocator();
 
-    var doc = fastxml.Document.init(case_alloc);
+    const options: fastxml.ParseOptions = .{};
+    const Document = options.GetDocument();
+    var doc = Document.init(case_alloc);
     defer doc.deinit();
 
     const xml_buf = try case_alloc.dupe(u8, spec.xml);
@@ -454,7 +458,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
         }
     }
 
-    if ((spec.expect_field_type != null or spec.expect_field_pattern != null) and spec.expect_field_name == null) {
+    if ((spec.expect_field_text != null or spec.expect_field_type != null or spec.expect_field_pattern != null) and spec.expect_field_name == null) {
         return .{
             .case_name = case_name,
             .pass = false,
@@ -470,6 +474,16 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
                 .reason = try std.fmt.allocPrint(alloc, "[{s}] expected field {s}, found none", .{ profile, field_name }),
             };
         };
+
+        if (spec.expect_field_text) |expected| {
+            if (!std.mem.eql(u8, field_text, expected)) {
+                return .{
+                    .case_name = case_name,
+                    .pass = false,
+                    .reason = try std.fmt.allocPrint(alloc, "[{s}] expect_field_text={s}, got {s}", .{ profile, expected, field_text }),
+                };
+            }
+        }
 
         if (spec.expect_field_type) |field_type| {
             const actual_valid = validateFieldType(field_text, field_type) orelse {
@@ -543,7 +557,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     return .{ .case_name = case_name, .pass = true, .reason = null };
 }
 
-fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (fastxml.ParseError || ConformanceError)!void {
+fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.ParseError || ConformanceError)!void {
     if (std.mem.eql(u8, profile, "turbo_default")) {
         try doc.parse(input, .{});
         return;
@@ -553,6 +567,15 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
+        });
+        return;
+    }
+
+    if (std.mem.eql(u8, profile, "strict_closed")) {
+        try doc.parse(input, .{
+            .mode = .strict,
+            .validate_closing_tags = true,
+            .require_closed_elements_on_eof = true,
         });
         return;
     }
@@ -571,7 +594,7 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
             .mode = .strict,
             .validate_closing_tags = true,
             .decode_entities_on_parse = true,
-            .normalize_text_whitespace = true,
+            .drop_whitespace_text_nodes = false,
         });
         return;
     }
@@ -605,7 +628,7 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
         try doc.parse(input, .{
             .mode = .turbo,
             .decode_entities_on_parse = true,
-            .normalize_text_whitespace = true,
+            .drop_whitespace_text_nodes = false,
         });
         return;
     }
@@ -621,7 +644,7 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
     return ConformanceError.InvalidProfile;
 }
 
-fn countByKind(doc: *const fastxml.Document, kind: fastxml.NodeType) usize {
+fn countByKind(doc: anytype, kind: fastxml.NodeType) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         if (node.kind == kind) n += 1;
@@ -629,7 +652,7 @@ fn countByKind(doc: *const fastxml.Document, kind: fastxml.NodeType) usize {
     return n;
 }
 
-fn countMisc(doc: *const fastxml.Document) usize {
+fn countMisc(doc: anytype) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         switch (node.kind) {
@@ -640,7 +663,7 @@ fn countMisc(doc: *const fastxml.Document) usize {
     return n;
 }
 
-fn countElementsByName(doc: *const fastxml.Document, name: []const u8) usize {
+fn countElementsByName(doc: anytype, name: []const u8) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         if (node.kind != .element) continue;
@@ -649,21 +672,21 @@ fn countElementsByName(doc: *const fastxml.Document, name: []const u8) usize {
     return n;
 }
 
-fn firstElement(doc: *const fastxml.Document) ?fastxml.Node {
+fn firstElement(doc: anytype) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind == .element) return doc.nodeAt(@intCast(i));
     }
     return null;
 }
 
-fn firstText(doc: *const fastxml.Document) ?[]const u8 {
+fn firstText(doc: anytype) ?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind == .text) return doc.nodeAt(@intCast(i)).?.valueSlice();
     }
     return null;
 }
 
-fn elementTextByName(doc: *const fastxml.Document, name: []const u8) ?[]const u8 {
+fn elementTextByName(doc: anytype, name: []const u8) ?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .element) continue;
         if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
@@ -677,7 +700,7 @@ fn elementTextByName(doc: *const fastxml.Document, name: []const u8) ?[]const u8
     return null;
 }
 
-fn hasUniqueAttributes(root: fastxml.Node) bool {
+fn hasUniqueAttributes(root: anytype) bool {
     const attrs = root.doc.attrs.items;
     const start = root.attr_start;
     const end = root.attr_start + root.attr_len;

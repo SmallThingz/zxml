@@ -5,18 +5,15 @@ const scanner_mod = @import("scanner.zig");
 const tables_mod = @import("tables.zig");
 const entities_mod = @import("entities.zig");
 
-pub const Span = document_mod.Span;
 pub const NodeType = document_mod.NodeType;
 pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const InvalidIndex = document_mod.InvalidIndex;
 
-const DefaultTypeOptions: ParseOptions = .{};
-
-pub const Document = DefaultTypeOptions.GetDocument();
-pub const Node = DefaultTypeOptions.GetNode();
-pub const Attribute = DefaultTypeOptions.GetAttribute();
+pub fn GetSpan(comptime options: ParseOptions) type {
+    return options.GetSpan();
+}
 
 pub fn GetDocument(comptime options: ParseOptions) type {
     return options.GetDocument();
@@ -38,17 +35,21 @@ pub fn GetAttributeRaw(comptime options: ParseOptions) type {
     return options.GetAttributeRaw();
 }
 
-const ParsedDoc = struct {
-    doc: Document,
-    buf: []u8,
+fn ParsedDoc(comptime opts: ParseOptions) type {
+    const Document = opts.GetDocument();
 
-    fn deinit(self: *ParsedDoc) void {
-        self.doc.deinit();
-        std.testing.allocator.free(self.buf);
-    }
-};
+    return struct {
+        doc: Document,
+        buf: []u8,
 
-fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc {
+        fn deinit(self: *@This()) void {
+            self.doc.deinit();
+            std.testing.allocator.free(self.buf);
+        }
+    };
+}
+
+fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc(opts) {
     const DocumentType = opts.GetDocument();
     const buf = try std.testing.allocator.dupe(u8, input);
     errdefer std.testing.allocator.free(buf);
@@ -63,7 +64,12 @@ fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc {
     };
 }
 
-fn countKind(doc: *const Document, kind: NodeType) usize {
+fn initDoc(comptime opts: ParseOptions) opts.GetDocument() {
+    const Document = opts.GetDocument();
+    return Document.init(std.testing.allocator);
+}
+
+fn countKind(doc: anytype, kind: NodeType) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         if (node.kind == kind) n += 1;
@@ -71,7 +77,7 @@ fn countKind(doc: *const Document, kind: NodeType) usize {
     return n;
 }
 
-fn findFirstKind(doc: *Document, kind: NodeType) ?Node {
+fn findFirstKind(doc: anytype, kind: NodeType) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind == kind) return doc.nodeAt(@intCast(i));
     }
@@ -80,9 +86,10 @@ fn findFirstKind(doc: *Document, kind: NodeType) ?Node {
 
 test "ParseOptions type factory matches default exports" {
     const opts: ParseOptions = .{};
-    try std.testing.expectEqual(Document, opts.GetDocument());
-    try std.testing.expectEqual(Node, opts.GetNode());
-    try std.testing.expectEqual(Attribute, opts.GetAttribute());
+    try std.testing.expectEqual(opts.GetDocument(), GetDocument(opts));
+    try std.testing.expectEqual(opts.GetNode(), GetNode(opts));
+    try std.testing.expectEqual(opts.GetAttribute(), GetAttribute(opts));
+    try std.testing.expectEqual(opts.GetSpan(), GetSpan(opts));
 }
 
 test "smoke: parse nested nodes and attributes" {
@@ -194,13 +201,23 @@ test "whitespace-only text is skipped by default" {
     try std.testing.expect(root.firstChild() == null);
 }
 
-test "normalize text whitespace keeps text node" {
-    var parsed = try parseTestDoc("<r> a\n\t b   c </r>", .{ .normalize_text_whitespace = true });
+test "mixed whitespace text is preserved by default" {
+    var parsed = try parseTestDoc("<r> a\n\t b   c </r>", .{});
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(" a b c ", text.valueSlice());
+    try std.testing.expectEqualStrings(" a\n\t b   c ", text.valueSlice());
+}
+
+test "drop_whitespace_text_nodes false keeps pure whitespace nodes" {
+    var parsed = try parseTestDoc("<r> \n\t </r>", .{ .drop_whitespace_text_nodes = false });
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const text = root.firstChild() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(NodeType.text, text.kind);
+    try std.testing.expectEqualStrings(" \n\t ", text.valueSlice());
 }
 
 test "entity decode on parse" {
@@ -223,17 +240,16 @@ test "decode disabled leaves literal entities in text and attributes" {
     try std.testing.expectEqualStrings("&lt;ok&gt;", root.firstChild().?.valueSlice());
 }
 
-test "decode and normalize combine in a single postprocess pass" {
+test "decode preserves surrounding whitespace" {
     var parsed = try parseTestDoc("<r> a\n&amp;\t b  </r>", .{
         .mode = .strict,
         .decode_entities_on_parse = true,
-        .normalize_text_whitespace = true,
     });
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(" a & b ", text.valueSlice());
+    try std.testing.expectEqualStrings(" a\n&\t b  ", text.valueSlice());
 }
 
 test "misc nodes enabled parses declaration nodes" {
@@ -338,7 +354,7 @@ test "turbo mismatched close tag without validation is tolerated" {
 }
 
 test "strict mismatched close tag validation fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<a><b></a>".*;
@@ -346,11 +362,31 @@ test "strict mismatched close tag validation fails" {
 }
 
 test "turbo validate closing tags also fails on mismatch" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<a><b></a>".*;
     try std.testing.expectError(ParseError.InvalidClosingTagName, doc.parse(&src, .{ .mode = .turbo, .validate_closing_tags = true }));
+}
+
+test "strict mode tolerates EOF with open elements by default" {
+    var parsed = try parseTestDoc("<a><b>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.items.len);
+    try std.testing.expectEqualStrings("a", parsed.doc.nodeAt(1).?.nameSlice());
+    try std.testing.expectEqualStrings("b", parsed.doc.nodeAt(2).?.nameSlice());
+}
+
+test "require_closed_elements_on_eof enforces balanced open elements" {
+    var doc = initDoc(.{});
+    defer doc.deinit();
+
+    var src = "<a><b>".*;
+    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{
+        .mode = .strict,
+        .require_closed_elements_on_eof = true,
+    }));
 }
 
 test "turbo mode builds dom by default" {
@@ -397,7 +433,7 @@ test "attribute-heavy element parses and preserves lookups" {
     }
     try xml.appendSlice(std.testing.allocator, "></root>");
 
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
     try doc.parse(xml.items, .{ .mode = .strict, .validate_closing_tags = true });
 
@@ -447,7 +483,7 @@ test "namespace-like element and attribute names parse" {
 }
 
 test "strict unquoted attributes fail" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r a=1/>".*;
@@ -463,7 +499,7 @@ test "turbo unquoted attributes parse" {
 }
 
 test "strict unterminated quoted attribute fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r a='x></r>".*;
@@ -471,7 +507,7 @@ test "strict unterminated quoted attribute fails" {
 }
 
 test "strict unterminated comment fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r><!--x</r>".*;
@@ -479,7 +515,7 @@ test "strict unterminated comment fails" {
 }
 
 test "strict unterminated cdata fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r><![CDATA[x</r>".*;
@@ -487,7 +523,7 @@ test "strict unterminated cdata fails" {
 }
 
 test "strict unterminated processing instruction fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r><?build x='1'</r>".*;
@@ -495,7 +531,7 @@ test "strict unterminated processing instruction fails" {
 }
 
 test "strict unterminated doctype fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<!DOCTYPE root [<!ELEMENT root ANY><root/>".*;
@@ -503,7 +539,7 @@ test "strict unterminated doctype fails" {
 }
 
 test "strict invalid numeric entity in text fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r>&#x110000;</r>".*;
@@ -511,7 +547,7 @@ test "strict invalid numeric entity in text fails" {
 }
 
 test "strict invalid numeric entity in attribute fails" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r a='&#x110000;'/>".*;
@@ -519,7 +555,7 @@ test "strict invalid numeric entity in attribute fails" {
 }
 
 test "strict unterminated entity fails during decode validation" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src = "<r>&amp</r>".*;
@@ -550,7 +586,7 @@ test "self-closing siblings traverse correctly" {
 }
 
 test "document can be reused across parses" {
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
 
     var src1 = "<a><b/></a>".*;
@@ -581,7 +617,7 @@ test "strict deep balanced close tags" {
     }
     try xml.appendSlice(std.testing.allocator, "</r>");
 
-    var doc = Document.init(std.testing.allocator);
+    var doc = initDoc(.{});
     defer doc.deinit();
     try doc.parse(xml.items, .{
         .mode = .strict,

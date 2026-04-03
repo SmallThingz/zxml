@@ -31,13 +31,13 @@
       "expect_first_text": "<x>A"
     },
     {
-      "name": "normalize-whitespace-with-decode",
+      "name": "preserve-whitespace-with-decode",
       "profiles": ["strict_entities_ws", "turbo_entities_ws"],
       "xml": "<r>  a \n\t b   c  </r>",
       "expect_ok": true,
       "expect_elements": 1,
       "expect_root_name": "r",
-      "expect_first_text": " a b c "
+      "expect_first_text": "  a \n\t b   c  "
     },
     {
       "name": "numeric-decimal-and-hex",

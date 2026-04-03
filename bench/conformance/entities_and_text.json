@@ -14,11 +14,11 @@
       "expect_root_attr_value": "&A"
     },
     {
-      "name": "normalize-text-whitespace",
+      "name": "preserve-mixed-whitespace-text",
       "profile": "strict_entities_ws",
       "xml": "<r> a\n\t b   c </r>",
       "expect_ok": true,
-      "expect_first_text": " a b c "
+      "expect_first_text": " a\n\t b   c "
     },
     {
       "name": "cdata-remains-verbatim",

@@ -12,8 +12,9 @@ pub const ParseMode = enum {
 pub const ParseOptions = struct {
     mode: ParseMode = .turbo,
     validate_closing_tags: bool = false,
+    require_closed_elements_on_eof: bool = false,
     decode_entities_on_parse: bool = false,
-    normalize_text_whitespace: bool = false,
+    drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
 
     pub fn GetSpan(_: @This()) type {
@@ -204,7 +205,6 @@ pub const Document = struct {
     source: []u8 = &[_]u8{},
     reserved_input_hint_len: usize = 0,
     postprocess_decode_entities: bool = false,
-    postprocess_normalize_text: bool = false,
 
     nodes: std.ArrayList(RawNode) = .empty,
     attrs: std.ArrayList(RawAttribute) = .empty,
@@ -232,7 +232,6 @@ pub const Document = struct {
         self.clear();
         self.source = input;
         self.postprocess_decode_entities = opts.decode_entities_on_parse;
-        self.postprocess_normalize_text = opts.normalize_text_whitespace;
         try parser.parseInto(self, input, opts);
     }
 
@@ -284,21 +283,13 @@ pub const Document = struct {
             node.value_processed = true;
             return;
         }
-        if (!self.postprocess_decode_entities and !self.postprocess_normalize_text) {
+        if (!self.postprocess_decode_entities) {
             node.value_processed = true;
             return;
         }
 
         const value = node.value.sliceMut(self.source);
-        var final_len = value.len;
-        if (self.postprocess_decode_entities and self.postprocess_normalize_text) {
-            final_len = entities.decodeAndNormalizeInPlace(value, false) catch value.len;
-        } else if (self.postprocess_decode_entities) {
-            final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-        } else if (self.postprocess_normalize_text) {
-            final_len = entities.normalizeWhitespaceInPlace(value);
-        }
-
+        const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
         node.value.end = node.value.start + @as(u32, @intCast(final_len));
         node.value_processed = true;
     }
@@ -329,8 +320,10 @@ test "ParseOptions type getters expose concrete DOM types" {
 }
 
 test "Span helpers expose slices and lengths" {
+    const opts: ParseOptions = .{};
+    const SpanType = opts.GetSpan();
     var buf = "abcdef".*;
-    const span: Span = .{ .start = 1, .end = 4 };
+    const span: SpanType = .{ .start = 1, .end = 4 };
     try std.testing.expectEqual(@as(u32, 3), span.len());
     try std.testing.expect(!span.isEmpty());
     try std.testing.expectEqualStrings("bcd", span.slice(&buf));
@@ -339,12 +332,14 @@ test "Span helpers expose slices and lengths" {
     mut[1] = 'Z';
     try std.testing.expectEqualStrings("bZd", span.slice(&buf));
 
-    const empty: Span = .{ .start = 2, .end = 2 };
+    const empty: SpanType = .{ .start = 2, .end = 2 };
     try std.testing.expect(empty.isEmpty());
 }
 
 test "Document reserve and lookup helpers behave on empty and populated state" {
-    var doc = Document.init(std.testing.allocator);
+    const opts: ParseOptions = .{};
+    const DocumentType = opts.GetDocument();
+    var doc = DocumentType.init(std.testing.allocator);
     defer doc.deinit();
 
     try std.testing.expect(doc.root() == null);

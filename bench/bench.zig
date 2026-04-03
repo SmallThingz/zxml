@@ -8,9 +8,11 @@ const BenchMode = enum {
 };
 
 pub fn runParseFile(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
+    const options: fastxml.ParseOptions = .{};
+    const Document = options.GetDocument();
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
-    var doc = fastxml.Document.init(alloc);
+    var doc = Document.init(alloc);
     defer doc.deinit();
 
     const start = Io.Clock.Timestamp.now(io, .awake);

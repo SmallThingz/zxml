@@ -65,6 +65,10 @@ pub fn build(b: *std.Build) void {
         tools_cmd.addArgs(args);
         compare_cmd.addArgs(args);
         conformance_cmd.addArgs(args);
+    } else {
+        bench_cmd.addArg("bench/fixtures/note.xml");
+        bench_cmd.addArg("1");
+        tools_cmd.addArg("--help");
     }
 
     const mod_tests = b.addTest(.{

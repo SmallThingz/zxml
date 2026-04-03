@@ -1400,6 +1400,11 @@ pub fn main(init: std.process.Init) !void {
     }
 
     const cmd = args.items[1];
+    if (std.mem.eql(u8, cmd, "--help") or std.mem.eql(u8, cmd, "help")) {
+        usage();
+        return;
+    }
+
     if (std.mem.eql(u8, cmd, "setup-parsers")) {
         try setupParsers(init.io, alloc);
         return;

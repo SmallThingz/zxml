@@ -4,22 +4,21 @@ const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
 const entities = @import("entities.zig");
 
-const Document = document.Document;
 const ParseOptions = document.ParseOptions;
-const ParseMode = document.ParseMode;
 const ParseError = document.ParseError;
 const NodeType = document.NodeType;
-const Span = document.Span;
 const InvalidIndex = document.InvalidIndex;
 
-pub fn parseInto(noalias doc: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
-    var p = Parser(opts){ .doc = doc, .input = input, .i = 0 };
+pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
+    var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     try p.parse();
 }
 
-fn Parser(comptime opts: ParseOptions) type {
+fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
+    const Span = opts.GetSpan();
+
     return struct {
-        doc: *Document,
+        doc: *DocType,
         input: []u8,
         i: usize,
 
@@ -27,8 +26,9 @@ fn Parser(comptime opts: ParseOptions) type {
 
         const strict_mode = opts.mode == .strict;
         const strict_or_validate = strict_mode or opts.validate_closing_tags;
+        const require_closed_elements_on_eof = opts.require_closed_elements_on_eof;
         const decode_entities = opts.decode_entities_on_parse;
-        const normalize_text = opts.normalize_text_whitespace;
+        const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
         fn parse(noalias self: *Self) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
@@ -57,7 +57,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 }
             }
 
-            if (strict_mode and self.doc.parse_stack.items.len > 1) {
+            if (require_closed_elements_on_eof and self.doc.parse_stack.items.len > 1) {
                 return error.UnexpectedEndOfData;
             }
 
@@ -73,7 +73,7 @@ fn Parser(comptime opts: ParseOptions) type {
             if (end <= start) return;
 
             const raw = self.input[start..end];
-            if (!decode_entities and !normalize_text and !has_non_whitespace) return;
+            if (drop_whitespace_text_nodes and !has_non_whitespace) return;
             if (decode_entities and strict_mode) {
                 entities.validateEntities(raw, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
@@ -84,7 +84,7 @@ fn Parser(comptime opts: ParseOptions) type {
             const idx = try self.appendChildNode(.text);
             var n = &self.doc.nodes.items[idx];
             n.value = .{ .start = @intCast(start), .end = @intCast(end) };
-            n.value_processed = !(decode_entities or normalize_text);
+            n.value_processed = !decode_entities;
         }
 
         inline fn parseOpeningTag(noalias self: *Self) ParseError!void {
@@ -596,7 +596,7 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             const raw = self.input[text_start..lt];
-            if (!decode_entities and !normalize_text and tables.isWhitespace(raw[0])) {
+            if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0])) {
                 const whitespace_only = blk: {
                     if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
                     if (raw.len == 1) break :blk true;
@@ -621,7 +621,7 @@ fn Parser(comptime opts: ParseOptions) type {
             self.doc.nodes.items[idx].subtree_end = text_idx;
             var text_node = &self.doc.nodes.items[text_idx];
             text_node.value = .{ .start = @intCast(text_start), .end = @intCast(lt) };
-            text_node.value_processed = !(decode_entities or normalize_text);
+            text_node.value_processed = !decode_entities;
             return true;
         }
 
@@ -653,6 +653,8 @@ fn Parser(comptime opts: ParseOptions) type {
 }
 
 test "parseInto builds a minimal DOM and enforces strict closing tags" {
+    const options: ParseOptions = .{};
+    const Document = options.GetDocument();
     var ok = "<root><child>v</child></root>".*;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();

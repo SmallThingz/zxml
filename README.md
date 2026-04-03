@@ -11,7 +11,7 @@ Low-latency in-situ XML DOM parsing for Zig with comptime-specialized parse mode
 - DOM layout backed by contiguous node/attribute arrays and span slices into source bytes.
 - Comptime parse configuration via `Document.parse(input, .{ ... })`.
 - Two parser profiles: `strict` and `turbo`.
-- Optional parse-time entity decode and whitespace normalization.
+- Optional parse-time entity decode and control over pure-whitespace text node creation.
 - In-tree conformance suites and external parser benchmark harness.
 
 ## Performance
@@ -93,7 +93,7 @@ try doc.parse(input, .{
     .mode = .turbo,
     .validate_closing_tags = false,
     .decode_entities_on_parse = false,
-    .normalize_text_whitespace = false,
+    .drop_whitespace_text_nodes = true,
     .include_misc_nodes = true,
 });
 ```

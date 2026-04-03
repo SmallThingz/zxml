@@ -24,7 +24,7 @@
     },
     {
       "name": "strict-unexpected-end",
-      "profile": "strict",
+      "profile": "strict_closed",
       "xml": "<a><b></b>",
       "expect_ok": false,
       "expect_error": "UnexpectedEndOfData"

@@ -53,14 +53,13 @@
       "expect_field_pattern_valid": false
     },
     {
-      "name": "dsig-c14n-whitespace-normalized",
+      "name": "dsig-parser-preserves-source-whitespace",
       "profiles": ["strict_entities_ws", "turbo_entities_ws"],
       "xml": "<Envelope><ds:SignedInfo>  A\n\tB   C  </ds:SignedInfo></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
       "expect_field_name": "ds:SignedInfo",
-      "expect_field_pattern": "^ A B C $",
-      "expect_field_pattern_valid": true
+      "expect_field_text": "  A\n\tB   C  "
     }
   ]
 }
