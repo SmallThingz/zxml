@@ -541,16 +541,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_start = lt + 2;
             const close_end = close_start + tag_len;
             if (close_end > self.input.len) return false;
-            const close_key = blk: {
-                const close_name = self.input[close_start..close_end];
-                const n = @min(close_name.len, 8);
-                var key: u64 = 0;
-                var i: usize = 0;
-                while (i < n) : (i += 1) {
-                    key |= @as(u64, close_name[i]) << @as(std.math.Log2Int(u64), @intCast(i * 8));
-                }
-                break :blk key;
-            };
+            const close_key = prefixKey(self.input[close_start..close_end]);
             if (tag_key != close_key) return false;
             const name_end = name_start + tag_len;
             if (tag_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) {
@@ -613,18 +604,36 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             key: u64,
         };
 
+        inline fn prefixKey(input: []const u8) u64 {
+            var key: u64 = 0;
+            if (input.len > 0) key |= @as(u64, input[0]);
+            if (input.len > 1) key |= @as(u64, input[1]) << 8;
+            if (input.len > 2) key |= @as(u64, input[2]) << 16;
+            if (input.len > 3) key |= @as(u64, input[3]) << 24;
+            if (input.len > 4) key |= @as(u64, input[4]) << 32;
+            if (input.len > 5) key |= @as(u64, input[5]) << 40;
+            if (input.len > 6) key |= @as(u64, input[6]) << 48;
+            if (input.len > 7) key |= @as(u64, input[7]) << 56;
+            return key;
+        }
+
         inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
             // Cache the leading bytes alongside the span length so closing-tag
             // checks usually avoid a full string compare.
             var i = start;
             var key: u64 = 0;
-            var key_len: usize = 0;
-            while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {
-                if (key_len < 8) {
-                    key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), @intCast(key_len * 8));
-                    key_len += 1;
+            inline for (0..8) |n| {
+                if (i >= input.len or !tables.isNameChar(input[i])) {
+                    return .{
+                        .end = i,
+                        .len = @intCast(i - start),
+                        .key = key,
+                    };
                 }
+                key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), n * 8);
+                i += 1;
             }
+            while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
             return .{
                 .end = i,
                 .len = @intCast(i - start),
