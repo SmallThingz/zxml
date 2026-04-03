@@ -29,6 +29,16 @@
       "expect_elements": 1,
       "expect_misc_nodes": 1,
       "expect_root_name": "r"
+    },
+    {
+      "name": "dtd-entity-expansion-opt-in",
+      "profiles": ["strict_dtd_entities", "turbo_dtd_entities"],
+      "xml": "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r a='&safe;'>&safe;</r>",
+      "expect_ok": true,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "SAFE",
+      "expect_first_text": "SAFE"
     }
   ]
 }

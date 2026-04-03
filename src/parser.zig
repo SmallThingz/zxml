@@ -11,7 +11,7 @@ const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 
-pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
+pub fn parseInto(noalias doc: anytype, noalias input: []const u8, comptime opts: ParseOptions) ParseError!void {
     if (!common.lenFits(input.len)) return error.InputTooLarge;
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     try p.parse();
@@ -20,7 +20,7 @@ pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: Parse
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     return struct {
         doc: *DocType,
-        input: []u8,
+        input: []const u8,
         i: usize,
 
         const Self = @This();
@@ -28,7 +28,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const strict_mode = opts.mode == .strict;
         const validate_closing_tags = opts.validate_closing_tags;
         const require_closed_elements_on_eof = opts.require_closed_elements_on_eof;
-        const decode_entities = opts.decode_entities_on_parse;
+        const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
         fn parse(noalias self: *Self) ParseError!void {
@@ -52,15 +52,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (run.lt_index > self.i) {
                         const raw = self.input[self.i..run.lt_index];
                         if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
-                            if (decode_entities and strict_mode) {
-                                entities.validateEntities(raw, true) catch |e| switch (e) {
+                            if (strict_mode) {
+                                entities.validateStructuralEntities(raw) catch |e| switch (e) {
                                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                                     error.UnterminatedEntity => return error.UnterminatedEntity,
                                 };
                             }
 
                             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-                            _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index, !decode_entities);
+                            _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
                         }
                     }
                     self.i = run.lt_index;
@@ -246,9 +246,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
             }
 
-            if (decode_entities and strict_mode and value_end >= value_start) {
+            if (strict_mode and value_end >= value_start) {
                 const value = input[value_start..value_end];
-                entities.validateEntities(value, true) catch |e| switch (e) {
+                entities.validateStructuralEntities(value) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
@@ -269,7 +269,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     .start = @intCast(value_start),
                     .end = @intCast(value_end),
                 },
-                .value_processed = !decode_entities,
             };
         }
 
@@ -496,6 +495,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const value_end = j;
                 self.i = j + 1;
 
+                if (expand_dtd_entities) {
+                    try self.doc.registerDoctypeEntities(self.input[value_start..value_end]);
+                }
+
                 if (!opts.include_misc_nodes) return;
 
                 const idx = try self.appendChildNode(.doctype);
@@ -535,7 +538,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start: usize, end: usize, value_processed: bool) ParseError!IndexInt {
+        inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start: usize, end: usize) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
@@ -548,7 +551,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             out.* = .{
                 .kind = .text,
                 .value = .{ .start = @intCast(start), .end = @intCast(end) },
-                .value_processed = value_processed,
                 .parent = parent_idx,
                 .prev_sibling = parent.last_child,
                 .subtree_end = idx,
@@ -685,14 +687,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 if (whitespace_only) return true;
             }
-            if (decode_entities and strict_mode) {
-                entities.validateEntities(raw, true) catch |e| switch (e) {
+            if (strict_mode) {
+                entities.validateStructuralEntities(raw) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,
                 };
             }
 
-            const text_idx = try self.appendTextNodeTo(idx, text_start, lt, !decode_entities);
+            const text_idx = try self.appendTextNodeTo(idx, text_start, lt);
             self.doc.nodes.items[idx].subtree_end = text_idx;
             return true;
         }
@@ -763,7 +765,7 @@ test "parseInto builds a minimal DOM and enforces strict closing tags" {
     try std.testing.expectEqual(@as(usize, 4), doc.nodes.items.len);
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("child", doc.nodeAt(2).?.nameSlice());
-    try std.testing.expectEqualStrings("v", doc.nodeAt(3).?.valueSlice());
+    try std.testing.expectEqualStrings("v", doc.nodeAt(3).?.valueRawSlice());
 
     var bad = "<root><child></root>".*;
     doc.clear();

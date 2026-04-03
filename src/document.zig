@@ -2,6 +2,7 @@ const std = @import("std");
 const common = @import("common.zig");
 const parser = @import("parser.zig");
 const entities = @import("entities.zig");
+const tables = @import("tables.zig");
 
 pub const IndexInt = common.IndexInt;
 pub const InvalidIndex: IndexInt = common.InvalidIndex;
@@ -15,9 +16,8 @@ pub const ParseOptions = struct {
     mode: ParseMode = .turbo,
     validate_closing_tags: bool = false,
     require_closed_elements_on_eof: bool = false,
-    // When true, entity decoding rewrites text/attribute value bytes in the
-    // original input buffer on first value access.
-    decode_entities_on_parse: bool = false,
+    expand_dtd_entities: bool = false,
+    max_entity_value_len: usize = 4096,
     drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
 };
@@ -49,6 +49,7 @@ pub const ParseError = error{
     InvalidClosingTagName,
     InvalidNumericCharacterEntity,
     UnterminatedEntity,
+    EntityValueTooLarge,
 };
 
 pub const ParseStackEntry = struct {
@@ -83,44 +84,11 @@ pub const Span = struct {
     pub fn slice(self: @This(), source: []const u8) []const u8 {
         return source[self.start..self.end];
     }
-
-    pub fn sliceMut(self: @This(), source: []u8) []u8 {
-        return source[self.start..self.end];
-    }
 };
 
 pub const RawAttribute = struct {
     name: Span,
     value: Span,
-    value_processed: bool = true,
-};
-
-pub const Attribute = struct {
-    doc: *Document,
-    index: IndexInt,
-
-    inline fn raw(self: @This()) *RawAttribute {
-        return &self.doc.attrs.items[self.index];
-    }
-
-    pub fn nameSlice(self: @This()) []const u8 {
-        return self.raw().name.slice(self.doc.source);
-    }
-
-    pub fn valueSlice(self: @This()) []const u8 {
-        // Values stay as source spans until first access so the parse path
-        // remains allocation-free and non-destructive when decode is disabled.
-        var attr = self.raw();
-        if (!attr.value_processed) {
-            if (self.doc.postprocess_decode_entities) {
-                const value = attr.value.sliceMut(self.doc.source);
-                const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-                attr.value.end = attr.value.start + @as(IndexInt, @intCast(final_len));
-            }
-            attr.value_processed = true;
-        }
-        return attr.value.slice(self.doc.source);
-    }
 };
 
 pub const RawNode = struct {
@@ -128,7 +96,6 @@ pub const RawNode = struct {
 
     name: Span = .{},
     value: Span = .{},
-    value_processed: bool = true,
 
     attr_start: IndexInt = 0,
     attr_len: IndexInt = 0,
@@ -139,6 +106,29 @@ pub const RawNode = struct {
     subtree_end: IndexInt = 0,
 };
 
+const ValueError = std.mem.Allocator.Error || entities.DecodeError;
+
+pub const Attribute = struct {
+    doc: *Document,
+    index: IndexInt,
+
+    inline fn raw(self: @This()) *const RawAttribute {
+        return &self.doc.attrs.items[self.index];
+    }
+
+    pub fn nameSlice(self: @This()) []const u8 {
+        return self.raw().name.slice(self.doc.source);
+    }
+
+    pub fn valueRawSlice(self: @This()) []const u8 {
+        return self.raw().value.slice(self.doc.source);
+    }
+
+    pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
+        return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
+    }
+};
+
 pub const Node = struct {
     doc: *Document,
     index: IndexInt,
@@ -146,27 +136,32 @@ pub const Node = struct {
     attr_start: IndexInt = 0,
     attr_len: IndexInt = 0,
 
-    inline fn raw(self: @This()) *RawNode {
+    inline fn raw(self: @This()) *const RawNode {
         return &self.doc.nodes.items[self.index];
+    }
+
+    inline fn findAttributeIndex(self: @This(), name: []const u8) ?IndexInt {
+        const node_raw = self.raw();
+        var i = node_raw.attr_start;
+        const end = node_raw.attr_start + node_raw.attr_len;
+        while (i < end) : (i += 1) {
+            if (std.mem.eql(u8, self.doc.attrs.items[i].name.slice(self.doc.source), name)) {
+                return i;
+            }
+        }
+        return null;
     }
 
     pub fn nameSlice(self: @This()) []const u8 {
         return self.raw().name.slice(self.doc.source);
     }
 
-    pub fn valueSlice(self: @This()) []const u8 {
-        // Text decoding is deferred until first access to keep the hot parse
-        // path span-based. This may rewrite source bytes when decode is enabled.
-        var node = self.raw();
-        if (!node.value_processed) {
-            if (node.kind == .text and self.doc.postprocess_decode_entities) {
-                const value = node.value.sliceMut(self.doc.source);
-                const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-                node.value.end = node.value.start + @as(IndexInt, @intCast(final_len));
-            }
-            node.value_processed = true;
-        }
-        return node.value.slice(self.doc.source);
+    pub fn valueRawSlice(self: @This()) []const u8 {
+        return self.raw().value.slice(self.doc.source);
+    }
+
+    pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
+        return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
     }
 
     pub fn firstChild(self: @This()) ?Node {
@@ -194,17 +189,14 @@ pub const Node = struct {
         return self.doc.nodeAt(self.raw().parent);
     }
 
-    pub fn getAttributeValue(self: @This(), name: []const u8) ?[]const u8 {
-        const node_raw = self.raw();
-        var i = node_raw.attr_start;
-        const end = node_raw.attr_start + node_raw.attr_len;
-        while (i < end) : (i += 1) {
-            if (std.mem.eql(u8, self.doc.attrs.items[i].name.slice(self.doc.source), name)) {
-                const attr: Attribute = .{ .doc = self.doc, .index = i };
-                return attr.valueSlice();
-            }
-        }
-        return null;
+    pub fn getAttributeValueRaw(self: @This(), name: []const u8) ?[]const u8 {
+        const idx = self.findAttributeIndex(name) orelse return null;
+        return self.doc.attrs.items[idx].value.slice(self.doc.source);
+    }
+
+    pub fn getAttributeValue(self: @This(), alloc: std.mem.Allocator, name: []const u8) ValueError!?[]u8 {
+        const raw_value = self.getAttributeValueRaw(name) orelse return null;
+        return try self.doc.decodeValueAlloc(alloc, raw_value);
     }
 
     pub fn firstAttribute(self: @This()) ?Attribute {
@@ -212,41 +204,178 @@ pub const Node = struct {
         if (node_raw.attr_len == 0) return null;
         return .{ .doc = self.doc, .index = node_raw.attr_start };
     }
+
+    /// Returns a borrowed raw text slice when the subtree's text content is
+    /// exactly one contiguous text node; otherwise returns null.
+    pub fn innerTextRaw(self: @This()) ?[]const u8 {
+        if (self.kind == .text) return self.valueRawSlice();
+
+        const node_raw = self.raw();
+        var first: ?[]const u8 = null;
+        var idx = self.index + 1;
+        while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
+            const child = self.doc.nodes.items[idx];
+            if (child.kind != .text) continue;
+            if (first != null) return null;
+            first = child.value.slice(self.doc.source);
+        }
+        return first orelse "";
+    }
+
+    /// Materializes subtree text into a dedicated decoded allocation.
+    pub fn innerText(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
+        if (self.kind == .text) return self.value(alloc);
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(alloc);
+
+        const node_raw = self.raw();
+        var idx = self.index + 1;
+        while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
+            const child = self.doc.nodes.items[idx];
+            if (child.kind != .text) continue;
+            try self.doc.appendDecodedValue(&out, alloc, child.value.slice(self.doc.source));
+        }
+        return out.toOwnedSlice(alloc);
+    }
 };
 
 pub const Document = struct {
     allocator: std.mem.Allocator,
-    source: []u8 = &[_]u8{},
+    source: []const u8 = "",
+    parse_mode: ParseMode = .turbo,
+    expand_dtd_entities: bool = false,
+    max_entity_value_len: usize = 4096,
     reserved_input_hint_len: usize = 0,
-    postprocess_decode_entities: bool = false,
 
     nodes: std.ArrayList(RawNode) = .empty,
     attrs: std.ArrayList(RawAttribute) = .empty,
     parse_stack: std.ArrayList(ParseStackEntry) = .empty,
+    entity_map: std.StringHashMap([]u8),
 
     pub fn init(allocator: std.mem.Allocator) Document {
         return .{
             .allocator = allocator,
+            .entity_map = std.StringHashMap([]u8).init(allocator),
         };
     }
 
     pub fn deinit(self: *Document) void {
+        self.clearEntityMap();
+        self.entity_map.deinit();
         self.nodes.deinit(self.allocator);
         self.attrs.deinit(self.allocator);
         self.parse_stack.deinit(self.allocator);
     }
 
     pub fn clear(self: *Document) void {
+        self.clearEntityMap();
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
     }
 
-    pub fn parse(noalias self: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
+    pub fn parse(noalias self: *Document, noalias input: []const u8, comptime opts: ParseOptions) ParseError!void {
         self.clear();
         self.source = input;
-        self.postprocess_decode_entities = opts.decode_entities_on_parse;
+        self.parse_mode = opts.mode;
+        self.expand_dtd_entities = opts.expand_dtd_entities;
+        self.max_entity_value_len = opts.max_entity_value_len;
         try parser.parseInto(self, input, opts);
+    }
+
+    fn clearEntityMap(self: *Document) void {
+        var it = self.entity_map.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.entity_map.clearRetainingCapacity();
+    }
+
+    fn decodeValueAlloc(self: *const Document, alloc: std.mem.Allocator, raw: []const u8) ValueError![]u8 {
+        if (!self.expand_dtd_entities) {
+            return entities.decodeAlloc(alloc, raw, self.parse_mode == .strict);
+        }
+        return entities.decodeAllocWithEntityMap(alloc, raw, self.parse_mode == .strict, &self.entity_map);
+    }
+
+    fn appendDecodedValue(self: *const Document, out: *std.ArrayList(u8), alloc: std.mem.Allocator, raw: []const u8) ValueError!void {
+        if (!self.expand_dtd_entities) {
+            return entities.appendDecoded(out, alloc, raw, self.parse_mode == .strict);
+        }
+        return entities.appendDecodedWithEntityMap(out, alloc, raw, self.parse_mode == .strict, &self.entity_map);
+    }
+
+    pub fn registerDoctypeEntities(self: *Document, doctype_value: []const u8) ParseError!void {
+        const subset_start = std.mem.indexOfScalar(u8, doctype_value, '[') orelse return;
+        const subset_end = std.mem.lastIndexOfScalar(u8, doctype_value, ']') orelse return;
+        if (subset_end <= subset_start + 1) return;
+
+        const subset = doctype_value[subset_start + 1 .. subset_end];
+        var i: usize = 0;
+        while (i < subset.len) {
+            const decl_rel = std.mem.indexOfPos(u8, subset, i, "<!ENTITY") orelse break;
+            i = decl_rel + "<!ENTITY".len;
+
+            while (i < subset.len and tables.isWhitespace(subset[i])) : (i += 1) {}
+            if (i >= subset.len) return error.UnexpectedEndOfData;
+
+            if (subset[i] == '%') {
+                const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+
+            if (!tables.isNameStart(subset[i])) {
+                const end = findMarkupDeclEnd(subset, i) orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+
+            const name_start = i;
+            i += 1;
+            while (i < subset.len and tables.isNameChar(subset[i])) : (i += 1) {}
+            const name = subset[name_start..i];
+
+            while (i < subset.len and tables.isWhitespace(subset[i])) : (i += 1) {}
+            if (i >= subset.len) return error.UnexpectedEndOfData;
+
+            const quote = subset[i];
+            if (quote != '\'' and quote != '"') {
+                const end = findMarkupDeclEnd(subset, i) orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+
+            i += 1;
+            const value_start = i;
+            while (i < subset.len and subset[i] != quote) : (i += 1) {}
+            if (i >= subset.len) return error.UnexpectedEndOfData;
+
+            const raw_value = subset[value_start..i];
+            const expanded = if (self.expand_dtd_entities)
+                try entities.decodeAllocWithEntityMap(self.allocator, raw_value, self.parse_mode == .strict, &self.entity_map)
+            else
+                try self.allocator.dupe(u8, raw_value);
+            errdefer self.allocator.free(expanded);
+
+            if (expanded.len > self.max_entity_value_len) return error.EntityValueTooLarge;
+
+            const owned_name = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(owned_name);
+
+            const gop = try self.entity_map.getOrPut(owned_name);
+            if (gop.found_existing) {
+                self.allocator.free(gop.key_ptr.*);
+                self.allocator.free(gop.value_ptr.*);
+            }
+            gop.key_ptr.* = owned_name;
+            gop.value_ptr.* = expanded;
+
+            const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
+            i = end + 1;
+        }
     }
 
     pub fn root(self: *const Document) ?Node {
@@ -266,27 +395,36 @@ pub const Document = struct {
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {
-        if (input_len <= self.reserved_input_hint_len) {
-            return;
-        }
+        if (input_len <= self.reserved_input_hint_len) return;
 
         const est_nodes = @max(@as(usize, 16), input_len / 14 + 8);
         const est_attrs = @max(@as(usize, 16), input_len / 32 + 8);
         const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
 
-        if (est_nodes > self.nodes.capacity) {
-            try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
-        }
-        if (est_attrs > self.attrs.capacity) {
-            try self.attrs.ensureTotalCapacity(self.allocator, est_attrs);
-        }
-        if (est_stack > self.parse_stack.capacity) {
-            try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
-        }
+        if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
+        if (est_attrs > self.attrs.capacity) try self.attrs.ensureTotalCapacity(self.allocator, est_attrs);
+        if (est_stack > self.parse_stack.capacity) try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
         self.reserved_input_hint_len = input_len;
     }
-
 };
+
+fn findMarkupDeclEnd(input: []const u8, start: usize) ?usize {
+    var i = start;
+    var quote: u8 = 0;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        if (c == '>') return i;
+    }
+    return null;
+}
 
 test "Types(options) exposes concrete DOM types" {
     const opts: ParseOptions = .{};
@@ -303,15 +441,11 @@ test "Types(options) exposes concrete DOM types" {
 test "Span helpers expose slices and lengths" {
     const opts: ParseOptions = .{};
     const SpanType = Types(opts).Span;
-    var buf = "abcdef".*;
+    const buf = "abcdef";
     const span: SpanType = .{ .start = 1, .end = 4 };
     try std.testing.expectEqual(@as(IndexInt, 3), span.len());
     try std.testing.expect(!span.isEmpty());
-    try std.testing.expectEqualStrings("bcd", span.slice(&buf));
-
-    const mut = span.sliceMut(&buf);
-    mut[1] = 'Z';
-    try std.testing.expectEqualStrings("bZd", span.slice(&buf));
+    try std.testing.expectEqualStrings("bcd", span.slice(buf));
 
     const empty: SpanType = .{ .start = 2, .end = 2 };
     try std.testing.expect(empty.isEmpty());
@@ -332,14 +466,21 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     try std.testing.expect(doc.attrs.capacity >= 16);
     try std.testing.expect(doc.parse_stack.capacity >= 8);
 
-    var xml = "<r a='&amp;'>&lt;x&gt;</r>".*;
-    try doc.parse(&xml, .{ .mode = .strict, .decode_entities_on_parse = true });
+    const xml = "<r a='&amp;'>&lt;x&gt;</r>";
+    try doc.parse(xml, .{ .mode = .strict });
     try std.testing.expect(doc.root() != null);
     try std.testing.expect(doc.nodeAt(1) != null);
 
     const root = doc.nodeAt(1).?;
-    try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("<x>", root.firstChild().?.valueSlice());
+    const attr = try root.getAttributeValue(std.testing.allocator, "a") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(attr);
+    const text = try root.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+
+    try std.testing.expectEqualStrings("&", attr);
+    try std.testing.expectEqualStrings("<x>", text);
+    try std.testing.expectEqualStrings("&amp;", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("&lt;x&gt;", root.firstChild().?.valueRawSlice());
     try std.testing.expectEqual(@as(IndexInt, 0), root.parentNode().?.index);
     try std.testing.expectEqual(root.index, root.firstChild().?.parentNode().?.index);
 

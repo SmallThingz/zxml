@@ -1,4 +1,5 @@
 const std = @import("std");
+const tables = @import("tables.zig");
 
 pub const DecodeError = error{
     InvalidNumericCharacterEntity,
@@ -6,75 +7,89 @@ pub const DecodeError = error{
 };
 
 const EntityDecode = struct {
-    consumed: usize,
     bytes: [4]u8,
     len: usize,
 };
 
-pub fn decodeInPlaceIfEntity(noalias buf: []u8, strict: bool) DecodeError!usize {
-    const first = std.mem.indexOfScalar(u8, buf, '&') orelse return buf.len;
-    var src: usize = first;
-    var dst: usize = first;
+const EntityToken = struct {
+    consumed: usize,
+    body: []const u8,
+};
 
-    while (src < buf.len) {
-        if (buf[src] != '&') {
-            if (dst != src) buf[dst] = buf[src];
-            src += 1;
-            dst += 1;
-            continue;
-        }
-
-        const decoded = try decodeEntity(buf, src, strict);
-        if (decoded) |d| {
-            std.mem.copyForwards(u8, buf[dst .. dst + d.len], d.bytes[0..d.len]);
-            src += d.consumed;
-            dst += d.len;
-            continue;
-        }
-
-        if (dst != src) buf[dst] = '&';
-        src += 1;
-        dst += 1;
-    }
-
-    return dst;
+pub fn decodeAlloc(alloc: std.mem.Allocator, input: []const u8, strict: bool) (std.mem.Allocator.Error || DecodeError)![]u8 {
+    return decodeAllocWithEntityMap(alloc, input, strict, null);
 }
 
-pub fn decodeAndNormalizeInPlace(noalias buf: []u8, strict: bool) DecodeError!usize {
-    const first = std.mem.indexOfScalar(u8, buf, '&');
-    if (first == null) {
-        return normalizeWhitespaceInPlace(buf);
-    }
-
-    var src: usize = 0;
-    var dst: usize = 0;
-    var in_ws = false;
-
-    while (src < buf.len) {
-        if (buf[src] != '&') {
-            emitNormalized(&dst, &in_ws, buf[src], buf);
-            src += 1;
-            continue;
-        }
-
-        const decoded = try decodeEntity(buf, src, strict);
-        if (decoded) |d| {
-            var j: usize = 0;
-            while (j < d.len) : (j += 1) {
-                emitNormalized(&dst, &in_ws, d.bytes[j], buf);
-            }
-            src += d.consumed;
-            continue;
-        }
-
-        emitNormalized(&dst, &in_ws, '&', buf);
-        src += 1;
-    }
-
-    return dst;
+pub fn decodeAllocWithEntityMap(
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+) (std.mem.Allocator.Error || DecodeError)![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(alloc);
+    try appendDecodedWithEntityMap(&out, alloc, input, strict, entity_map);
+    return out.toOwnedSlice(alloc);
 }
 
-pub fn validateEntities(noalias buf: []const u8, strict: bool) DecodeError!void {
+pub fn appendDecoded(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+) (std.mem.Allocator.Error || DecodeError)!void {
+    return appendDecodedWithEntityMap(out, alloc, input, strict, null);
+}
+
+pub fn appendDecodedWithEntityMap(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+) (std.mem.Allocator.Error || DecodeError)!void {
+    const first = std.mem.indexOfScalar(u8, input, '&') orelse {
+        try out.appendSlice(alloc, input);
+        return;
+    };
+
+    try out.appendSlice(alloc, input[0..first]);
+    var src = first;
+    while (src < input.len) {
+        if (input[src] != '&') {
+            const next = std.mem.indexOfScalarPos(u8, input, src, '&') orelse input.len;
+            try out.appendSlice(alloc, input[src..next]);
+            src = next;
+            continue;
+        }
+
+        const token = parseEntityToken(input, src, strict) catch |err| switch (err) {
+            error.UnterminatedEntity => {
+                if (strict) return error.UnterminatedEntity;
+                try out.append(alloc, '&');
+                src += 1;
+                continue;
+            },
+            error.InvalidNumericCharacterEntity => {
+                if (strict) return error.InvalidNumericCharacterEntity;
+                try out.append(alloc, '&');
+                src += 1;
+                continue;
+            },
+        };
+
+        if (try tryAppendDecodedEntityBody(out, alloc, token.body, strict, entity_map)) {
+            src += token.consumed;
+            continue;
+        }
+
+        if (strict) return error.InvalidNumericCharacterEntity;
+        try out.append(alloc, '&');
+        src += 1;
+    }
+}
+
+pub fn validateStructuralEntities(noalias buf: []const u8) DecodeError!void {
     var src = std.mem.indexOfScalar(u8, buf, '&') orelse return;
     while (src < buf.len) {
         if (buf[src] != '&') {
@@ -82,27 +97,61 @@ pub fn validateEntities(noalias buf: []const u8, strict: bool) DecodeError!void 
             continue;
         }
 
-        const decoded = try decodeEntity(buf, src, strict);
-        if (decoded) |d| {
-            src += d.consumed;
+        const semi = std.mem.indexOfScalarPos(u8, buf, src + 1, ';') orelse return error.UnterminatedEntity;
+        const body = buf[src + 1 .. semi];
+        if (body.len == 0) return error.InvalidNumericCharacterEntity;
+
+        if (body[0] == '#') {
+            _ = try decodeEntityBody(body, true) orelse return error.InvalidNumericCharacterEntity;
         } else {
-            src += 1;
+            if (!tables.isNameStart(body[0])) return error.InvalidNumericCharacterEntity;
+            for (body[1..]) |c| {
+                if (!tables.isNameChar(c)) return error.InvalidNumericCharacterEntity;
+            }
         }
+
+        src = semi + 1;
     }
 }
 
-fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError!?EntityDecode {
+fn tryAppendDecodedEntityBody(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    body: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+) (std.mem.Allocator.Error || DecodeError)!bool {
+    if (try decodeEntityBody(body, strict)) |decoded| {
+        try out.appendSlice(alloc, decoded.bytes[0..decoded.len]);
+        return true;
+    }
+
+    if (entity_map) |map| {
+        if (map.get(body)) |value| {
+            try out.appendSlice(alloc, value);
+            return true;
+        }
+    }
+
+    return false;
+}
+
+fn parseEntityToken(noalias buf: []const u8, start: usize, strict: bool) DecodeError!EntityToken {
     const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
         if (strict) return error.UnterminatedEntity;
-        return null;
+        return error.UnterminatedEntity;
     };
 
     const body = buf[start + 1 .. semi];
-    if (body.len == 0) {
-        if (strict) return error.InvalidNumericCharacterEntity;
-        return null;
-    }
+    if (body.len == 0) return error.InvalidNumericCharacterEntity;
 
+    return .{
+        .consumed = semi - start + 1,
+        .body = body,
+    };
+}
+
+fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
     const named: ?u8 = if (std.mem.eql(u8, body, "amp"))
         '&'
     else if (std.mem.eql(u8, body, "lt"))
@@ -117,7 +166,6 @@ fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError
         null;
     if (named) |c| {
         return .{
-            .consumed = semi - start + 1,
             .bytes = .{ c, 0, 0, 0 },
             .len = 1,
         };
@@ -172,101 +220,67 @@ fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError
             break :blk @intCast(value);
         };
 
-        var out: [4]u8 = undefined;
-        const written = std.unicode.utf8Encode(cp, &out) catch {
+        var out_bytes: [4]u8 = undefined;
+        const written = std.unicode.utf8Encode(cp, &out_bytes) catch {
             if (strict) return error.InvalidNumericCharacterEntity;
             return null;
         };
 
         return .{
-            .consumed = semi - start + 1,
-            .bytes = out,
+            .bytes = out_bytes,
             .len = written,
         };
     }
 
-    if (strict) return error.InvalidNumericCharacterEntity;
     return null;
 }
 
-fn emitNormalized(noalias dst: *usize, noalias in_ws: *bool, c: u8, noalias out: []u8) void {
-    const ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
-    if (ws) {
-        if (!in_ws.*) {
-            out[dst.*] = ' ';
-            dst.* += 1;
-            in_ws.* = true;
-        }
-        return;
-    }
+test "decodeAlloc decodes without mutating the source slice" {
+    const alloc = std.testing.allocator;
+    const input = "&amp;&#65;&#x42;";
+    const decoded = try decodeAlloc(alloc, input, true);
+    defer alloc.free(decoded);
 
-    out[dst.*] = c;
-    dst.* += 1;
-    in_ws.* = false;
-}
-
-pub fn normalizeWhitespaceInPlace(noalias buf: []u8) usize {
-    var src: usize = 0;
-    var dst: usize = 0;
-    var in_ws = false;
-
-    while (src < buf.len) : (src += 1) {
-        const c = buf[src];
-        const ws = c == ' ' or c == '\t' or c == '\n' or c == '\r';
-        if (ws) {
-            if (!in_ws) {
-                buf[dst] = ' ';
-                dst += 1;
-                in_ws = true;
-            }
-            continue;
-        }
-
-        in_ws = false;
-        buf[dst] = c;
-        dst += 1;
-    }
-
-    return dst;
-}
-test "decodeInPlaceIfEntity leaves plain text untouched" {
-    var buf = "plain text".*;
-    const len = try decodeInPlaceIfEntity(&buf, true);
-    try std.testing.expectEqual(@as(usize, 10), len);
-    try std.testing.expectEqualStrings("plain text", buf[0..len]);
-}
-
-test "decodeInPlaceIfEntity decodes named and numeric entities" {
-    var buf = "&amp;&#65;&#x42;".*;
-    const len = try decodeInPlaceIfEntity(&buf, true);
-    try std.testing.expectEqualStrings("&AB", buf[0..len]);
-}
-
-test "decodeAndNormalizeInPlace combines both operations" {
-    var buf = " a\n&amp;\t b ".*;
-    const len = try decodeAndNormalizeInPlace(&buf, true);
-    try std.testing.expectEqualStrings(" a & b ", buf[0..len]);
-}
-
-test "normalizeWhitespaceInPlace coalesces repeated XML whitespace" {
-    var buf = "\t a \r\n b  c ".*;
-    const len = normalizeWhitespaceInPlace(&buf);
-    try std.testing.expectEqualStrings(" a b c ", buf[0..len]);
+    try std.testing.expectEqualStrings("&AB", decoded);
+    try std.testing.expectEqualStrings("&amp;&#65;&#x42;", input);
 }
 
 test "non-strict decode leaves malformed and unknown entities literal" {
-    var unknown = "&bogus; &amp".*;
-    const len_unknown = try decodeInPlaceIfEntity(&unknown, false);
-    try std.testing.expectEqualStrings("&bogus; &amp", unknown[0..len_unknown]);
+    const alloc = std.testing.allocator;
 
-    var apost_quot = "&apos;&quot;".*;
-    const len_aq = try decodeInPlaceIfEntity(&apost_quot, true);
-    try std.testing.expectEqualStrings("'\"", apost_quot[0..len_aq]);
+    const unknown = try decodeAlloc(alloc, "&bogus; &amp", false);
+    defer alloc.free(unknown);
+    try std.testing.expectEqualStrings("&bogus; &amp", unknown);
+
+    const apost_quot = try decodeAlloc(alloc, "&apos;&quot;", true);
+    defer alloc.free(apost_quot);
+    try std.testing.expectEqualStrings("'\"", apost_quot);
 }
 
-test "validateEntities rejects malformed strict input" {
-    try std.testing.expectError(error.UnterminatedEntity, validateEntities("&amp", true));
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#x110000;", true));
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#;", true));
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#xD800;", true));
+test "validateStructuralEntities allows custom named entities but rejects malformed refs" {
+    try validateStructuralEntities("&safe;");
+    try std.testing.expectError(error.UnterminatedEntity, validateStructuralEntities("&amp"));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateStructuralEntities("&#x110000;"));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateStructuralEntities("&1bad;"));
+}
+
+test "decodeAllocWithEntityMap expands mapped named entities" {
+    const alloc = std.testing.allocator;
+    var map = std.StringHashMap([]u8).init(alloc);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            alloc.free(entry.value_ptr.*);
+        }
+        map.deinit();
+    }
+
+    const key = try alloc.dupe(u8, "safe");
+    const value = try alloc.dupe(u8, "SAFE");
+    try map.put(key, value);
+
+    const decoded = try decodeAllocWithEntityMap(alloc, "&safe;&amp;", true, &map);
+    defer alloc.free(decoded);
+    try std.testing.expectEqualStrings("SAFE&", decoded);
 }

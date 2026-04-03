@@ -83,18 +83,18 @@ test "smoke: parse nested nodes and attributes" {
     defer parsed.deinit();
 
     try std.testing.expectEqual(@as(usize, 5), parsed.doc.nodes.items.len);
-    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const root = findFirstKind(&parsed.doc, .element) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.element, root.kind);
     try std.testing.expectEqualStrings("root", root.nameSlice());
-    try std.testing.expectEqualStrings("r", root.getAttributeValue("id").?);
+    try std.testing.expectEqualStrings("r", root.getAttributeValueRaw("id").?);
 
     const first_child = root.firstChild() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("child", first_child.nameSlice());
-    try std.testing.expectEqualStrings("1", first_child.getAttributeValue("a").?);
+    try std.testing.expectEqualStrings("1", first_child.getAttributeValueRaw("a").?);
 
     const text = first_child.firstChild() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.text, text.kind);
-    try std.testing.expectEqualStrings("text", text.valueSlice());
+    try std.testing.expectEqualStrings("text", text.valueRawSlice());
 }
 
 test "root node is document" {
@@ -172,11 +172,11 @@ test "mixed content keeps text element text element text order" {
     const b = text2.nextSibling() orelse return error.TestUnexpectedResult;
     const text3 = b.nextSibling() orelse return error.TestUnexpectedResult;
 
-    try std.testing.expectEqualStrings("head", text1.valueSlice());
+    try std.testing.expectEqualStrings("head", text1.valueRawSlice());
     try std.testing.expectEqualStrings("a", a.nameSlice());
-    try std.testing.expectEqualStrings("tail", text2.valueSlice());
+    try std.testing.expectEqualStrings("tail", text2.valueRawSlice());
     try std.testing.expectEqualStrings("b", b.nameSlice());
-    try std.testing.expectEqualStrings("end", text3.valueSlice());
+    try std.testing.expectEqualStrings("end", text3.valueRawSlice());
 }
 
 test "whitespace-only text is skipped by default" {
@@ -193,7 +193,7 @@ test "mixed whitespace text is preserved by default" {
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(" a\n\t b   c ", text.valueSlice());
+    try std.testing.expectEqualStrings(" a\n\t b   c ", text.valueRawSlice());
 }
 
 test "drop_whitespace_text_nodes false keeps pure whitespace nodes" {
@@ -203,7 +203,7 @@ test "drop_whitespace_text_nodes false keeps pure whitespace nodes" {
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.text, text.kind);
-    try std.testing.expectEqualStrings(" \n\t ", text.valueSlice());
+    try std.testing.expectEqualStrings(" \n\t ", text.valueRawSlice());
 }
 
 test "default whitespace dropping skips indentation between child elements" {
@@ -221,15 +221,78 @@ test "default whitespace dropping skips indentation between child elements" {
     try std.testing.expect(b.nextSibling() == null);
 }
 
-test "entity decode on parse" {
-    var parsed = try parseTestDoc("<r a='&amp;&#x41;'>&lt;ok&gt;&#65;</r>", .{ .mode = .strict, .decode_entities_on_parse = true });
+test "decoded attribute and text helpers allocate decoded bytes" {
+    var parsed = try parseTestDoc("<r a='&amp;&#x41;'>&lt;ok&gt;&#65;</r>", .{ .mode = .strict });
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("&A", root.getAttributeValue("a").?);
+    const attr = try root.getAttributeValue(std.testing.allocator, "a") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(attr);
+    try std.testing.expectEqualStrings("&A", attr);
 
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("<ok>A", text.valueSlice());
+    const decoded = try text.value(std.testing.allocator);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings("<ok>A", decoded);
+}
+
+test "dtd entity expansion is opt-in and decodes internal entity references" {
+    var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r a='&safe;'>&safe;</r>", .{
+        .mode = .strict,
+        .expand_dtd_entities = true,
+    });
+    defer parsed.deinit();
+
+    const root = findFirstKind(&parsed.doc, .element) orelse return error.TestUnexpectedResult;
+    const attr_raw = root.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult;
+    const child = root.firstChild() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("&safe;", attr_raw);
+    try std.testing.expectEqualStrings("&safe;", child.valueRawSlice());
+
+    const attr = try root.getAttributeValue(std.testing.allocator, "a") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(attr);
+    try std.testing.expectEqualStrings("SAFE", attr);
+
+    const text = try child.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("SAFE", text);
+}
+
+test "dtd entity expansion max value length is enforced" {
+    var doc = initDoc(.{});
+    defer doc.deinit();
+
+    var src = "<!DOCTYPE r [<!ENTITY big 'abcdef'>]><r>&big;</r>".*;
+    try std.testing.expectError(ParseError.EntityValueTooLarge, doc.parse(&src, .{
+        .mode = .strict,
+        .expand_dtd_entities = true,
+        .max_entity_value_len = 4,
+    }));
+}
+
+test "document reuse clears opt-in dtd entity table" {
+    var doc = initDoc(.{});
+    defer doc.deinit();
+
+    var src1 = "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r>&safe;</r>".*;
+    try doc.parse(&src1, .{
+        .mode = .strict,
+        .expand_dtd_entities = true,
+    });
+    const first_root = findFirstKind(&doc, .element) orelse return error.TestUnexpectedResult;
+    const first = try first_root.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(first);
+    try std.testing.expectEqualStrings("SAFE", first);
+
+    var src2 = "<r>&safe;</r>".*;
+    try doc.parse(&src2, .{
+        .mode = .turbo,
+        .expand_dtd_entities = true,
+    });
+    const second_root = findFirstKind(&doc, .element) orelse return error.TestUnexpectedResult;
+    const second = try second_root.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(second);
+    try std.testing.expectEqualStrings("&safe;", second);
 }
 
 test "decode disabled leaves literal entities in text and attributes" {
@@ -237,8 +300,8 @@ test "decode disabled leaves literal entities in text and attributes" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("&amp;", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("&lt;ok&gt;", root.firstChild().?.valueSlice());
+    try std.testing.expectEqualStrings("&amp;", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("&lt;ok&gt;", root.firstChild().?.valueRawSlice());
 }
 
 test "decode disabled never mutates source bytes on value access" {
@@ -249,41 +312,65 @@ test "decode disabled never mutates source bytes on value access" {
     defer std.testing.allocator.free(before);
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    _ = root.getAttributeValue("a").?;
-    _ = root.firstChild().?.valueSlice();
+    _ = root.getAttributeValueRaw("a").?;
+    _ = root.firstChild().?.valueRawSlice();
 
     try std.testing.expectEqualStrings(before, parsed.buf);
 }
 
-test "decode preserves surrounding whitespace" {
-    var parsed = try parseTestDoc("<r> a\n&amp;\t b  </r>", .{
-        .mode = .strict,
-        .decode_entities_on_parse = true,
-    });
+test "decoded value preserves surrounding whitespace" {
+    var parsed = try parseTestDoc("<r> a\n&amp;\t b  </r>", .{ .mode = .strict });
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings(" a\n&\t b  ", text.valueSlice());
+    const decoded = try text.value(std.testing.allocator);
+    defer std.testing.allocator.free(decoded);
+    try std.testing.expectEqualStrings(" a\n&\t b  ", decoded);
 }
 
-test "decode enabled mutates source bytes lazily on first access" {
-    var parsed = try parseTestDoc("<r a='&amp;'>&lt;ok&gt;</r>", .{
-        .mode = .strict,
-        .decode_entities_on_parse = true,
-    });
+test "decoded helpers never mutate source bytes" {
+    var parsed = try parseTestDoc("<r a='&amp;'>&lt;ok&gt;</r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    const before = try std.testing.allocator.dupe(u8, parsed.buf);
+    defer std.testing.allocator.free(before);
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const attr = try root.getAttributeValue(std.testing.allocator, "a") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(attr);
+    try std.testing.expectEqualStrings("&", attr);
+
+    const text = try root.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("<ok>", text);
+    try std.testing.expectEqualStrings(before, parsed.buf);
+}
+
+test "innerTextRaw borrows a single contiguous text node" {
+    var parsed = try parseTestDoc("<r>&lt;ok&gt;</r>", .{});
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("&amp;", parsed.buf[6..11]);
-    try std.testing.expectEqualStrings("&lt;ok&gt;", parsed.buf[13..23]);
+    try std.testing.expectEqualStrings("&lt;ok&gt;", root.innerTextRaw().?);
+}
 
-    try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("&", parsed.buf[6..7]);
+test "innerTextRaw returns null for multi-segment mixed content" {
+    var parsed = try parseTestDoc("<r>a<b/>c</r>", .{});
+    defer parsed.deinit();
 
-    const text = root.firstChild() orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("<ok>", text.valueSlice());
-    try std.testing.expectEqualStrings("<ok>", parsed.buf[13..17]);
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expect(root.innerTextRaw() == null);
+}
+
+test "innerText allocates decoded subtree text" {
+    var parsed = try parseTestDoc("<r>a&amp;<b/>c&#33;</r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const text = try root.innerText(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("a&c!", text);
 }
 
 test "misc nodes enabled parses declaration nodes" {
@@ -341,7 +428,7 @@ test "declaration stores target and value" {
 
     const decl = findFirstKind(&parsed.doc, .declaration) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("xml", decl.nameSlice());
-    try std.testing.expect(std.mem.indexOf(u8, decl.valueSlice(), "version='1.0'") != null);
+    try std.testing.expect(std.mem.indexOf(u8, decl.valueRawSlice(), "version='1.0'") != null);
 }
 
 test "processing instruction stores target and value" {
@@ -350,7 +437,7 @@ test "processing instruction stores target and value" {
 
     const pi = findFirstKind(&parsed.doc, .pi) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("build", pi.nameSlice());
-    try std.testing.expectEqualStrings("target='bench'", pi.valueSlice());
+    try std.testing.expectEqualStrings("target='bench'", pi.valueRawSlice());
 }
 
 test "comment nodes expose their value slice" {
@@ -358,7 +445,7 @@ test "comment nodes expose their value slice" {
     defer parsed.deinit();
 
     const comment = findFirstKind(&parsed.doc, .comment) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("hello", comment.valueSlice());
+    try std.testing.expectEqualStrings("hello", comment.valueRawSlice());
 }
 
 test "cdata nodes expose their value slice" {
@@ -366,7 +453,7 @@ test "cdata nodes expose their value slice" {
     defer parsed.deinit();
 
     const cdata = findFirstKind(&parsed.doc, .cdata) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("a < b && c", cdata.valueSlice());
+    try std.testing.expectEqualStrings("a < b && c", cdata.valueRawSlice());
 }
 
 test "doctype preserves internal subset text" {
@@ -374,8 +461,8 @@ test "doctype preserves internal subset text" {
     defer parsed.deinit();
 
     const doctype = findFirstKind(&parsed.doc, .doctype) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(std.mem.indexOf(u8, doctype.valueSlice(), "<!ELEMENT root ANY>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, doctype.valueSlice(), "<!ATTLIST root") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctype.valueRawSlice(), "<!ELEMENT root ANY>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, doctype.valueRawSlice(), "<!ATTLIST root") != null);
 }
 
 test "turbo mismatched close tag without validation is tolerated" {
@@ -443,7 +530,7 @@ test "turbo mode builds dom by default" {
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.element, root.kind);
     try std.testing.expectEqualStrings("root", root.nameSlice());
-    try std.testing.expectEqualStrings("1", root.firstChild().?.nextSibling().?.getAttributeValue("x").?);
+    try std.testing.expectEqualStrings("1", root.firstChild().?.nextSibling().?.getAttributeValueRaw("x").?);
 }
 
 test "parent pointers are always available" {
@@ -481,8 +568,8 @@ test "attribute-heavy element parses and preserves lookups" {
     try doc.parse(xml.items, .{ .mode = .strict, .validate_closing_tags = true });
 
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("v0", root.getAttributeValue("a0").?);
-    try std.testing.expectEqualStrings("v63", root.getAttributeValue("a63").?);
+    try std.testing.expectEqualStrings("v0", root.getAttributeValueRaw("a0").?);
+    try std.testing.expectEqualStrings("v63", root.getAttributeValueRaw("a63").?);
     try std.testing.expectEqual(@as(ParseInt, 64), root.attr_len);
 }
 
@@ -493,7 +580,7 @@ test "firstAttribute returns the first parsed attribute" {
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const attr = root.firstAttribute() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("a", attr.nameSlice());
-    try std.testing.expectEqualStrings("1", attr.valueSlice());
+    try std.testing.expectEqualStrings("1", attr.valueRawSlice());
 }
 
 test "missing attribute lookup returns null" {
@@ -501,7 +588,7 @@ test "missing attribute lookup returns null" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expect(root.getAttributeValue("missing") == null);
+    try std.testing.expect(root.getAttributeValueRaw("missing") == null);
 }
 
 test "single and double quoted attributes both parse" {
@@ -509,8 +596,8 @@ test "single and double quoted attributes both parse" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("1", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("2", root.getAttributeValue("b").?);
+    try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
 }
 
 test "quoted attributes tolerate whitespace around the equals sign" {
@@ -518,10 +605,10 @@ test "quoted attributes tolerate whitespace around the equals sign" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("1", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("2", root.getAttributeValue("b").?);
-    try std.testing.expectEqualStrings("3", root.getAttributeValue("c").?);
-    try std.testing.expectEqualStrings("4", root.getAttributeValue("d").?);
+    try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
+    try std.testing.expectEqualStrings("3", root.getAttributeValueRaw("c").?);
+    try std.testing.expectEqualStrings("4", root.getAttributeValueRaw("d").?);
 }
 
 test "namespace-like element and attribute names parse" {
@@ -531,9 +618,9 @@ test "namespace-like element and attribute names parse" {
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const item = root.firstChild() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("ns:root", root.nameSlice());
-    try std.testing.expectEqualStrings("en", root.getAttributeValue("xml:lang").?);
+    try std.testing.expectEqualStrings("en", root.getAttributeValueRaw("xml:lang").?);
     try std.testing.expectEqualStrings("ns:item", item.nameSlice());
-    try std.testing.expectEqualStrings("7", item.getAttributeValue("data.id").?);
+    try std.testing.expectEqualStrings("7", item.getAttributeValueRaw("data.id").?);
 }
 
 test "element and attribute names preserve case exactly" {
@@ -542,9 +629,9 @@ test "element and attribute names preserve case exactly" {
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("Root", root.nameSlice());
-    try std.testing.expectEqualStrings("x", root.getAttributeValue("Attr").?);
-    try std.testing.expectEqualStrings("y", root.getAttributeValue("attr").?);
-    try std.testing.expect(root.getAttributeValue("ATTR") == null);
+    try std.testing.expectEqualStrings("x", root.getAttributeValueRaw("Attr").?);
+    try std.testing.expectEqualStrings("y", root.getAttributeValueRaw("attr").?);
+    try std.testing.expect(root.getAttributeValueRaw("ATTR") == null);
 }
 
 test "strict unquoted attributes fail" {
@@ -560,7 +647,7 @@ test "turbo unquoted attributes parse" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("1/", root.getAttributeValue("a").?);
+    try std.testing.expectEqualStrings("1/", root.getAttributeValueRaw("a").?);
 }
 
 test "strict unterminated quoted attribute fails" {
@@ -608,7 +695,7 @@ test "strict invalid numeric entity in text fails" {
     defer doc.deinit();
 
     var src = "<r>&#x110000;</r>".*;
-    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict, .decode_entities_on_parse = true }));
+    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict }));
 }
 
 test "strict invalid numeric entity in attribute fails" {
@@ -616,7 +703,7 @@ test "strict invalid numeric entity in attribute fails" {
     defer doc.deinit();
 
     var src = "<r a='&#x110000;'/>".*;
-    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict, .decode_entities_on_parse = true }));
+    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict }));
 }
 
 test "strict unterminated entity fails during decode validation" {
@@ -624,16 +711,24 @@ test "strict unterminated entity fails during decode validation" {
     defer doc.deinit();
 
     var src = "<r>&amp</r>".*;
-    try std.testing.expectError(ParseError.UnterminatedEntity, doc.parse(&src, .{ .mode = .strict, .decode_entities_on_parse = true }));
+    try std.testing.expectError(ParseError.UnterminatedEntity, doc.parse(&src, .{ .mode = .strict }));
 }
 
-test "turbo invalid numeric entity remains literal during lazy access" {
-    var parsed = try parseTestDoc("<r a='&#x110000;'>&#x110000;</r>", .{ .mode = .turbo, .decode_entities_on_parse = true });
+test "turbo invalid numeric entity stays literal in raw and decoded access" {
+    var parsed = try parseTestDoc("<r a='&#x110000;'>&#x110000;</r>", .{ .mode = .turbo });
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("&#x110000;", root.getAttributeValue("a").?);
-    try std.testing.expectEqualStrings("&#x110000;", root.firstChild().?.valueSlice());
+    try std.testing.expectEqualStrings("&#x110000;", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("&#x110000;", root.firstChild().?.valueRawSlice());
+
+    const attr = try root.getAttributeValue(std.testing.allocator, "a") orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(attr);
+    try std.testing.expectEqualStrings("&#x110000;", attr);
+
+    const text = try root.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("&#x110000;", text);
 }
 
 test "self-closing siblings traverse correctly" {
@@ -662,8 +757,8 @@ test "document can be reused across parses" {
     try doc.parse(&src2, .{ .mode = .strict });
     try std.testing.expectEqual(@as(usize, 3), doc.nodes.items.len);
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
-    try std.testing.expectEqualStrings("1", doc.nodeAt(1).?.getAttributeValue("x").?);
-    try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueSlice());
+    try std.testing.expectEqualStrings("1", doc.nodeAt(1).?.getAttributeValueRaw("x").?);
+    try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueRawSlice());
 }
 
 test "u16 parse rejects input larger than ParseInt range" {

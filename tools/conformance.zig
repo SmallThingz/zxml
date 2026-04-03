@@ -288,6 +288,13 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
             parse_err = @errorCast(err);
             break :blk false;
         };
+
+        if (profileWantsDecodedValues(profile)) {
+            validateDecodedProfile(case_alloc, &doc) catch |err| {
+                parse_err = err;
+                break :blk false;
+            };
+        }
         break :blk true;
     };
 
@@ -376,7 +383,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
         }
 
         if (expect_root_attr_name) |attr_name| {
-            const got = root.getAttributeValue(attr_name) orelse {
+            const got = try rootAttributeValue(case_alloc, root, profile, attr_name) orelse {
                 return .{
                     .case_name = case_name,
                     .pass = false,
@@ -396,7 +403,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     }
 
     if (expect_first_text) |expected| {
-        const got = firstText(&doc) orelse {
+        const got = try firstText(case_alloc, &doc, profile) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -467,7 +474,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     }
 
     if (spec.expect_field_name) |field_name| {
-        const field_text = elementTextByName(&doc, field_name) orelse {
+        const field_text = try elementTextByName(case_alloc, &doc, profile, field_name) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -528,14 +535,14 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
 
     if (left_name) |left_field| {
         const right_field = right_name.?;
-        const left_text = elementTextByName(&doc, left_field) orelse {
+        const left_text = try elementTextByName(case_alloc, &doc, profile, left_field) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
                 .reason = try std.fmt.allocPrint(alloc, "[{s}] expected date field {s}, found none", .{ profile, left_field }),
             };
         };
-        const right_text = elementTextByName(&doc, right_field) orelse {
+        const right_text = try elementTextByName(case_alloc, &doc, profile, right_field) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -557,7 +564,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     return .{ .case_name = case_name, .pass = true, .reason = null };
 }
 
-fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.ParseError || ConformanceError)!void {
+fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (fastxml.ParseError || ConformanceError)!void {
     if (std.mem.eql(u8, profile, "turbo_default")) {
         try doc.parse(input, .{});
         return;
@@ -584,7 +591,6 @@ fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.Par
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
-            .decode_entities_on_parse = true,
         });
         return;
     }
@@ -593,7 +599,6 @@ fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.Par
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
-            .decode_entities_on_parse = true,
             .drop_whitespace_text_nodes = false,
         });
         return;
@@ -616,10 +621,26 @@ fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.Par
         return;
     }
 
+    if (std.mem.eql(u8, profile, "strict_dtd_entities")) {
+        try doc.parse(input, .{
+            .mode = .strict,
+            .validate_closing_tags = true,
+            .expand_dtd_entities = true,
+        });
+        return;
+    }
+
+    if (std.mem.eql(u8, profile, "turbo_dtd_entities")) {
+        try doc.parse(input, .{
+            .mode = .turbo,
+            .expand_dtd_entities = true,
+        });
+        return;
+    }
+
     if (std.mem.eql(u8, profile, "turbo_entities")) {
         try doc.parse(input, .{
             .mode = .turbo,
-            .decode_entities_on_parse = true,
         });
         return;
     }
@@ -627,7 +648,6 @@ fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.Par
     if (std.mem.eql(u8, profile, "turbo_entities_ws")) {
         try doc.parse(input, .{
             .mode = .turbo,
-            .decode_entities_on_parse = true,
             .drop_whitespace_text_nodes = false,
         });
         return;
@@ -642,6 +662,23 @@ fn parseWithProfile(doc: anytype, input: []u8, profile: []const u8) (fastxml.Par
     }
 
     return ConformanceError.InvalidProfile;
+}
+
+fn profileWantsDecodedValues(profile: []const u8) bool {
+    return std.mem.eql(u8, profile, "strict_entities") or
+        std.mem.eql(u8, profile, "strict_entities_ws") or
+        std.mem.eql(u8, profile, "turbo_entities") or
+        std.mem.eql(u8, profile, "turbo_entities_ws") or
+        std.mem.eql(u8, profile, "strict_dtd_entities") or
+        std.mem.eql(u8, profile, "turbo_dtd_entities");
+}
+
+fn mapDecodeError(err: anyerror) fastxml.ParseError {
+    return switch (err) {
+        error.InvalidNumericCharacterEntity => error.InvalidNumericCharacterEntity,
+        error.UnterminatedEntity => error.UnterminatedEntity,
+        else => unreachable,
+    };
 }
 
 fn countByKind(doc: anytype, kind: fastxml.NodeType) usize {
@@ -679,25 +716,66 @@ fn firstElement(doc: anytype) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
     return null;
 }
 
-fn firstText(doc: anytype) ?[]const u8 {
+fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
+    if (profileWantsDecodedValues(profile)) {
+        return root.getAttributeValue(alloc, name) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+            else => mapDecodeError(err),
+        };
+    }
+    return root.getAttributeValueRaw(name);
+}
+
+fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
-        if (node.kind == .text) return doc.nodeAt(@intCast(i)).?.valueSlice();
+        if (node.kind != .text) continue;
+        const text = doc.nodeAt(@intCast(i)).?;
+        if (profileWantsDecodedValues(profile)) {
+            return text.value(alloc) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => mapDecodeError(err),
+            };
+        }
+        return text.valueRawSlice();
     }
     return null;
 }
 
-fn elementTextByName(doc: anytype, name: []const u8) ?[]const u8 {
+fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .element) continue;
         if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
 
         var child = doc.nodeAt(@intCast(i)).?.firstChild();
         while (child) |n| : (child = n.nextSibling()) {
-            if (n.kind == .text) return n.valueSlice();
+            if (n.kind != .text) continue;
+            if (profileWantsDecodedValues(profile)) {
+                return n.value(alloc) catch |err| switch (err) {
+                    error.OutOfMemory => error.OutOfMemory,
+                    else => mapDecodeError(err),
+                };
+            }
+            return n.valueRawSlice();
         }
         return null;
     }
     return null;
+}
+
+fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) fastxml.ParseError!void {
+    for (doc.attrs.items, 0..) |_, i| {
+        const attr: fastxml.Types(.{}).Attribute = .{
+            .doc = doc,
+            .index = @intCast(i),
+        };
+        _ = attr.value(alloc) catch |err| return mapDecodeError(err);
+    }
+
+    for (doc.nodes.items, 0..) |node, i| {
+        if (node.kind != .text) continue;
+        const text = doc.nodeAt(@intCast(i)).?;
+        _ = text.value(alloc) catch |err| return mapDecodeError(err);
+    }
 }
 
 fn hasUniqueAttributes(root: anytype) bool {
