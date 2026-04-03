@@ -1,19 +1,42 @@
 const std = @import("std");
-const document_mod = @import("xml/document.zig");
-const parser_mod = @import("xml/parser.zig");
-const scanner_mod = @import("xml/scanner.zig");
-const tables_mod = @import("xml/tables.zig");
-const entities_mod = @import("xml/entities.zig");
+const document_mod = @import("document.zig");
+const parser_mod = @import("parser.zig");
+const scanner_mod = @import("scanner.zig");
+const tables_mod = @import("tables.zig");
+const entities_mod = @import("entities.zig");
 
-pub const Document = @import("xml/document.zig").Document;
-pub const Node = @import("xml/document.zig").Node;
-pub const Attribute = @import("xml/document.zig").Attribute;
-pub const Span = @import("xml/document.zig").Span;
-pub const NodeType = @import("xml/document.zig").NodeType;
-pub const ParseMode = @import("xml/document.zig").ParseMode;
-pub const ParseOptions = @import("xml/document.zig").ParseOptions;
-pub const ParseError = @import("xml/document.zig").ParseError;
-pub const InvalidIndex = @import("xml/document.zig").InvalidIndex;
+pub const Span = document_mod.Span;
+pub const NodeType = document_mod.NodeType;
+pub const ParseMode = document_mod.ParseMode;
+pub const ParseOptions = document_mod.ParseOptions;
+pub const ParseError = document_mod.ParseError;
+pub const InvalidIndex = document_mod.InvalidIndex;
+
+const DefaultTypeOptions: ParseOptions = .{};
+
+pub const Document = DefaultTypeOptions.GetDocument();
+pub const Node = DefaultTypeOptions.GetNode();
+pub const Attribute = DefaultTypeOptions.GetAttribute();
+
+pub fn GetDocument(comptime options: ParseOptions) type {
+    return options.GetDocument();
+}
+
+pub fn GetNode(comptime options: ParseOptions) type {
+    return options.GetNode();
+}
+
+pub fn GetNodeRaw(comptime options: ParseOptions) type {
+    return options.GetNodeRaw();
+}
+
+pub fn GetAttribute(comptime options: ParseOptions) type {
+    return options.GetAttribute();
+}
+
+pub fn GetAttributeRaw(comptime options: ParseOptions) type {
+    return options.GetAttributeRaw();
+}
 
 pub fn bufferedPrint() !void {
     std.debug.print("fastxml: run `zig build test`\n", .{});
@@ -30,10 +53,11 @@ const ParsedDoc = struct {
 };
 
 fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc {
+    const DocumentType = opts.GetDocument();
     const buf = try std.testing.allocator.dupe(u8, input);
     errdefer std.testing.allocator.free(buf);
 
-    var doc = Document.init(std.testing.allocator);
+    var doc = DocumentType.init(std.testing.allocator);
     errdefer doc.deinit();
     try doc.parse(buf, opts);
 
@@ -56,6 +80,13 @@ fn findFirstKind(doc: *Document, kind: NodeType) ?Node {
         if (node.kind == kind) return doc.nodeAt(@intCast(i));
     }
     return null;
+}
+
+test "ParseOptions type factory matches default exports" {
+    const opts: ParseOptions = .{};
+    try std.testing.expectEqual(Document, opts.GetDocument());
+    try std.testing.expectEqual(Node, opts.GetNode());
+    try std.testing.expectEqual(Attribute, opts.GetAttribute());
 }
 
 test "smoke: parse nested nodes and attributes" {

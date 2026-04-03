@@ -49,11 +49,13 @@ Minimal parse:
 ```zig
 const std = @import("std");
 const fastxml = @import("fastxml");
+const options: fastxml.ParseOptions = .{};
+const Document = options.GetDocument();
 
 pub fn main() !void {
     var src = "<root id='r'><child>text</child></root>".*;
 
-    var doc = fastxml.Document.init(std.heap.page_allocator);
+    var doc = Document.init(std.heap.page_allocator);
     defer doc.deinit();
 
     try doc.parse(&src, .{
@@ -68,12 +70,21 @@ pub fn main() !void {
 
 ## Library API
 
-- `fastxml.Document`
-- `fastxml.Node`
-- `fastxml.Attribute`
 - `fastxml.ParseOptions`
 - `fastxml.ParseMode`
 - `fastxml.ParseError`
+- `fastxml.GetDocument(options)`
+- `fastxml.GetNode(options)`
+- `fastxml.GetAttribute(options)`
+
+Default exports are aliases for `const options: fastxml.ParseOptions = .{};`.
+
+```zig
+const options: fastxml.ParseOptions = .{};
+const Document = options.GetDocument();
+const Node = options.GetNode();
+const Attribute = options.GetAttribute();
+```
 
 `Document.parse` is comptime-specialized:
 

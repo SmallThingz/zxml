@@ -16,6 +16,30 @@ pub const ParseOptions = struct {
     normalize_text_whitespace: bool = false,
     store_parent_pointers: bool = false,
     include_misc_nodes: bool = true,
+
+    pub fn GetSpan(_: @This()) type {
+        return Span;
+    }
+
+    pub fn GetAttributeRaw(_: @This()) type {
+        return RawAttribute;
+    }
+
+    pub fn GetAttribute(_: @This()) type {
+        return Attribute;
+    }
+
+    pub fn GetNodeRaw(_: @This()) type {
+        return RawNode;
+    }
+
+    pub fn GetNode(_: @This()) type {
+        return Node;
+    }
+
+    pub fn GetDocument(_: @This()) type {
+        return Document;
+    }
 };
 
 pub const ParseError = error{
