@@ -18,22 +18,25 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`stable` profile).
+Source: `bench/results/latest.json` (`quick` profile).
 
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-turbo  │████████████████████│ 2925.53 MB/s (100.00%)
-ours-strict │███████████████████░│ 2840.13 MB/s (97.08%)
-pugixml     │█████████░░░░░░░░░░░│ 1365.12 MB/s (46.66%)
-rapidxml    │█████████░░░░░░░░░░░│ 1360.60 MB/s (46.51%)
+stream-turbo  │████████████████████│ 3725.24 MB/s (100.00%)
+stream-strict │███████████████████░│ 3577.71 MB/s (96.04%)
+ours-turbo    │█████████████████░░░│ 3077.73 MB/s (82.62%)
+ours-strict   │████████████████░░░░│ 2942.62 MB/s (78.99%)
+pugixml       │████████░░░░░░░░░░░░│ 1455.80 MB/s (39.08%)
+rapidxml      │███████░░░░░░░░░░░░░│ 1340.28 MB/s (35.98%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `quick` | 20/20 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `quick` | 20/20 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
