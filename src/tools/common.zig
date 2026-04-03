@@ -104,3 +104,25 @@ pub fn readFileAlloc(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ![]
 pub fn nowUnix(io: std.Io) i64 {
     return std.Io.Timestamp.now(io, .real).toSeconds();
 }
+
+test "joinArgs quotes arguments containing spaces" {
+    const args = [_][]const u8{ "zig", "build", "bench compare" };
+    const joined = try joinArgs(std.testing.allocator, &args);
+    defer std.testing.allocator.free(joined);
+
+    try std.testing.expectEqualStrings("+ zig build \"bench compare\"", joined);
+}
+
+test "parseLastInt extracts the final decimal run" {
+    try std.testing.expectEqual(@as(u64, 42), try parseLastInt("iters=42"));
+    try std.testing.expectEqual(@as(u64, 9001), try parseLastInt("time: 19 ms, total 9001"));
+    try std.testing.expectError(error.NoIntegerFound, parseLastInt("no digits here"));
+}
+
+test "medianU64 returns the upper median element" {
+    const vals = [_]u64{ 9, 1, 5, 3, 7 };
+    try std.testing.expectEqual(@as(u64, 5), try medianU64(std.testing.allocator, &vals));
+
+    const even_vals = [_]u64{ 8, 2, 6, 4 };
+    try std.testing.expectEqual(@as(u64, 6), try medianU64(std.testing.allocator, &even_vals));
+}

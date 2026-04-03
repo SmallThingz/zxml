@@ -366,7 +366,17 @@ fn Parser(comptime opts: ParseOptions) type {
                 return;
             }
 
-            if (self.hasDoctypePrefix()) {
+            if (self.i + 9 <= self.input.len and
+                self.input[self.i] == '<' and
+                self.input[self.i + 1] == '!' and
+                ((self.input[self.i + 2] | 0x20) == 'd') and
+                ((self.input[self.i + 3] | 0x20) == 'o') and
+                ((self.input[self.i + 4] | 0x20) == 'c') and
+                ((self.input[self.i + 5] | 0x20) == 't') and
+                ((self.input[self.i + 6] | 0x20) == 'y') and
+                ((self.input[self.i + 7] | 0x20) == 'p') and
+                ((self.input[self.i + 8] | 0x20) == 'e'))
+            {
                 try self.parseDoctype();
                 return;
             }
@@ -455,25 +465,8 @@ fn Parser(comptime opts: ParseOptions) type {
             n.value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
         }
 
-        fn hasDoctypePrefix(noalias self: *const Self) bool {
-            if (self.i + 9 > self.input.len) return false;
-            return self.input[self.i] == '<' and
-                self.input[self.i + 1] == '!' and
-                ((self.input[self.i + 2] | 0x20) == 'd') and
-                ((self.input[self.i + 3] | 0x20) == 'o') and
-                ((self.input[self.i + 4] | 0x20) == 'c') and
-                ((self.input[self.i + 5] | 0x20) == 't') and
-                ((self.input[self.i + 6] | 0x20) == 'y') and
-                ((self.input[self.i + 7] | 0x20) == 'p') and
-                ((self.input[self.i + 8] | 0x20) == 'e');
-        }
-
-        inline fn currentParent(noalias self: *const Self) u32 {
-            return self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-        }
-
         inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!u32 {
-            const parent_idx = self.currentParent();
+            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
             const idx = try self.appendNodeRaw(kind, parent_idx);
             self.linkChild(parent_idx, idx);
             return idx;
@@ -571,6 +564,8 @@ fn Parser(comptime opts: ParseOptions) type {
             tag_len: u16,
             tag_key: u64,
         ) ParseError!bool {
+            // Fast-path the common `<tag>text</tag>` shape to avoid pushing a
+            // stack frame only to immediately pop it again on the closing tag.
             const text_start = self.i;
             if (text_start >= self.input.len or self.input[text_start] == '<') return false;
 
@@ -580,7 +575,7 @@ fn Parser(comptime opts: ParseOptions) type {
             const close_start = lt + 2;
             const close_end = close_start + tag_len;
             if (close_end > self.input.len) return false;
-            if (tag_key != spanKey(self.input, close_start, close_end)) return false;
+            if (tag_key != sliceKey(self.input[close_start..close_end])) return false;
             const name_end = name_start + tag_len;
             if (tag_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) {
                 return false;
@@ -635,10 +630,6 @@ fn Parser(comptime opts: ParseOptions) type {
                 if (!tables.isWhitespace(bytes[i])) return false;
             }
             return true;
-        }
-
-        inline fn spanKey(input: []const u8, start: usize, end: usize) u64 {
-            return sliceKey(input[start..end]);
         }
 
         inline fn sliceKey(bytes: []const u8) u64 {

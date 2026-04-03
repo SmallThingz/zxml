@@ -10,7 +10,6 @@ pub const ConformanceError = error{
 };
 
 const conformance_primary_dir = "bench/conformance";
-const conformance_legacy_dir = "bench/compliance";
 
 const SuiteSummary = struct {
     suite_name: []u8,
@@ -40,7 +39,7 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
     }
 
     if (suite_paths.items.len == 0) {
-        std.debug.print("no conformance suites found under {s} (or legacy {s})\n", .{ conformance_primary_dir, conformance_legacy_dir });
+        std.debug.print("no conformance suites found under {s}\n", .{conformance_primary_dir});
         return;
     }
 
@@ -73,9 +72,7 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
 }
 
 fn discoverSuites(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList([]u8)) !void {
-    const primary_count = try appendSuitesFromDir(io, alloc, out, conformance_primary_dir);
-    if (primary_count != 0) return;
-    _ = try appendSuitesFromDir(io, alloc, out, conformance_legacy_dir);
+    _ = try appendSuitesFromDir(io, alloc, out, conformance_primary_dir);
 }
 
 fn appendSuitesFromDir(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList([]u8), base_dir: []const u8) !usize {
@@ -741,6 +738,9 @@ fn isIsoDate(text: []const u8) bool {
 }
 
 fn regexSubsetMatch(text: []const u8, pattern: []const u8) bool {
+    // This intentionally supports only the small regex subset used by the
+    // conformance fixtures: anchors, character classes, literals, escapes,
+    // and fixed `{n}` repetition.
     var p_start: usize = 0;
     var p_end: usize = pattern.len;
 

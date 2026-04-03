@@ -7,12 +7,6 @@ const BenchMode = enum {
     turbo,
 };
 
-fn parseMode(arg: []const u8) !BenchMode {
-    if (std.mem.eql(u8, arg, "strict")) return .strict;
-    if (std.mem.eql(u8, arg, "turbo")) return .turbo;
-    return error.InvalidBenchMode;
-}
-
 pub fn runParseFile(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
@@ -61,7 +55,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (args.items.len == 5 and std.mem.eql(u8, args.items[1], "parse")) {
-        const mode = try parseMode(args.items[2]);
+        const mode: BenchMode = if (std.mem.eql(u8, args.items[2], "strict"))
+            .strict
+        else if (std.mem.eql(u8, args.items[2], "turbo"))
+            .turbo
+        else
+            return error.InvalidBenchMode;
         const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
         const total_ns = try runParseFile(init.io, alloc, args.items[3], iterations, mode);
         std.debug.print("{d}\n", .{total_ns});

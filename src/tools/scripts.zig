@@ -718,6 +718,7 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
 
     try w.print("FastXML Benchmark Results\nGenerated (unix): {d}\nProfile: {s}\n\n", .{ common.nowUnix(io), profile_name });
 
+    // Group by fixture first so terminal output stays easy to compare in-place.
     try w.writeAll("Parse Throughput (Per Fixture, sorted by speed)\n");
 
     var fixtures = std.ArrayList([]const u8).empty;
@@ -1115,7 +1116,6 @@ fn usage() void {
         \\  fastxml-tools setup-fixtures [--refresh]
         \\  fastxml-tools run-benchmarks [--profile quick|stable] [--baseline path] [--write-baseline]
         \\  fastxml-tools run-conformance [--suite path]...
-        \\  fastxml-tools run-compliance [--suite path]...   (alias)
         \\
     , .{});
 }
@@ -1157,7 +1157,7 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    if (std.mem.eql(u8, cmd, "run-conformance") or std.mem.eql(u8, cmd, "run-compliance")) {
+    if (std.mem.eql(u8, cmd, "run-conformance")) {
         try conformance.runConformance(init.io, alloc, args.items[2..]);
         return;
     }

@@ -72,8 +72,20 @@ pub fn eqlAsciiCaseInsensitive(a: []const u8, b: []const u8) bool {
     return true;
 }
 
-pub fn toLowerInPlace(buf: []u8) void {
-    for (buf) |*c| {
-        c.* = std.ascii.toLower(c.*);
-    }
+test "character classifiers match XML expectations" {
+    try std.testing.expect(isWhitespace(' '));
+    try std.testing.expect(isWhitespace('\n'));
+    try std.testing.expect(!isWhitespace('x'));
+
+    try std.testing.expect(isNameStart('a'));
+    try std.testing.expect(isNameStart(':'));
+    try std.testing.expect(!isNameStart('1'));
+
+    try std.testing.expect(isNameChar('-'));
+    try std.testing.expect(isNameChar('7'));
+    try std.testing.expect(!isNameChar(' '));
+
+    try std.testing.expect(isAttrUnquotedValueChar('x'));
+    try std.testing.expect(!isAttrUnquotedValueChar(' '));
+    try std.testing.expect(!isAttrUnquotedValueChar('>'));
 }

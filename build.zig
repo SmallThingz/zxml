@@ -55,7 +55,6 @@ pub fn build(b: *std.Build) void {
     const tools_step = b.step("tools", "Run fastxml-tools utility");
     const bench_compare_step = b.step("bench-compare", "Run parser comparison benchmarks");
     const conformance_step = b.step("conformance", "Run XML conformance suites");
-    const compliance_step = b.step("compliance", "Alias for `zig build conformance`");
 
     const run_cmd = b.addRunArtifact(exe);
     const bench_cmd = b.addRunArtifact(bench_exe);
@@ -71,7 +70,6 @@ pub fn build(b: *std.Build) void {
     tools_step.dependOn(&tools_cmd.step);
     bench_compare_step.dependOn(&compare_cmd.step);
     conformance_step.dependOn(&conformance_cmd.step);
-    compliance_step.dependOn(&conformance_cmd.step);
 
     run_cmd.step.dependOn(b.getInstallStep());
     bench_cmd.step.dependOn(b.getInstallStep());

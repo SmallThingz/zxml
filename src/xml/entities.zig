@@ -11,10 +11,6 @@ const EntityDecode = struct {
     len: usize,
 };
 
-pub fn decodeInPlace(noalias buf: []u8, strict: bool) DecodeError!usize {
-    return decodeInPlaceFrom(buf, strict, 0);
-}
-
 pub fn decodeInPlaceIfEntity(noalias buf: []u8, strict: bool) DecodeError!usize {
     const first = std.mem.indexOfScalar(u8, buf, '&') orelse return buf.len;
     return decodeInPlaceFrom(buf, strict, first);
@@ -225,4 +221,28 @@ fn hexVal(c: u8) u8 {
     if (c >= 'a' and c <= 'f') return c - 'a' + 10;
     if (c >= 'A' and c <= 'F') return c - 'A' + 10;
     return 255;
+}
+
+test "decodeInPlaceIfEntity leaves plain text untouched" {
+    var buf = "plain text".*;
+    const len = try decodeInPlaceIfEntity(&buf, true);
+    try std.testing.expectEqual(@as(usize, 10), len);
+    try std.testing.expectEqualStrings("plain text", buf[0..len]);
+}
+
+test "decodeInPlaceIfEntity decodes named and numeric entities" {
+    var buf = "&amp;&#65;&#x42;".*;
+    const len = try decodeInPlaceIfEntity(&buf, true);
+    try std.testing.expectEqualStrings("&AB", buf[0..len]);
+}
+
+test "decodeAndNormalizeInPlace combines both operations" {
+    var buf = " a\n&amp;\t b ".*;
+    const len = try decodeAndNormalizeInPlace(&buf, true);
+    try std.testing.expectEqualStrings(" a & b ", buf[0..len]);
+}
+
+test "validateEntities rejects malformed strict input" {
+    try std.testing.expectError(error.UnterminatedEntity, validateEntities("&amp", true));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#x110000;", true));
 }
