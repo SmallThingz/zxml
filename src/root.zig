@@ -715,28 +715,34 @@ test "strict unterminated doctype fails" {
     try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict }));
 }
 
-test "strict invalid numeric entity in text fails" {
-    var doc = initDoc(.{});
-    defer doc.deinit();
+test "strict invalid numeric entity in text fails on decoded access" {
+    var parsed = try parseTestDoc("<r>&#x110000;</r>", .{ .mode = .strict });
+    defer parsed.deinit();
 
-    var src = "<r>&#x110000;</r>".*;
-    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict }));
+    const text = parsed.doc.nodeAt(1).?.firstChild().?;
+    try std.testing.expectEqualStrings("&#x110000;", text.valueRawSlice());
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, text.value(std.testing.allocator));
 }
 
-test "strict invalid numeric entity in attribute fails" {
-    var doc = initDoc(.{});
-    defer doc.deinit();
+test "strict invalid numeric entity in attribute fails on decoded access" {
+    var parsed = try parseTestDoc("<r a='&#x110000;'/>", .{ .mode = .strict });
+    defer parsed.deinit();
 
-    var src = "<r a='&#x110000;'/>".*;
-    try std.testing.expectError(ParseError.InvalidNumericCharacterEntity, doc.parse(&src, .{ .mode = .strict }));
+    const root = parsed.doc.nodeAt(1).?;
+    try std.testing.expectEqualStrings("&#x110000;", root.getAttributeValueRaw("a").?);
+    try std.testing.expectError(
+        error.InvalidNumericCharacterEntity,
+        root.getAttributeValue(std.testing.allocator, "a"),
+    );
 }
 
-test "strict unterminated entity fails during decode validation" {
-    var doc = initDoc(.{});
-    defer doc.deinit();
+test "strict unterminated entity fails on decoded access" {
+    var parsed = try parseTestDoc("<r>&amp</r>", .{ .mode = .strict });
+    defer parsed.deinit();
 
-    var src = "<r>&amp</r>".*;
-    try std.testing.expectError(ParseError.UnterminatedEntity, doc.parse(&src, .{ .mode = .strict }));
+    const text = parsed.doc.nodeAt(1).?.firstChild().?;
+    try std.testing.expectEqualStrings("&amp", text.valueRawSlice());
+    try std.testing.expectError(error.UnterminatedEntity, text.value(std.testing.allocator));
 }
 
 test "strict decoded access rejects unknown named entities when DTD expansion is disabled" {

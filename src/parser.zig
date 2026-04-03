@@ -3,7 +3,6 @@ const common = @import("common.zig");
 const document = @import("document.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
-const entities = @import("entities.zig");
 
 const ParseOptions = document.ParseOptions;
 const ParseError = document.ParseError;
@@ -50,15 +49,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (self.input[self.i] != '<') {
                     const run = scanner.scanTextRun(self.input, self.i);
                     if (run.lt_index > self.i) {
-                        const raw = self.input[self.i..run.lt_index];
                         if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
-                            if (strict_mode) {
-                                entities.validateStructuralEntities(raw) catch |e| switch (e) {
-                                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
-                                    error.UnterminatedEntity => return error.UnterminatedEntity,
-                                };
-                            }
-
                             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
                             _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
                         }
@@ -244,14 +235,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         value_end = self.i;
                     }
                 }
-            }
-
-            if (strict_mode and value_end >= value_start) {
-                const value = input[value_start..value_end];
-                entities.validateStructuralEntities(value) catch |e| switch (e) {
-                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
-                    error.UnterminatedEntity => return error.UnterminatedEntity,
-                };
             }
 
             const len = self.doc.attrs.items.len;
@@ -686,13 +669,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 if (whitespace_only) return true;
             }
-            if (strict_mode) {
-                entities.validateStructuralEntities(raw) catch |e| switch (e) {
-                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
-                    error.UnterminatedEntity => return error.UnterminatedEntity,
-                };
-            }
-
             const text_idx = try self.appendTextNodeTo(idx, text_start, lt);
             self.doc.nodes.items[idx].subtree_end = text_idx;
             return true;

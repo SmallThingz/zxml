@@ -18,22 +18,22 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`quick` profile).
+Source: `bench/results/latest.json` (`stable` profile).
 
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-turbo  │████████████████████│ 3111.80 MB/s (100.00%)
-ours-strict │████████████░░░░░░░░│ 1894.37 MB/s (60.88%)
-pugixml     │█████████░░░░░░░░░░░│ 1446.87 MB/s (46.50%)
-rapidxml    │█████████░░░░░░░░░░░│ 1329.72 MB/s (42.73%)
+ours-turbo  │████████████████████│ 2925.53 MB/s (100.00%)
+ours-strict │███████████████████░│ 2840.13 MB/s (97.08%)
+pugixml     │█████████░░░░░░░░░░░│ 1365.12 MB/s (46.66%)
+rapidxml    │█████████░░░░░░░░░░░│ 1360.60 MB/s (46.51%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `quick` | 20/20 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
