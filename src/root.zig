@@ -978,6 +978,50 @@ test "streaming parser strict validation fails on mismatched close tags" {
     try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<r><a></r>", &ctx, Ctx.onNode));
 }
 
+test "streaming parser strict validation handles long close names" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        count: usize = 0,
+
+        fn onNode(self: *@This(), _: StreamNode) bool {
+            self.count += 1;
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{};
+    try parser.parse("<rss><atom:link href='x'></atom:link><longername>t</longername></rss>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 4), ctx.count);
+}
+
+test "streaming parser accepts pointer callbacks" {
+    const opts: ParseOptions = .{ .mode = .turbo };
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        count: usize = 0,
+
+        fn onNode(self: *@This(), node: *const StreamNode) bool {
+            if (node.kind == .element) self.count += 1;
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{};
+    try parser.parse("<r><a/><b/></r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 3), ctx.count);
+}
+
 test "streaming parser turbo mode accepts unquoted attributes" {
     const opts: ParseOptions = .{ .mode = .turbo };
     const StreamParser = Types(opts).StreamParser;

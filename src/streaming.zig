@@ -160,6 +160,17 @@ pub fn Types(comptime options: ParseOptions) type {
                 var i: usize = 0;
                 while (i < input.len) {
                     if (input[i] != '<') {
+                        if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
+                            const next = scanner.skipWhitespace(input, i);
+                            if (next >= input.len) {
+                                i = next;
+                                continue;
+                            }
+                            if (input[next] == '<') {
+                                i = next;
+                                continue;
+                            }
+                        }
                         const run = scanner.scanTextRun(input, i);
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const node: Node = .{
@@ -170,7 +181,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 .token_start = @intCast(i),
                                 .token_end = @intCast(run.lt_index),
                             };
-                            _ = callCallback(ctx, callback, node);
+                            _ = callCallback(ctx, callback, &node);
                         }
                         i = run.lt_index;
                         continue;
@@ -230,7 +241,48 @@ pub fn Types(comptime options: ParseOptions) type {
                         self_closing = true;
                         break;
                     }
-                    i = try self.skipAttribute(input, i);
+                    if (!tables.isNameStart(c)) {
+                        if (strict_mode) return error.ExpectedAttributeName;
+                        i += 1;
+                        continue;
+                    }
+
+                    var attr_i = scanner.findNameEnd(input, i);
+                    if (attr_i + 1 < input.len and input[attr_i] == '=') {
+                        const quote = input[attr_i + 1];
+                        if (quote == '\'' or quote == '"') {
+                            i = (scanner.findByte(input, attr_i + 2, quote) orelse {
+                                if (strict_mode) return error.ExpectedQuote;
+                                return input.len;
+                            }) + 1;
+                            continue;
+                        }
+                    }
+
+                    attr_i = skipWs(input, attr_i);
+                    if (attr_i >= input.len or input[attr_i] != '=') {
+                        if (strict_mode) return error.ExpectedEq;
+                        i = attr_i;
+                        continue;
+                    }
+                    attr_i += 1;
+                    attr_i = skipWs(input, attr_i);
+                    if (attr_i >= input.len) return error.UnexpectedEndOfData;
+                    const quote = input[attr_i];
+                    if (quote == '\'' or quote == '"') {
+                        i = (scanner.findByte(input, attr_i + 1, quote) orelse {
+                            if (strict_mode) return error.ExpectedQuote;
+                            return input.len;
+                        }) + 1;
+                        continue;
+                    }
+                    if (strict_mode) return error.ExpectedQuote;
+                    const raw_end = scanner.findAttrUnquotedEnd(input, attr_i);
+                    if (raw_end > attr_i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
+                        i = raw_end - 1;
+                    } else {
+                        i = raw_end;
+                    }
                 }
                 if (i > input.len) return error.UnexpectedEndOfData;
 
@@ -246,48 +298,25 @@ pub fn Types(comptime options: ParseOptions) type {
                     .self_closing = self_closing,
                 };
 
-                const descend = callCallback(ctx, callback, node);
+                const descend = callCallback(ctx, callback, &node);
                 if (self_closing) return i;
                 if (!descend) return try self.skipSubtree(input, i, scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
                 if (try self.tryFinishSimpleTextElement(input, i, name_start, scan, ctx, callback)) |next| return next;
 
-                try self.pushStack(.{
-                    .name = .{ .start = @intCast(name_start), .end = @intCast(scan.end) },
-                    .key = scan.key,
-                    .len = scan.len,
-                });
+                if (comptime validate_closing_tags) {
+                    try self.pushStack(.{
+                        .name_start = @intCast(name_start),
+                        .key = scan.key,
+                        .len = scan.len,
+                    });
+                } else {
+                    try self.pushStack(.{
+                        .name_start = 0,
+                        .key = 0,
+                        .len = 0,
+                    });
+                }
                 return i;
-            }
-
-            fn skipAttribute(noalias self: *Self, input: []const u8, start: usize) ParseError!usize {
-                _ = self;
-                if (!tables.isNameStart(input[start])) {
-                    if (strict_mode) return error.ExpectedAttributeName;
-                    return start + 1;
-                }
-                var i = scanner.findNameEnd(input, start);
-                i = skipWs(input, i);
-                if (i >= input.len or input[i] != '=') {
-                    if (strict_mode) return error.ExpectedEq;
-                    return i;
-                }
-                i += 1;
-                i = skipWs(input, i);
-                if (i >= input.len) return error.UnexpectedEndOfData;
-                const quote = input[i];
-                if (quote == '\'' or quote == '"') {
-                    const end = scanner.findByte(input, i + 1, quote) orelse {
-                        if (strict_mode) return error.ExpectedQuote;
-                        return input.len;
-                    };
-                    return end + 1;
-                }
-                if (strict_mode) return error.ExpectedQuote;
-                const raw_end = scanner.findAttrUnquotedEnd(input, i);
-                if (raw_end > i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
-                    return raw_end - 1;
-                }
-                return raw_end;
             }
 
             fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize) ParseError!usize {
@@ -302,6 +331,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     const gt = scanner.findByte(input, i, '>') orelse input.len;
                     return if (gt < input.len) gt + 1 else gt;
                 }
+                const name_start = i;
                 const scan = scanner.scanNameAndKey(input, i);
                 i = scan.end;
                 if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
@@ -320,7 +350,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (validate_closing_tags) {
                     const top = self.stack.items[self.stack.items.len - 1];
                     if (top.len != scan.len or top.key != scan.key) return error.InvalidClosingTagName;
-                    if (scan.len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[@as(usize, @intCast(top.name.start)) + 8 .. scan.end])) {
+                    const open_start: usize = @intCast(top.name_start);
+                    if (scan.len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + scan.len], input[name_start + 8 .. scan.end])) {
                         return error.InvalidClosingTagName;
                     }
                 }
@@ -350,7 +381,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         ((input[target_start] | 0x20) == 'x') and
                         ((input[target_start + 1] | 0x20) == 'm') and
                         ((input[target_start + 2] | 0x20) == 'l');
-                    _ = callCallback(ctx, callback, Node{
+                    const node: Node = .{
                         .source = input,
                         .kind = if (decl) .declaration else .pi,
                         .depth = @intCast(self.stack.items.len),
@@ -358,7 +389,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
                         .token_start = @intCast(start),
                         .token_end = @intCast(end + 2),
-                    });
+                    };
+                    _ = callCallback(ctx, callback, &node);
                 }
                 return end + 2;
             }
@@ -371,14 +403,15 @@ pub fn Types(comptime options: ParseOptions) type {
                         return input.len;
                     };
                     if (include_misc_nodes) {
-                        _ = callCallback(ctx, callback, Node{
+                        const node: Node = .{
                             .source = input,
                             .kind = .comment,
                             .depth = @intCast(self.stack.items.len),
                             .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
                             .token_start = @intCast(start),
                             .token_end = @intCast(end + 3),
-                        });
+                        };
+                        _ = callCallback(ctx, callback, &node);
                     }
                     return end + 3;
                 }
@@ -389,14 +422,15 @@ pub fn Types(comptime options: ParseOptions) type {
                         return input.len;
                     };
                     if (include_misc_nodes) {
-                        _ = callCallback(ctx, callback, Node{
+                        const node: Node = .{
                             .source = input,
                             .kind = .cdata,
                             .depth = @intCast(self.stack.items.len),
                             .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
                             .token_start = @intCast(start),
                             .token_end = @intCast(end + 3),
-                        });
+                        };
+                        _ = callCallback(ctx, callback, &node);
                     }
                     return end + 3;
                 }
@@ -406,14 +440,15 @@ pub fn Types(comptime options: ParseOptions) type {
                         return input.len;
                     };
                     if (include_misc_nodes) {
-                        _ = callCallback(ctx, callback, Node{
+                        const node: Node = .{
                             .source = input,
                             .kind = .doctype,
                             .depth = @intCast(self.stack.items.len),
                             .value = .{ .start = @intCast(start + 9), .end = @intCast(end) },
                             .token_start = @intCast(start),
                             .token_end = @intCast(end + 1),
-                        });
+                        };
+                        _ = callCallback(ctx, callback, &node);
                     }
                     return end + 1;
                 }
@@ -449,7 +484,11 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 self.skip_stack.items.len = 0;
-                try self.skip_stack.append(self.allocator, .{ .name = root_name, .key = root_scan.key, .len = root_scan.len });
+                try self.skip_stack.append(self.allocator, .{
+                    .name_start = root_name.start,
+                    .key = root_scan.key,
+                    .len = root_scan.len,
+                });
                 while (i < input.len) {
                     const lt = scanner.findByte(input, i, '<') orelse return error.UnexpectedEndOfData;
                     i = lt;
@@ -459,7 +498,8 @@ pub fn Types(comptime options: ParseOptions) type {
                             const close = try scanClosingTag(input, i);
                             const top = self.skip_stack.items[self.skip_stack.items.len - 1];
                             if (top.len != close.scan.len or top.key != close.scan.key) return error.InvalidClosingTagName;
-                            if (close.scan.len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[close.name_start + 8 .. close.scan.end])) return error.InvalidClosingTagName;
+                            const open_start: usize = @intCast(top.name_start);
+                            if (close.scan.len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close.scan.len], input[close.name_start + 8 .. close.scan.end])) return error.InvalidClosingTagName;
                             self.skip_stack.items.len -= 1;
                             i = close.next;
                             if (self.skip_stack.items.len == 0) return i;
@@ -469,7 +509,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         else => {
                             const open = try scanOpeningTagToken(input, i);
                             i = open.next;
-                            if (!open.self_closing) try self.skip_stack.append(self.allocator, .{ .name = .{ .start = @intCast(open.name_start), .end = @intCast(open.scan.end) }, .key = open.scan.key, .len = open.scan.len });
+                            if (!open.self_closing) try self.skip_stack.append(self.allocator, .{
+                                .name_start = @intCast(open.name_start),
+                                .key = open.scan.key,
+                                .len = open.scan.len,
+                            });
                         },
                     }
                 }
@@ -518,14 +562,15 @@ pub fn Types(comptime options: ParseOptions) type {
                 const raw = input[content_start..lt];
                 if (drop_whitespace_text_nodes and isWhitespaceOnly(raw)) return j;
 
-                _ = callCallback(ctx, callback, Node{
+                const node: Node = .{
                     .source = input,
                     .kind = .text,
                     .depth = @intCast(self.stack.items.len + 1),
                     .value = .{ .start = @intCast(content_start), .end = @intCast(lt) },
                     .token_start = @intCast(content_start),
                     .token_end = @intCast(lt),
-                });
+                };
+                _ = callCallback(ctx, callback, &node);
                 return j;
             }
 
@@ -537,7 +582,7 @@ pub fn Types(comptime options: ParseOptions) type {
         };
 
         const StackEntry = struct {
-            name: Span,
+            name_start: IndexInt,
             key: u64,
             len: u16,
         };
@@ -545,12 +590,37 @@ pub fn Types(comptime options: ParseOptions) type {
     };
 }
 
-fn callCallback(ctx: anytype, comptime callback: anytype, node: anytype) bool {
+const CallbackKind = enum {
+    node,
+    node_ptr,
+    ctx_node,
+    ctx_node_ptr,
+};
+
+fn callbackKind(comptime callback: anytype, comptime Node: type) CallbackKind {
     const cb_info = @typeInfo(@TypeOf(callback)).@"fn";
     return switch (cb_info.params.len) {
-        1 => @call(.auto, callback, .{node}),
-        2 => @call(.auto, callback, .{ ctx, node }),
-        else => @compileError("streaming callback must take (node) or (ctx, node) and return bool"),
+        1 => switch (cb_info.params[0].type.?) {
+            Node => .node,
+            *const Node => .node_ptr,
+            else => @compileError("streaming callback node parameter must be Node or *const Node"),
+        },
+        2 => switch (cb_info.params[1].type.?) {
+            Node => .ctx_node,
+            *const Node => .ctx_node_ptr,
+            else => @compileError("streaming callback node parameter must be Node or *const Node"),
+        },
+        else => @compileError("streaming callback must take (node), (*const node), (ctx, node), or (ctx, *const node) and return bool"),
+    };
+}
+
+fn callCallback(ctx: anytype, comptime callback: anytype, node_ptr: anytype) bool {
+    const Node = std.meta.Child(@TypeOf(node_ptr));
+    return switch (comptime callbackKind(callback, Node)) {
+        .node => callback(node_ptr.*),
+        .node_ptr => callback(node_ptr),
+        .ctx_node => callback(ctx, node_ptr.*),
+        .ctx_node_ptr => callback(ctx, node_ptr),
     };
 }
 

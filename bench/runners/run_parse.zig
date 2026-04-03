@@ -56,28 +56,26 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
         },
         .stream_strict => {
             const StreamNode = StreamStrict.StreamNode;
-            const Ctx = struct {
-                fn onNode(_: *@This(), _: StreamNode) bool {
+            const Callback = struct {
+                fn onNode(_: *const StreamNode) bool {
                     return true;
                 }
             };
-            var ctx: Ctx = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
-                try strict_stream.parse(input, &ctx, Ctx.onNode);
+                try strict_stream.parse(input, {}, Callback.onNode);
             }
         },
         .stream_turbo => {
             const StreamNode = StreamTurbo.StreamNode;
-            const Ctx = struct {
-                fn onNode(_: *@This(), _: StreamNode) bool {
+            const Callback = struct {
+                fn onNode(_: *const StreamNode) bool {
                     return true;
                 }
             };
-            var ctx: Ctx = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
-                try turbo_stream.parse(input, &ctx, Ctx.onNode);
+                try turbo_stream.parse(input, {}, Callback.onNode);
             }
         },
     }
