@@ -326,7 +326,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
                 if (strict_mode) return error.ExpectedPiTarget;
-                self.i = scanner.findSequence(self.input, self.i, "?>") orelse self.input.len;
+                self.i = findPiEnd(self.input, self.i) orelse self.input.len;
                 if (self.i < self.input.len) self.i += 2;
                 return;
             }
@@ -339,7 +339,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.skipWhitespace();
             const value_start = self.i;
 
-            const end = scanner.findSequence(self.input, self.i, "?>") orelse {
+            const end = findPiEnd(self.input, self.i) orelse {
                 if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
@@ -349,8 +349,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (!opts.include_misc_nodes) return;
 
-            const target = self.input[target_start..target_end];
-            const decl = tables.eqlAsciiCaseInsensitive(target, "xml");
+            const decl = isXmlDeclarationTarget(self.input, target_start, target_end);
             const kind: NodeType = if (decl) .declaration else .pi;
 
             const idx = try self.appendChildNode(kind);
@@ -518,6 +517,22 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn finishNode(noalias self: *Self, idx: u32) void {
             self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
+        }
+
+        inline fn findPiEnd(input: []const u8, start: usize) ?usize {
+            var i = start;
+            while (true) {
+                const q = scanner.findByte(input, i, '?') orelse return null;
+                if (q + 1 < input.len and input[q + 1] == '>') return q;
+                i = q + 1;
+            }
+        }
+
+        inline fn isXmlDeclarationTarget(input: []const u8, start: usize, end: usize) bool {
+            return end - start == 3 and
+                ((input[start] | 0x20) == 'x') and
+                ((input[start + 1] | 0x20) == 'm') and
+                ((input[start + 2] | 0x20) == 'l');
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {
