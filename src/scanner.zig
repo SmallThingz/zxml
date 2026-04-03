@@ -78,9 +78,15 @@ pub const TextRun = struct {
 
 pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
     if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
+    if (!tables.WhitespaceTable[hay[start]]) {
+        return .{
+            .lt_index = findByte(hay, start, '<') orelse hay.len,
+            .has_non_whitespace = true,
+        };
+    }
 
     const lt_index = findByte(hay, start, '<') orelse hay.len;
-    var i = start;
+    var i = start + 1;
     while (i < lt_index) : (i += 1) {
         if (!tables.WhitespaceTable[hay[i]]) {
             return .{ .lt_index = lt_index, .has_non_whitespace = true };
