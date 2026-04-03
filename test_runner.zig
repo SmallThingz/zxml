@@ -1,22 +1,13 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-pub const std_options: std.Options = .{
-    .enable_segfault_handler = false,
-    .signal_stack_size = null,
-};
-
 pub const panic = std.debug.FullPanic(panicHandler);
 
+var is_child_mode: bool = false;
 const default_job_cap: usize = 16;
 
 fn print(comptime fmt: []const u8, args: anytype) void {
-    var buf: [4096]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, fmt, args) catch return;
-    var out_buf: [512]u8 = undefined;
-    var stderr = std.Io.File.stderr().writer(std.Options.debug_io, &out_buf);
-    stderr.interface.writeAll(msg) catch return;
-    stderr.interface.flush() catch return;
+    std.debug.print(fmt, args);
 }
 
 pub fn fuzz(
@@ -83,54 +74,40 @@ fn fuzzBuiltin(
     if (map_opt) |*m| m.deinit();
 }
 
-pub fn main(init: std.process.Init) void {
-    const code = mainImpl(init) catch |err| blk: {
-        print("test-runner fatal: {s}\n", .{@errorName(err)});
-        break :blk @as(u8, 1);
-    };
-    std.process.exit(code);
-}
-
-fn mainImpl(init: std.process.Init) !u8 {
+pub fn main(init: std.process.Init) !void {
     const threaded = std.Io.Threaded.init(init.gpa, .{
         .argv0 = .init(init.minimal.args),
         .environ = init.minimal.environ,
     });
     std.testing.io_instance = threaded;
+    defer std.testing.io_instance.deinit();
     std.testing.environ = init.minimal.environ;
 
     var arg_it = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer arg_it.deinit();
 
     const argv0_z = arg_it.next() orelse "test-runner";
-    const argv0 = argv0_z[0..argv0_z.len];
+    const argv0 = try init.gpa.dupe(u8, argv0_z[0..argv0_z.len]);
+    defer init.gpa.free(argv0);
 
     var child_test_name: ?[]const u8 = null;
     var filter: ?[]const u8 = null;
     var exclude_filters: std.ArrayList([]const u8) = .empty;
+    defer exclude_filters.deinit(init.gpa);
     var jobs: ?usize = null;
     var seed: ?u32 = null;
 
     while (arg_it.next()) |arg_z| {
         const arg = arg_z[0..arg_z.len];
-        if (std.mem.startsWith(u8, arg, "--fastxml-match=")) {
-            const idx = std.mem.indexOfScalar(u8, arg, '=') orelse unreachable;
-            filter = arg[idx + 1 ..];
-            continue;
-        }
-        if (std.mem.startsWith(u8, arg, "--fastxml-skip=")) {
-            const idx = std.mem.indexOfScalar(u8, arg, '=') orelse unreachable;
-            try exclude_filters.append(init.gpa, arg[idx + 1 ..]);
-            continue;
-        }
-        if (std.mem.eql(u8, arg, "--fastxml-run-test")) {
+        if (std.mem.eql(u8, arg, "--run-test")) {
             const name_z = arg_it.next() orelse return error.MissingTestName;
-            child_test_name = name_z[0..name_z.len];
-        } else if (std.mem.eql(u8, arg, "--fastxml-match")) {
+            child_test_name = try init.gpa.dupe(u8, name_z[0..name_z.len]);
+        } else if (std.mem.eql(u8, arg, "--test-filter")) {
             const f_z = arg_it.next() orelse return error.MissingFilter;
-            filter = f_z[0..f_z.len];
-        } else if (std.mem.eql(u8, arg, "--fastxml-skip")) {
+            filter = try init.gpa.dupe(u8, f_z[0..f_z.len]);
+        } else if (std.mem.eql(u8, arg, "--test-skip")) {
             const f_z = arg_it.next() orelse return error.MissingFilter;
-            try exclude_filters.append(init.gpa, f_z[0..f_z.len]);
+            try exclude_filters.append(init.gpa, try init.gpa.dupe(u8, f_z[0..f_z.len]));
         } else if (std.mem.eql(u8, arg, "--jobs")) {
             const j_z = arg_it.next() orelse return error.MissingJobs;
             jobs = try parseUsize(j_z[0..j_z.len]);
@@ -139,19 +116,30 @@ fn mainImpl(init: std.process.Init) !u8 {
             seed = try parseU32(s_z[0..s_z.len]);
         } else if (std.mem.eql(u8, arg, "--help")) {
             printHelp();
-            return 0;
+            return;
+        } else {
+            // Ignore unknown args to stay compatible with Zig's test flags.
         }
     }
 
+    defer if (child_test_name) |name| init.gpa.free(name);
+    defer if (filter) |f| init.gpa.free(f);
+    defer for (exclude_filters.items) |f| init.gpa.free(f);
+
     if (child_test_name) |name| {
-        return runSingleTest(name, seed);
+        is_child_mode = true;
+        runSingleTest(name, seed);
+        return;
     }
 
     try runAllTests(init.gpa, init.io, argv0, filter, exclude_filters.items, jobs, seed);
-    return 0;
 }
 
 fn panicHandler(msg: []const u8, first_trace_addr: ?usize) noreturn {
+    if (is_child_mode) {
+        print("{s}\n", .{msg});
+        std.process.exit(1);
+    }
     std.debug.defaultPanic(msg, first_trace_addr);
 }
 
@@ -165,7 +153,7 @@ fn parseU32(s: []const u8) !u32 {
 
 fn printHelp() void {
     print(
-        "Usage: test-runner [--fastxml-match <str>] [--fastxml-skip <str>] [--jobs <n>] [--seed <n>]\n" ++
+        "Usage: test-runner [--test-filter <str>] [--test-skip <str>] [--jobs <n>] [--seed <n>]\n" ++
             "  --seed also controls deterministic test ordering in parent mode.\n",
         .{},
     );
@@ -242,155 +230,328 @@ fn runAllTests(
             }
         }
         if (excluded) continue;
-
         try tests.append(gpa, .{ .name = t.name });
     }
 
     if (tests.items.len == 0) {
-        print("no tests selected\n", .{});
+        print("0 tests selected\n", .{});
         return;
     }
 
-    std.mem.sort(TestInfo, tests.items, {}, struct {
-        fn lessThan(_: void, a: TestInfo, b: TestInfo) bool {
-            const ak = testGroupKey(a.name);
-            const bk = testGroupKey(b.name);
-            if (std.mem.eql(u8, ak, bk)) return std.mem.lessThan(u8, a.name, b.name);
-            return std.mem.lessThan(u8, ak, bk);
-        }
-    }.lessThan);
-
-    const cpu_count = try std.Thread.getCpuCount();
-    const job_cap = jobs orelse @min(default_job_cap, @max(@as(usize, 1), cpu_count));
-    var dashboard = Dashboard{
-        .running = try gpa.alloc(?[]const u8, job_cap),
+    const GroupBucket = struct {
+        key: []const u8,
+        items: std.ArrayList(TestInfo) = .empty,
+        next: usize = 0,
     };
-    defer gpa.free(dashboard.running);
-    @memset(dashboard.running, null);
 
-    var next_index: usize = 0;
-    var summary: Summary = .{};
-
-    while (next_index < tests.items.len) {
-        const width = @min(job_cap, tests.items.len - next_index);
-        for (dashboard.running[0..width], 0..) |*slot, idx| {
-            slot.* = tests.items[next_index + idx].name;
-        }
-        try renderDashboard(io, &dashboard, summary, tests.items.len);
-
-        for (dashboard.running[0..width], 0..) |*slot, idx| {
-            const name = slot.* orelse unreachable;
-            const status = runSingleTestCollect(gpa, io, argv0, name, seed) catch |err| blk: {
-                printRunnerError(name, err);
-                break :blk .crash;
-            };
-            slot.* = null;
-            noteStatus(&summary, status);
-            try renderDashboard(io, &dashboard, summary, tests.items.len);
-            _ = idx;
-        }
-        next_index += width;
+    var buckets: std.ArrayList(GroupBucket) = .empty;
+    defer {
+        for (buckets.items) |*b| b.items.deinit(gpa);
+        buckets.deinit(gpa);
     }
 
-    try clearDashboard(io, &dashboard);
+    for (tests.items) |t| {
+        const key = testGroupKey(t.name);
+        var found: ?usize = null;
+        for (buckets.items, 0..) |b, bi| {
+            if (std.mem.eql(u8, b.key, key)) {
+                found = bi;
+                break;
+            }
+        }
+        if (found == null) {
+            try buckets.append(gpa, .{ .key = key });
+            found = buckets.items.len - 1;
+        }
+        try buckets.items[found.?].items.append(gpa, t);
+    }
+
+    if (seed) |s| {
+        var prng = std.Random.DefaultPrng.init(@as(u64, s));
+        var random = prng.random();
+        shuffleSlice(GroupBucket, &random, buckets.items);
+        for (buckets.items) |*bucket| {
+            shuffleSlice(TestInfo, &random, bucket.items.items);
+        }
+    }
+
+    var reordered: std.ArrayList(TestInfo) = .empty;
+    defer reordered.deinit(gpa);
+    try reordered.ensureTotalCapacity(gpa, tests.items.len);
+
+    var remaining = tests.items.len;
+    while (remaining != 0) {
+        for (buckets.items) |*bucket| {
+            if (bucket.next >= bucket.items.items.len) continue;
+            try reordered.append(gpa, bucket.items.items[bucket.next]);
+            bucket.next += 1;
+            remaining -= 1;
+        }
+    }
+
+    @memcpy(tests.items, reordered.items);
+
+    const cpu_count = std.Thread.getCpuCount() catch 1;
+    var job_count = jobs orelse @min(cpu_count, default_job_cap);
+    if (job_count == 0) job_count = 1;
+    if (job_count > tests.items.len) job_count = tests.items.len;
+
+    var next_index: std.atomic.Value(usize) = .init(0);
+    var summary: Summary = .{};
+    var print_mutex: std.Io.Mutex = .init;
+    var count_mutex: std.Io.Mutex = .init;
+    const running = try gpa.alloc(?[]const u8, job_count);
+    defer gpa.free(running);
+    @memset(running, null);
+    var dashboard: Dashboard = .{ .running = running };
+
+    var ctx = WorkerCtx{
+        .gpa = gpa,
+        .io = io,
+        .argv0 = argv0,
+        .tests = tests.items,
+        .seed = seed,
+        .next_index = &next_index,
+        .summary = &summary,
+        .print_mutex = &print_mutex,
+        .count_mutex = &count_mutex,
+        .dashboard = &dashboard,
+    };
+
+    if (builtin.single_threaded or job_count == 1) {
+        worker(&ctx, 0);
+    } else {
+        const threads = try gpa.alloc(std.Thread, job_count);
+        defer gpa.free(threads);
+        for (threads, 0..) |*t, i| {
+            t.* = try std.Thread.spawn(.{}, worker, .{ &ctx, i });
+        }
+        for (threads) |t| t.join();
+    }
+
+    print_mutex.lockUncancelable(io);
+    clearDashboardLocked(&ctx);
+    print_mutex.unlock(io);
+
     print(
-        "pass={d} fail={d} skip={d} leak={d} crash={d}\n",
+        "\npass: {d}  fail: {d}  skip: {d}  leak: {d}  crash: {d}\n",
         .{ summary.pass, summary.fail, summary.skip, summary.leak, summary.crash },
     );
 
-    if (summary.fail != 0 or summary.leak != 0 or summary.crash != 0) {
-        return error.TestFailure;
+    if (summary.fail != 0 or summary.crash != 0 or summary.leak != 0) {
+        std.process.exit(1);
     }
 }
 
-fn renderDashboard(io: std.Io, dashboard: *Dashboard, summary: Summary, total: usize) !void {
-    try clearDashboard(io, dashboard);
-
-    var stderr_buf: [4096]u8 = undefined;
-    var stderr = std.Io.File.stderr().writer(io, &stderr_buf);
-    const w = &stderr.interface;
-
-    try w.print(
-        "tests pass={d} fail={d} skip={d} leak={d} crash={d} total={d}\n",
-        .{ summary.pass, summary.fail, summary.skip, summary.leak, summary.crash, total },
-    );
-    dashboard.rendered_lines = 1;
-
-    for (dashboard.running) |slot| {
-        if (slot) |name| {
-            try w.print("  RUN {s}\n", .{name});
-            dashboard.rendered_lines += 1;
-        }
+fn shuffleSlice(comptime T: type, random: *std.Random, items: []T) void {
+    if (items.len <= 1) return;
+    var i: usize = items.len - 1;
+    while (i != 0) {
+        const j = random.uintLessThan(usize, i + 1);
+        std.mem.swap(T, &items[i], &items[j]);
+        i -= 1;
     }
-
-    try w.flush();
 }
 
-fn clearDashboard(io: std.Io, dashboard: *Dashboard) !void {
-    if (dashboard.rendered_lines == 0) return;
-    var stderr_buf: [256]u8 = undefined;
-    var stderr = std.Io.File.stderr().writer(io, &stderr_buf);
-    const w = &stderr.interface;
-    var i: usize = 0;
-    while (i < dashboard.rendered_lines) : (i += 1) {
-        try w.writeAll("\x1b[2K\r");
-        if (i + 1 < dashboard.rendered_lines) try w.writeAll("\x1b[1A");
-    }
-    try w.flush();
-    dashboard.rendered_lines = 0;
-}
-
-fn runSingleTestCollect(
+const WorkerCtx = struct {
     gpa: std.mem.Allocator,
     io: std.Io,
     argv0: []const u8,
-    name: []const u8,
+    tests: []const TestInfo,
     seed: ?u32,
-) !Status {
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(gpa);
+    next_index: *std.atomic.Value(usize),
+    summary: *Summary,
+    print_mutex: *std.Io.Mutex,
+    count_mutex: *std.Io.Mutex,
+    dashboard: *Dashboard,
+};
 
-    try argv.appendSlice(gpa, &.{ argv0, "--fastxml-run-test", name });
-    if (seed) |s| {
-        const seed_arg = try std.fmt.allocPrint(gpa, "{d}", .{s});
-        defer gpa.free(seed_arg);
-        try argv.appendSlice(gpa, &.{ "--seed", seed_arg });
+fn clearDashboardLocked(ctx: *WorkerCtx) void {
+    if (ctx.dashboard.rendered_lines == 0) return;
+    print("\x1b[{d}F", .{ctx.dashboard.rendered_lines});
+    var i: usize = 0;
+    while (i < ctx.dashboard.rendered_lines) : (i += 1) {
+        print("\x1b[2K\n", .{});
     }
+    print("\x1b[{d}F", .{ctx.dashboard.rendered_lines});
+    ctx.dashboard.rendered_lines = 0;
+}
 
-    const res = try std.process.run(gpa, io, .{
+fn renderDashboardLocked(ctx: *WorkerCtx) void {
+    clearDashboardLocked(ctx);
+
+    var rendered: usize = 0;
+    for (ctx.dashboard.running) |name_opt| {
+        if (name_opt) |name| {
+            print("\x1b[33mrunning\x1b[0m {s}\n", .{name});
+            rendered += 1;
+        }
+    }
+    ctx.dashboard.rendered_lines = rendered;
+}
+
+fn worker(ctx: *WorkerCtx, slot: usize) void {
+    while (true) {
+        const idx = ctx.next_index.fetchAdd(1, .seq_cst);
+        if (idx >= ctx.tests.len) break;
+
+        const test_name = ctx.tests[idx].name;
+
+        ctx.print_mutex.lockUncancelable(ctx.io);
+        ctx.dashboard.running[slot] = test_name;
+        renderDashboardLocked(ctx);
+        ctx.print_mutex.unlock(ctx.io);
+
+        const result = runChildTest(ctx, test_name) catch |err| {
+            ctx.print_mutex.lockUncancelable(ctx.io);
+            defer ctx.print_mutex.unlock(ctx.io);
+            clearDashboardLocked(ctx);
+            ctx.dashboard.running[slot] = null;
+            printRunnerError(test_name, err);
+            renderDashboardLocked(ctx);
+            ctx.count_mutex.lockUncancelable(ctx.io);
+            noteStatus(ctx.summary, .fail);
+            ctx.count_mutex.unlock(ctx.io);
+            continue;
+        };
+
+        ctx.print_mutex.lockUncancelable(ctx.io);
+        defer ctx.print_mutex.unlock(ctx.io);
+        defer deinitChildResult(ctx.gpa, result);
+        clearDashboardLocked(ctx);
+        ctx.dashboard.running[slot] = null;
+        printTestOutput(test_name, result);
+        renderDashboardLocked(ctx);
+
+        ctx.count_mutex.lockUncancelable(ctx.io);
+        noteStatus(ctx.summary, result.status);
+        ctx.count_mutex.unlock(ctx.io);
+    }
+}
+
+const ChildResult = struct {
+    status: Status,
+    term: std.process.Child.Term,
+    stdout: []u8,
+    stderr: []u8,
+};
+
+fn runChildTest(ctx: *WorkerCtx, test_name: []const u8) !ChildResult {
+    var argv: std.ArrayList([]const u8) = .empty;
+    defer argv.deinit(ctx.gpa);
+
+    try argv.append(ctx.gpa, ctx.argv0);
+    try argv.append(ctx.gpa, "--run-test");
+    try argv.append(ctx.gpa, test_name);
+
+    var seed_buf: ?[]u8 = null;
+    if (ctx.seed) |s| {
+        const seed_str = try std.fmt.allocPrint(ctx.gpa, "{d}", .{s});
+        seed_buf = seed_str;
+        try argv.append(ctx.gpa, "--seed");
+        try argv.append(ctx.gpa, seed_str);
+    }
+    defer if (seed_buf) |b| ctx.gpa.free(b);
+
+    const run_result = try std.process.run(ctx.gpa, ctx.io, .{
         .argv = argv.items,
-        .stdout_limit = .limited(8 * 1024 * 1024),
-        .stderr_limit = .limited(8 * 1024 * 1024),
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(256 * 1024),
         .reserve_amount = 16 * 1024,
     });
-    defer gpa.free(res.stdout);
-    defer gpa.free(res.stderr);
 
-    return switch (res.term) {
-        .exited => |code| switch (code) {
-            0 => .pass,
-            2 => .skip,
-            3 => .leak,
-            else => blk: {
-                if (res.stderr.len != 0) print("\n== TEST {s} ==\n{s}\n", .{ name, res.stderr });
-                break :blk .fail;
-            },
-        },
-        else => .crash,
+    return .{
+        .status = classifyStatus(run_result.term),
+        .term = run_result.term,
+        .stdout = run_result.stdout,
+        .stderr = run_result.stderr,
     };
 }
 
-fn runSingleTest(name: []const u8, seed: ?u32) u8 {
-    _ = seed;
-    for (builtin.test_functions) |t| {
-        if (!std.mem.eql(u8, t.name, name)) continue;
-        t.func() catch |err| {
-            print("FAIL {s}: {s}\n", .{ name, @errorName(err) });
-            return 1;
-        };
-        print("PASS {s}\n", .{name});
-        return 0;
+fn classifyStatus(term: std.process.Child.Term) Status {
+    switch (term) {
+        .exited => |code| return switch (code) {
+            0 => .pass,
+            2 => .skip,
+            3 => .leak,
+            else => .fail,
+        },
+        .signal, .stopped, .unknown => return .crash,
     }
-    print("missing test: {s}\n", .{name});
-    return 1;
+}
+
+fn printTestOutput(name: []const u8, res: ChildResult) void {
+    const color = switch (res.status) {
+        .pass => "\x1b[32m",
+        .skip => "\x1b[94m",
+        else => "\x1b[31m",
+    };
+    const label = switch (res.status) {
+        .pass => "ok",
+        .skip => "skip",
+        .leak => "leak",
+        .crash => "crash",
+        .fail => "error",
+    };
+
+    print("{s}{s}\x1b[0m {s}", .{ color, label, name });
+
+    switch (res.term) {
+        .exited => |code| if (code != 0) print(" | exit {d}", .{code}),
+        .signal => |sig| print(" | signal {d} ({s})", .{ @intFromEnum(sig), @tagName(sig) }),
+        .stopped => |code| print(" | stopped {d}", .{code}),
+        .unknown => |code| print(" | unknown {d}", .{code}),
+    }
+
+    print("\n", .{});
+    if (res.stderr.len != 0 and res.status != .pass and res.status != .skip) {
+        print("stderr:\n{s}", .{res.stderr});
+        if (res.stderr[res.stderr.len - 1] != '\n') print("\n", .{});
+    }
+    if (res.stdout.len != 0 and res.status != .pass and res.status != .skip) {
+        print("stdout:\n{s}", .{res.stdout});
+        if (res.stdout[res.stdout.len - 1] != '\n') print("\n", .{});
+    }
+}
+
+fn deinitChildResult(gpa: std.mem.Allocator, res: ChildResult) void {
+    gpa.free(res.stdout);
+    gpa.free(res.stderr);
+}
+
+fn runSingleTest(name: []const u8, seed: ?u32) void {
+    if (seed) |s| std.testing.random_seed = s;
+
+    const test_fn = findTest(name) orelse {
+        print("unknown test: {s}\n", .{name});
+        std.process.exit(1);
+    };
+
+    std.testing.allocator_instance = .{};
+    const result = test_fn.func();
+    const leak_status = std.testing.allocator_instance.deinit();
+
+    if (leak_status == .leak) {
+        print("memory leak\n", .{});
+        std.process.exit(3);
+    }
+
+    if (result) |_| {
+        std.process.exit(0);
+    } else |err| switch (err) {
+        error.SkipZigTest => std.process.exit(2),
+        else => {
+            print("{s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        },
+    }
+}
+
+const TestFn = std.meta.Elem(@TypeOf(builtin.test_functions));
+
+fn findTest(name: []const u8) ?TestFn {
+    for (builtin.test_functions) |t| {
+        if (std.mem.eql(u8, t.name, name)) return t;
+    }
+    return null;
 }

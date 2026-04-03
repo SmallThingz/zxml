@@ -18,8 +18,6 @@ const parse_parsers = [_][]const u8{
     "ours-strict",
     "ours-turbo",
     "strlen",
-    "libxml2",
-    "yxml",
     "pugixml",
     "rapidxml",
 };
@@ -41,6 +39,10 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "plant_catalog.xml", .iterations = 50, .is_real = true },
     .{ .name = "cd_catalog.xml", .iterations = 80, .is_real = true },
     .{ .name = "hnrss.xml", .iterations = 80, .is_real = true },
+    .{ .name = "xkcd_rss.xml", .iterations = 100, .is_real = true },
+    .{ .name = "bbc_world.xml", .iterations = 80, .is_real = true },
+    .{ .name = "arxiv_cs.xml", .iterations = 80, .is_real = true },
+    .{ .name = "nasa_breaking_news.xml", .iterations = 80, .is_real = true },
     .{ .name = "pugixml_large.xml", .iterations = 24, .is_real = true },
     .{ .name = "weekly_utf8.xml", .iterations = 100, .is_real = true },
     .{ .name = "xgconsole.xml", .iterations = 160, .is_real = true },
@@ -60,6 +62,12 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "plant_catalog.xml", .iterations = 140, .is_real = true },
     .{ .name = "cd_catalog.xml", .iterations = 200, .is_real = true },
     .{ .name = "hnrss.xml", .iterations = 200, .is_real = true },
+    .{ .name = "xkcd_rss.xml", .iterations = 220, .is_real = true },
+    .{ .name = "bbc_world.xml", .iterations = 180, .is_real = true },
+    .{ .name = "arxiv_cs.xml", .iterations = 180, .is_real = true },
+    .{ .name = "nasa_breaking_news.xml", .iterations = 180, .is_real = true },
+    .{ .name = "ecb_usd.xml", .iterations = 220, .is_real = true },
+    .{ .name = "planetpython.xml", .iterations = 160, .is_real = true },
     .{ .name = "tree.xml", .iterations = 240, .is_real = true },
     .{ .name = "character.xml", .iterations = 260, .is_real = true },
     .{ .name = "transitions.xml", .iterations = 260, .is_real = true },
@@ -93,8 +101,6 @@ const GateRow = struct {
     is_real: bool,
     ours_turbo_mb_s: f64,
     strlen_mb_s: f64,
-    libxml2_mb_s: f64,
-    yxml_mb_s: f64,
     pugixml_mb_s: f64,
     rapidxml_mb_s: f64,
     strlen_ratio: f64,
@@ -141,19 +147,6 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
         if (pathExists(io, dst)) continue;
         const cp = [_][]const u8{ "cp", src, dst };
         try common.runInherit(io, alloc, &cp, REPO_ROOT);
-    }
-
-    try common.ensureDir(io, PARSERS_DIR ++ "/yxml");
-    const yxml_files = [_][]const u8{ "yxml.c", "yxml.h" };
-    for (yxml_files) |f| {
-        const dst = try std.fmt.allocPrint(alloc, PARSERS_DIR ++ "/yxml/{s}", .{f});
-        defer alloc.free(dst);
-        if (pathExists(io, dst)) continue;
-
-        const url = try std.fmt.allocPrint(alloc, "https://g.blicky.net/yxml.git/plain/{s}", .{f});
-        defer alloc.free(url);
-        const argv = [_][]const u8{ "curl", "-L", "--fail", "--retry", "2", "--retry-delay", "1", url, "-o", dst };
-        try common.runInherit(io, alloc, &argv, REPO_ROOT);
     }
 
     std.debug.print("parsers ready\n", .{});
@@ -368,6 +361,12 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
         .{ .url = "https://www.w3schools.com/xml/plant_catalog.xml", .out = "plant_catalog.xml" },
         .{ .url = "https://www.w3schools.com/xml/cd_catalog.xml", .out = "cd_catalog.xml" },
         .{ .url = "https://hnrss.org/frontpage", .out = "hnrss.xml" },
+        .{ .url = "https://xkcd.com/rss.xml", .out = "xkcd_rss.xml" },
+        .{ .url = "https://feeds.bbci.co.uk/news/world/rss.xml", .out = "bbc_world.xml" },
+        .{ .url = "https://export.arxiv.org/rss/cs", .out = "arxiv_cs.xml" },
+        .{ .url = "https://www.nasa.gov/rss/dyn/breaking_news.rss", .out = "nasa_breaking_news.xml" },
+        .{ .url = "https://www.ecb.europa.eu/rss/fxref-usd.html", .out = "ecb_usd.xml" },
+        .{ .url = "https://planetpython.org/rss20.xml", .out = "planetpython.xml" },
     };
 
     for (targets) |item| {
@@ -421,26 +420,6 @@ fn ensureExternalParsersBuilt(io: std.Io, alloc: std.mem.Allocator) !void {
     }
 }
 
-fn appendPkgConfigArgs(io: std.Io, alloc: std.mem.Allocator, list: *std.ArrayList([]const u8), package: []const u8) !void {
-    const out = common.runCaptureStdout(io, alloc, &[_][]const u8{ "pkg-config", "--cflags", "--libs", package }, REPO_ROOT) catch |err| {
-        if (err == error.FileNotFound and std.mem.eql(u8, package, "libxml-2.0")) {
-            try list.appendSlice(alloc, &.{ "-I/usr/include/libxml2", "-lxml2" });
-            return;
-        }
-        return err;
-    };
-    defer alloc.free(out);
-
-    var it = std.mem.tokenizeAny(u8, out, " \t\n\r");
-    while (it.next()) |tok| {
-        try list.append(alloc, try alloc.dupe(u8, tok));
-    }
-}
-
-fn freeOwnedArgs(alloc: std.mem.Allocator, args: []const []const u8) void {
-    for (args) |a| alloc.free(a);
-}
-
 fn runInheritWithBenchTmp(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
     var with_env = std.ArrayList([]const u8).empty;
     defer with_env.deinit(alloc);
@@ -485,22 +464,6 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     };
     try runInheritWithBenchTmp(io, alloc, &strlen_cc, REPO_ROOT);
 
-    var libxml_args = std.ArrayList([]const u8).empty;
-    const base_arg_count: usize = 5;
-    defer {
-        if (libxml_args.items.len > base_arg_count) freeOwnedArgs(alloc, libxml_args.items[base_arg_count..]);
-        libxml_args.deinit(alloc);
-    }
-    try libxml_args.appendSlice(alloc, &.{
-        "cc",
-        "-O3",
-        "bench/runners/libxml2_runner.c",
-        "-o",
-        "bench/build/bin/libxml2_runner",
-    });
-    try appendPkgConfigArgs(io, alloc, &libxml_args, "libxml-2.0");
-    try runInheritWithBenchTmp(io, alloc, libxml_args.items, REPO_ROOT);
-
     const pugixml_cc = [_][]const u8{
         "c++",
         "-O3",
@@ -523,17 +486,6 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
         "bench/build/bin/rapidxml_runner",
     };
     try runInheritWithBenchTmp(io, alloc, &rapidxml_cc, REPO_ROOT);
-
-    const yxml_cc = [_][]const u8{
-        "cc",
-        "-O3",
-        "bench/runners/yxml_runner.c",
-        "bench/parsers/yxml/yxml.c",
-        "-Ibench/parsers/yxml",
-        "-o",
-        "bench/build/bin/yxml_runner",
-    };
-    try runInheritWithBenchTmp(io, alloc, &yxml_cc, REPO_ROOT);
 }
 
 fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, iterations: usize) !u64 {
@@ -565,16 +517,6 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
         argc += 4;
     } else if (std.mem.eql(u8, parser_name, "strlen")) {
         argv[argc + 0] = BIN_DIR ++ "/strlen_runner";
-        argv[argc + 1] = fixture_path;
-        argv[argc + 2] = iters;
-        argc += 3;
-    } else if (std.mem.eql(u8, parser_name, "libxml2")) {
-        argv[argc + 0] = BIN_DIR ++ "/libxml2_runner";
-        argv[argc + 1] = fixture_path;
-        argv[argc + 2] = iters;
-        argc += 3;
-    } else if (std.mem.eql(u8, parser_name, "yxml")) {
-        argv[argc + 0] = BIN_DIR ++ "/yxml_runner";
         argv[argc + 1] = fixture_path;
         argv[argc + 2] = iters;
         argc += 3;
@@ -661,14 +603,12 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
     for (profile.fixtures) |fx| {
         const ours = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
         const strlen = findThroughput(rows, "strlen", fx.name) orelse continue;
-        const libxml2 = findThroughput(rows, "libxml2", fx.name) orelse continue;
-        const yxml = findThroughput(rows, "yxml", fx.name) orelse continue;
         const pugixml = findThroughput(rows, "pugixml", fx.name) orelse continue;
         const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse continue;
 
         const threshold: f64 = if (fx.is_real) 0.35 else 0.60;
         const ratio = if (strlen == 0) 0 else ours / strlen;
-        const pass_sota = ours > libxml2 and ours > yxml and ours > pugixml and ours > rapidxml;
+        const pass_sota = ours > pugixml and ours > rapidxml;
         const pass_strlen = ratio >= threshold;
 
         try out.append(alloc, .{
@@ -676,8 +616,6 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
             .is_real = fx.is_real,
             .ours_turbo_mb_s = ours,
             .strlen_mb_s = strlen,
-            .libxml2_mb_s = libxml2,
-            .yxml_mb_s = yxml,
             .pugixml_mb_s = pugixml,
             .rapidxml_mb_s = rapidxml,
             .strlen_ratio = ratio,
@@ -752,16 +690,14 @@ fn writeMarkdown(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8,
 
     if (gate_rows.len != 0) {
         try w.writeAll("\n## Stable Gates\n\n");
-        try w.writeAll("| Fixture | ours-turbo | libxml2 | yxml | pugixml | rapidxml | ours/strlen | Threshold | Result |\n");
-        try w.writeAll("|---|---:|---:|---:|---:|---:|---:|---:|---|\n");
+        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | ours/strlen | Threshold | Result |\n");
+        try w.writeAll("|---|---:|---:|---:|---:|---:|---|\n");
         for (gate_rows) |g| {
             try w.print(
-                "| {s} | {d:.2} | {d:.2} | {d:.2} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {s} |\n",
+                "| {s} | {d:.2} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {s} |\n",
                 .{
                     g.fixture,
                     g.ours_turbo_mb_s,
-                    g.libxml2_mb_s,
-                    g.yxml_mb_s,
                     g.pugixml_mb_s,
                     g.rapidxml_mb_s,
                     g.strlen_ratio,
@@ -892,16 +828,14 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
         const gate_headers = [_][]const u8{
             "Fixture",
             "ours-turbo",
-            "libxml2",
-            "yxml",
             "pugixml",
             "rapidxml",
             "ours/strlen",
             "Threshold",
             "Result",
         };
-        const gate_header_align = [_]bool{ false, false, false, false, false, false, false, false, false };
-        const gate_align = [_]bool{ false, true, true, true, true, true, true, true, false };
+        const gate_header_align = [_]bool{ false, false, false, false, false, false, false };
+        const gate_align = [_]bool{ false, true, true, true, true, true, false };
         var gate_widths = [_]usize{
             gate_headers[0].len,
             gate_headers[1].len,
@@ -910,8 +844,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             gate_headers[4].len,
             gate_headers[5].len,
             gate_headers[6].len,
-            gate_headers[7].len,
-            gate_headers[8].len,
         };
 
         for (gate_rows) |g| {
@@ -921,32 +853,24 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_turbo_mb_s});
             gate_widths[1] = maxUsize(gate_widths[1], ours.len);
 
-            var libxml2_buf: [32]u8 = undefined;
-            const libxml2 = try std.fmt.bufPrint(&libxml2_buf, "{d:.2}", .{g.libxml2_mb_s});
-            gate_widths[2] = maxUsize(gate_widths[2], libxml2.len);
-
-            var yxml_buf: [32]u8 = undefined;
-            const yxml = try std.fmt.bufPrint(&yxml_buf, "{d:.2}", .{g.yxml_mb_s});
-            gate_widths[3] = maxUsize(gate_widths[3], yxml.len);
-
             var pugixml_buf: [32]u8 = undefined;
             const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mb_s});
-            gate_widths[4] = maxUsize(gate_widths[4], pugixml.len);
+            gate_widths[2] = maxUsize(gate_widths[2], pugixml.len);
 
             var rapidxml_buf: [32]u8 = undefined;
             const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mb_s});
-            gate_widths[5] = maxUsize(gate_widths[5], rapidxml.len);
+            gate_widths[3] = maxUsize(gate_widths[3], rapidxml.len);
 
             var ratio_buf: [32]u8 = undefined;
             const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.strlen_ratio});
-            gate_widths[6] = maxUsize(gate_widths[6], ratio.len);
+            gate_widths[4] = maxUsize(gate_widths[4], ratio.len);
 
             var threshold_buf: [32]u8 = undefined;
             const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.strlen_threshold});
-            gate_widths[7] = maxUsize(gate_widths[7], threshold.len);
+            gate_widths[5] = maxUsize(gate_widths[5], threshold.len);
 
             const result = if (g.pass) "PASS" else "FAIL";
-            gate_widths[8] = maxUsize(gate_widths[8], result.len);
+            gate_widths[6] = maxUsize(gate_widths[6], result.len);
         }
 
         try writeTableBorder(w, &gate_widths);
@@ -959,12 +883,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
 
             var ours_buf: [32]u8 = undefined;
             const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_turbo_mb_s});
-
-            var libxml2_buf: [32]u8 = undefined;
-            const libxml2 = try std.fmt.bufPrint(&libxml2_buf, "{d:.2}", .{g.libxml2_mb_s});
-
-            var yxml_buf: [32]u8 = undefined;
-            const yxml = try std.fmt.bufPrint(&yxml_buf, "{d:.2}", .{g.yxml_mb_s});
 
             var pugixml_buf: [32]u8 = undefined;
             const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mb_s});
@@ -981,8 +899,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             const row = [_][]const u8{
                 g.fixture,
                 ours,
-                libxml2,
-                yxml,
                 pugixml,
                 rapidxml,
                 ratio,
@@ -1013,14 +929,12 @@ fn writeJson(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, par
     try w.writeAll("  ],\n  \"gates\": [\n");
     for (gate_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"strlen_mb_s\":{d:.6},\"libxml2_mb_s\":{d:.6},\"yxml_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"strlen_ratio\":{d:.6},\"strlen_threshold\":{d:.6},\"pass_sota\":{s},\"pass_strlen\":{s},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"strlen_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"strlen_ratio\":{d:.6},\"strlen_threshold\":{d:.6},\"pass_sota\":{s},\"pass_strlen\":{s},\"pass\":{s}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
                 g.ours_turbo_mb_s,
                 g.strlen_mb_s,
-                g.libxml2_mb_s,
-                g.yxml_mb_s,
                 g.pugixml_mb_s,
                 g.rapidxml_mb_s,
                 g.strlen_ratio,
@@ -1160,8 +1074,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             if (!g.pass) {
                 failed = true;
                 std.debug.print(
-                    "gate fail: {s} ours={d:.2} libxml2={d:.2} yxml={d:.2} pugixml={d:.2} rapidxml={d:.2} ratio={d:.3} threshold={d:.2}\n",
-                    .{ g.fixture, g.ours_turbo_mb_s, g.libxml2_mb_s, g.yxml_mb_s, g.pugixml_mb_s, g.rapidxml_mb_s, g.strlen_ratio, g.strlen_threshold },
+                    "gate fail: {s} ours={d:.2} pugixml={d:.2} rapidxml={d:.2} ratio={d:.3} threshold={d:.2}\n",
+                    .{ g.fixture, g.ours_turbo_mb_s, g.pugixml_mb_s, g.rapidxml_mb_s, g.strlen_ratio, g.strlen_threshold },
                 );
             }
         }

@@ -223,10 +223,6 @@ pub const Document = struct {
         return @constCast(self).nodeAt(0);
     }
 
-    pub fn rootMut(self: *Document) ?Node {
-        return self.nodeAt(0);
-    }
-
     pub fn nodeAt(self: *const Document, idx: u32) ?Node {
         if (idx == InvalidIndex or idx >= self.nodes.items.len) return null;
         const doc = @constCast(self);
@@ -237,42 +233,6 @@ pub const Document = struct {
             .attr_start = doc.nodes.items[idx].attr_start,
             .attr_len = doc.nodes.items[idx].attr_len,
         };
-    }
-
-    pub fn nodeAtMut(self: *Document, idx: u32) ?Node {
-        return self.nodeAt(idx);
-    }
-
-    pub fn appendNode(noalias self: *Document, kind: NodeType, parent_idx: u32, comptime store_parent: bool) !u32 {
-        if (self.nodes.items.len == self.nodes.capacity) {
-            try self.nodes.ensureUnusedCapacity(self.allocator, 1);
-        }
-        if (comptime store_parent) {
-            if (self.parents.items.len == self.parents.capacity) {
-                try self.parents.ensureUnusedCapacity(self.allocator, 1);
-            }
-        }
-        const idx: u32 = @intCast(self.nodes.items.len);
-        const node = RawNode{ .kind = kind, .subtree_end = idx };
-
-        const out = self.nodes.addOneAssumeCapacity();
-        out.* = node;
-        if (comptime store_parent) {
-            const parent_out = self.parents.addOneAssumeCapacity();
-            parent_out.* = parent_idx;
-        }
-        return idx;
-    }
-
-    pub fn appendAttribute(noalias self: *Document, name: Span, value: Span) !u32 {
-        if (self.attrs.items.len == self.attrs.capacity) {
-            try self.attrs.ensureUnusedCapacity(self.allocator, 1);
-        }
-        const idx: u32 = @intCast(self.attrs.items.len);
-        const out = self.attrs.addOneAssumeCapacity();
-        out.* = .{ .name = name, .value = value };
-
-        return idx;
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {

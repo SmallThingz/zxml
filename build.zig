@@ -87,13 +87,8 @@ pub fn build(b: *std.Build) void {
         conformance_cmd.addArgs(args);
     }
 
-    const test_mod = b.createModule(.{
-        .root_source_file = b.path("test_root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
     const mod_tests = b.addTest(.{
-        .root_module = test_mod,
+        .root_module = mod,
         .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
