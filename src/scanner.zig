@@ -2,14 +2,15 @@ const std = @import("std");
 const tables = @import("tables.zig");
 
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
-    if (haystack.len -| start < 32) {
-        var i = start;
-        while (i < haystack.len) : (i += 1) {
-            if (haystack[i] == needle) return i;
-        }
+    const probe_end = @min(haystack.len, start + 32);
+    var i = start;
+    while (i < probe_end) : (i += 1) {
+        if (haystack[i] == needle) return i;
+    }
+    if (probe_end == haystack.len) {
         return null;
     }
-    return std.mem.indexOfScalarPos(u8, haystack, start, needle);
+    return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
 }
 
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
