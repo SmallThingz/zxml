@@ -617,7 +617,17 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {
-            if (self.i >= self.input.len or !tables.isWhitespace(self.input[self.i])) return;
+            if (self.i >= self.input.len) return;
+            const c = self.input[self.i];
+            if (c == ' ') {
+                const next = self.i + 1;
+                if (next >= self.input.len or self.input[next] != ' ') {
+                    self.i = next;
+                    return;
+                }
+            } else if (!tables.isWhitespace(c)) {
+                return;
+            }
             self.i = scanner.skipWhitespace(self.input, self.i);
         }
 
