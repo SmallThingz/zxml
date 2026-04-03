@@ -4,6 +4,16 @@ const tables = @import("tables.zig");
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
     const probe_end = @min(haystack.len, start + 32);
     var i = start;
+    while (i + 8 <= probe_end) : (i += 8) {
+        if (haystack[i] == needle) return i;
+        if (haystack[i + 1] == needle) return i + 1;
+        if (haystack[i + 2] == needle) return i + 2;
+        if (haystack[i + 3] == needle) return i + 3;
+        if (haystack[i + 4] == needle) return i + 4;
+        if (haystack[i + 5] == needle) return i + 5;
+        if (haystack[i + 6] == needle) return i + 6;
+        if (haystack[i + 7] == needle) return i + 7;
+    }
     while (i < probe_end) : (i += 1) {
         if (haystack[i] == needle) return i;
     }
