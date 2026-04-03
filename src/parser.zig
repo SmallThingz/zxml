@@ -79,10 +79,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
             }
 
-            const idx = try self.appendChildNode(.text);
-            var n = &self.doc.nodes.items[idx];
-            n.value = .{ .start = @intCast(start), .end = @intCast(end) };
-            n.value_processed = !decode_entities;
+            _ = try self.appendTextNode(start, end, !decode_entities);
         }
 
         inline fn parseOpeningTag(noalias self: *Self) ParseError!void {
@@ -103,9 +100,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const tag_len = scan.len;
             const tag_key = scan.key;
 
-            const idx = try self.appendChildNode(.element);
+            const idx = try self.appendElementNode(name_start, name_end);
             var node = &self.doc.nodes.items[idx];
-            node.name = .{ .start = @intCast(name_start), .end = @intCast(name_end) };
 
             const attr_start_idx: u32 = @intCast(self.doc.attrs.items.len);
 
@@ -489,6 +485,59 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return self.appendChildNodeTo(parent_idx, kind);
         }
 
+        inline fn appendElementNode(noalias self: *Self, name_start: usize, name_end: usize) ParseError!u32 {
+            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+            return self.appendElementNodeTo(parent_idx, name_start, name_end);
+        }
+
+        inline fn appendElementNodeTo(noalias self: *Self, parent_idx: u32, name_start: usize, name_end: usize) ParseError!u32 {
+            const len = self.doc.nodes.items.len;
+            if (len == self.doc.nodes.capacity) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+
+            var parent = &self.doc.nodes.items[parent_idx];
+            const idx: u32 = @intCast(len);
+            const out = self.doc.nodes.addOneAssumeCapacity();
+            out.* = .{
+                .kind = .element,
+                .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                .parent = parent_idx,
+                .prev_sibling = parent.last_child,
+                .subtree_end = idx,
+            };
+            parent.last_child = idx;
+            return idx;
+        }
+
+        inline fn appendTextNode(noalias self: *Self, start: usize, end: usize, value_processed: bool) ParseError!u32 {
+            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+            return self.appendTextNodeTo(parent_idx, start, end, value_processed);
+        }
+
+        inline fn appendTextNodeTo(noalias self: *Self, parent_idx: u32, start: usize, end: usize, value_processed: bool) ParseError!u32 {
+            const len = self.doc.nodes.items.len;
+            if (len == self.doc.nodes.capacity) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+
+            var parent = &self.doc.nodes.items[parent_idx];
+            const idx: u32 = @intCast(len);
+            const out = self.doc.nodes.addOneAssumeCapacity();
+            out.* = .{
+                .kind = .text,
+                .value = .{ .start = @intCast(start), .end = @intCast(end) },
+                .value_processed = value_processed,
+                .parent = parent_idx,
+                .prev_sibling = parent.last_child,
+                .subtree_end = idx,
+            };
+            parent.last_child = idx;
+            return idx;
+        }
+
         inline fn appendChildNodeTo(noalias self: *Self, parent_idx: u32, kind: NodeType) ParseError!u32 {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
@@ -647,11 +696,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
             }
 
-            const text_idx = try self.appendChildNodeTo(idx, .text);
+            const text_idx = try self.appendTextNodeTo(idx, text_start, lt, !decode_entities);
             self.doc.nodes.items[idx].subtree_end = text_idx;
-            var text_node = &self.doc.nodes.items[text_idx];
-            text_node.value = .{ .start = @intCast(text_start), .end = @intCast(lt) };
-            text_node.value_processed = !decode_entities;
             return true;
         }
 
