@@ -718,16 +718,26 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         };
 
         inline fn prefixKey(input: []const u8) u64 {
-            var key: u64 = 0;
-            if (input.len > 0) key |= @as(u64, input[0]);
-            if (input.len > 1) key |= @as(u64, input[1]) << 8;
-            if (input.len > 2) key |= @as(u64, input[2]) << 16;
-            if (input.len > 3) key |= @as(u64, input[3]) << 24;
-            if (input.len > 4) key |= @as(u64, input[4]) << 32;
-            if (input.len > 5) key |= @as(u64, input[5]) << 40;
-            if (input.len > 6) key |= @as(u64, input[6]) << 48;
-            if (input.len > 7) key |= @as(u64, input[7]) << 56;
-            return key;
+            return switch (input.len) {
+                0 => 0,
+                1 => @as(u64, input[0]),
+                2 => @as(u64, input[0]) |
+                    (@as(u64, input[1]) << 8),
+                3 => @as(u64, input[0]) |
+                    (@as(u64, input[1]) << 8) |
+                    (@as(u64, input[2]) << 16),
+                4 => @as(u64, std.mem.readInt(u32, input[0..4], .little)),
+                5 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+                    (@as(u64, input[4]) << 32),
+                6 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+                    (@as(u64, input[4]) << 32) |
+                    (@as(u64, input[5]) << 40),
+                7 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+                    (@as(u64, input[4]) << 32) |
+                    (@as(u64, input[5]) << 40) |
+                    (@as(u64, input[6]) << 48),
+                else => std.mem.readInt(u64, input[0..8], .little),
+            };
         }
 
         inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
