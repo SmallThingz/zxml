@@ -25,13 +25,49 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
 
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
-    while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
+    while (i + 8 <= input.len) : (i += 8) {
+        if (!tables.NameCharTable[input[i]]) return i;
+        if (!tables.NameCharTable[input[i + 1]]) return i + 1;
+        if (!tables.NameCharTable[input[i + 2]]) return i + 2;
+        if (!tables.NameCharTable[input[i + 3]]) return i + 3;
+        if (!tables.NameCharTable[input[i + 4]]) return i + 4;
+        if (!tables.NameCharTable[input[i + 5]]) return i + 5;
+        if (!tables.NameCharTable[input[i + 6]]) return i + 6;
+        if (!tables.NameCharTable[input[i + 7]]) return i + 7;
+    }
+    while (i < input.len and tables.NameCharTable[input[i]]) : (i += 1) {}
     return i;
 }
 
 pub inline fn findAttrUnquotedEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
-    while (i < input.len and tables.isAttrUnquotedValueChar(input[i])) : (i += 1) {}
+    while (i + 8 <= input.len) : (i += 8) {
+        if (!tables.AttrUnquotedValueCharTable[input[i]]) return i;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 1]]) return i + 1;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 2]]) return i + 2;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 3]]) return i + 3;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 4]]) return i + 4;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 5]]) return i + 5;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 6]]) return i + 6;
+        if (!tables.AttrUnquotedValueCharTable[input[i + 7]]) return i + 7;
+    }
+    while (i < input.len and tables.AttrUnquotedValueCharTable[input[i]]) : (i += 1) {}
+    return i;
+}
+
+pub inline fn skipWhitespace(noalias input: []const u8, start: usize) usize {
+    var i = start;
+    while (i + 8 <= input.len) : (i += 8) {
+        if (!tables.WhitespaceTable[input[i]]) return i;
+        if (!tables.WhitespaceTable[input[i + 1]]) return i + 1;
+        if (!tables.WhitespaceTable[input[i + 2]]) return i + 2;
+        if (!tables.WhitespaceTable[input[i + 3]]) return i + 3;
+        if (!tables.WhitespaceTable[input[i + 4]]) return i + 4;
+        if (!tables.WhitespaceTable[input[i + 5]]) return i + 5;
+        if (!tables.WhitespaceTable[input[i + 6]]) return i + 6;
+        if (!tables.WhitespaceTable[input[i + 7]]) return i + 7;
+    }
+    while (i < input.len and tables.WhitespaceTable[input[i]]) : (i += 1) {}
     return i;
 }
 
@@ -95,6 +131,8 @@ test "name and attribute scanners stop at the right boundary" {
     try std.testing.expectEqual(@as(usize, 6), findAttrUnquotedEnd("value/>", 0));
     try std.testing.expectEqual(@as(usize, 0), findNameEnd(" x", 0));
     try std.testing.expectEqual(@as(usize, 0), findAttrUnquotedEnd(" value", 0));
+    try std.testing.expectEqual(@as(usize, 4), skipWhitespace(" \n\t\tx", 0));
+    try std.testing.expectEqual(@as(usize, 0), skipWhitespace("x", 0));
 }
 
 test "scanTextRun tracks non-whitespace text" {

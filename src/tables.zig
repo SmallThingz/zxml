@@ -13,6 +13,7 @@ pub const NameStartTable = blk: {
     var t = [_]bool{false} ** 256;
     for ('A'..('Z' + 1)) |c| t[c] = true;
     for ('a'..('z' + 1)) |c| t[c] = true;
+    for (0x80..256) |c| t[c] = true;
     t['_'] = true;
     t[':'] = true;
     break :blk t;
@@ -23,6 +24,7 @@ pub const NameCharTable = blk: {
     for ('A'..('Z' + 1)) |c| t[c] = true;
     for ('a'..('z' + 1)) |c| t[c] = true;
     for ('0'..('9' + 1)) |c| t[c] = true;
+    for (0x80..256) |c| t[c] = true;
     t['_'] = true;
     t[':'] = true;
     t['-'] = true;
@@ -51,11 +53,11 @@ pub inline fn isWhitespace(c: u8) bool {
 }
 
 pub inline fn isNameStart(c: u8) bool {
-    return c >= 0x80 or NameStartTable[c];
+    return NameStartTable[c];
 }
 
 pub inline fn isNameChar(c: u8) bool {
-    return c >= 0x80 or NameCharTable[c];
+    return NameCharTable[c];
 }
 
 pub inline fn isAttrUnquotedValueChar(c: u8) bool {
@@ -82,11 +84,13 @@ test "character classifiers match XML expectations" {
     try std.testing.expect(!isNameStart('1'));
     try std.testing.expect(isNameStart(0xC3));
     try std.testing.expectEqual(NameStartTable['a'], isNameStart('a'));
+    try std.testing.expectEqual(NameStartTable[0xC3], isNameStart(0xC3));
 
     try std.testing.expect(isNameChar('-'));
     try std.testing.expect(isNameChar('7'));
     try std.testing.expect(!isNameChar(' '));
     try std.testing.expectEqual(NameCharTable['7'], isNameChar('7'));
+    try std.testing.expectEqual(NameCharTable[0xC3], isNameChar(0xC3));
 
     try std.testing.expect(isAttrUnquotedValueChar('x'));
     try std.testing.expect(!isAttrUnquotedValueChar(' '));

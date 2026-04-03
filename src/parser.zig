@@ -520,7 +520,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn skipWhitespace(noalias self: *Self) void {
             if (self.i >= self.input.len or !tables.isWhitespace(self.input[self.i])) return;
-            while (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) : (self.i += 1) {}
+            self.i = scanner.skipWhitespace(self.input, self.i);
         }
 
         inline fn tryFinishSimpleTextElement(
