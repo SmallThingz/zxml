@@ -61,7 +61,12 @@ fn Parser(comptime opts: ParseOptions) type {
                 return error.UnexpectedEndOfData;
             }
 
-            self.finishOpenElements();
+            while (self.doc.parse_stack.items.len > 1) {
+                self.finishNode(self.popStack());
+            }
+            if (self.doc.nodes.items.len != 0) {
+                self.finishNode(0);
+            }
         }
 
         inline fn parseTextRange(noalias self: *Self, start: usize, end: usize, has_non_whitespace: bool) ParseError!void {
@@ -232,7 +237,14 @@ fn Parser(comptime opts: ParseOptions) type {
 
         inline fn parseClosingTag(noalias self: *Self) ParseError!void {
             if (!strict_mode and !opts.validate_closing_tags) {
-                return self.parseClosingTagTurbo();
+                self.i += 2; // </
+                const gt = scanner.findByte(self.input, self.i, '>') orelse {
+                    self.i = self.input.len;
+                    return;
+                };
+                self.i = gt + 1;
+                if (self.doc.parse_stack.items.len > 1) self.finishNode(self.popStack());
+                return;
             }
 
             self.i += 2; // </
@@ -297,16 +309,6 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             return error.InvalidClosingTagName;
-        }
-
-        inline fn parseClosingTagTurbo(noalias self: *Self) ParseError!void {
-            self.i += 2; // </
-            const gt = scanner.findByte(self.input, self.i, '>') orelse {
-                self.i = self.input.len;
-                return;
-            };
-            self.i = gt + 1;
-            if (self.doc.parse_stack.items.len > 1) self.finishNode(self.popStack());
         }
 
         fn parsePiOrDeclaration(noalias self: *Self) ParseError!void {
@@ -478,23 +480,14 @@ fn Parser(comptime opts: ParseOptions) type {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
             }
-            if (comptime opts.store_parent_pointers) {
-                if (self.doc.parents.items.len == self.doc.parents.capacity) {
-                    @branchHint(.unlikely);
-                    self.doc.parents.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
-                }
-            }
 
             const idx: u32 = @intCast(len);
             const out = self.doc.nodes.addOneAssumeCapacity();
             out.* = .{
                 .kind = kind,
+                .parent = parent_idx,
                 .subtree_end = idx,
             };
-            if (comptime opts.store_parent_pointers) {
-                const parent_out = self.doc.parents.addOneAssumeCapacity();
-                parent_out.* = parent_idx;
-            }
             return idx;
         }
 
@@ -543,15 +536,6 @@ fn Parser(comptime opts: ParseOptions) type {
             self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
         }
 
-        fn finishOpenElements(noalias self: *Self) void {
-            while (self.doc.parse_stack.items.len > 1) {
-                self.finishNode(self.popStack());
-            }
-            if (self.doc.nodes.items.len != 0) {
-                self.finishNode(0);
-            }
-        }
-
         inline fn skipWhitespace(noalias self: *Self) void {
             if (self.i >= self.input.len or !tables.isWhitespace(self.input[self.i])) return;
             while (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) : (self.i += 1) {}
@@ -575,7 +559,17 @@ fn Parser(comptime opts: ParseOptions) type {
             const close_start = lt + 2;
             const close_end = close_start + tag_len;
             if (close_end > self.input.len) return false;
-            if (tag_key != sliceKey(self.input[close_start..close_end])) return false;
+            const close_key = blk: {
+                const close_name = self.input[close_start..close_end];
+                const n = @min(close_name.len, 8);
+                var key: u64 = 0;
+                var i: usize = 0;
+                while (i < n) : (i += 1) {
+                    key |= @as(u64, close_name[i]) << @as(std.math.Log2Int(u64), @intCast(i * 8));
+                }
+                break :blk key;
+            };
+            if (tag_key != close_key) return false;
             const name_end = name_start + tag_len;
             if (tag_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) {
                 return false;
@@ -602,7 +596,19 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             const raw = self.input[text_start..lt];
-            if (!decode_entities and !normalize_text and tables.isWhitespace(raw[0]) and isWhitespaceOnlyFast(raw)) return true;
+            if (!decode_entities and !normalize_text and tables.isWhitespace(raw[0])) {
+                const whitespace_only = blk: {
+                    if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
+                    if (raw.len == 1) break :blk true;
+
+                    var i: usize = 1;
+                    while (i + 1 < raw.len) : (i += 1) {
+                        if (!tables.isWhitespace(raw[i])) break :blk false;
+                    }
+                    break :blk true;
+                };
+                if (whitespace_only) return true;
+            }
             if (decode_entities and strict_mode) {
                 entities.validateEntities(raw, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
@@ -619,29 +625,6 @@ fn Parser(comptime opts: ParseOptions) type {
             return true;
         }
 
-        fn isWhitespaceOnlyFast(bytes: []const u8) bool {
-            if (bytes.len == 0) return true;
-            if (!tables.isWhitespace(bytes[0])) return false;
-            if (!tables.isWhitespace(bytes[bytes.len - 1])) return false;
-            if (bytes.len == 1) return true;
-
-            var i: usize = 1;
-            while (i + 1 < bytes.len) : (i += 1) {
-                if (!tables.isWhitespace(bytes[i])) return false;
-            }
-            return true;
-        }
-
-        inline fn sliceKey(bytes: []const u8) u64 {
-            const n = @min(bytes.len, 8);
-            var key: u64 = 0;
-            var i: usize = 0;
-            while (i < n) : (i += 1) {
-                key |= @as(u64, bytes[i]) << @as(std.math.Log2Int(u64), @intCast(i * 8));
-            }
-            return key;
-        }
-
         const NameScan = struct {
             end: usize,
             len: u16,
@@ -649,6 +632,8 @@ fn Parser(comptime opts: ParseOptions) type {
         };
 
         inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
+            // Cache the leading bytes alongside the span length so closing-tag
+            // checks usually avoid a full string compare.
             var i = start;
             var key: u64 = 0;
             var key_len: usize = 0;

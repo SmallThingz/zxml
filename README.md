@@ -23,17 +23,17 @@ Source: `bench/results/latest.json` (`quick` profile).
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-turbo  │████████████████████│ 2900.07 MB/s (100.00%)
-ours-strict │████████████████████│ 2896.47 MB/s (99.88%)
-pugixml     │█████████░░░░░░░░░░░│ 1320.95 MB/s (45.55%)
-rapidxml    │█████████░░░░░░░░░░░│ 1238.57 MB/s (42.71%)
+ours-turbo  │████████████████████│ 1686.56 MB/s (100.00%)
+ours-strict │███████████████████░│ 1580.76 MB/s (93.73%)
+pugixml     │███████████████░░░░░│ 1258.81 MB/s (74.64%)
+rapidxml    │██████████████░░░░░░│ 1144.71 MB/s (67.87%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `quick` | 12/21 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `quick` | 12/20 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
@@ -94,7 +94,6 @@ try doc.parse(input, .{
     .validate_closing_tags = false,
     .decode_entities_on_parse = false,
     .normalize_text_whitespace = false,
-    .store_parent_pointers = false,
     .include_misc_nodes = true,
 });
 ```

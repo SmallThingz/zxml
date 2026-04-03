@@ -553,7 +553,6 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
-            .store_parent_pointers = true,
         });
         return;
     }
@@ -563,7 +562,6 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
             .mode = .strict,
             .validate_closing_tags = true,
             .decode_entities_on_parse = true,
-            .store_parent_pointers = true,
         });
         return;
     }
@@ -574,7 +572,6 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
             .validate_closing_tags = true,
             .decode_entities_on_parse = true,
             .normalize_text_whitespace = true,
-            .store_parent_pointers = true,
         });
         return;
     }
@@ -583,7 +580,6 @@ fn parseWithProfile(doc: *fastxml.Document, input: []u8, profile: []const u8) (f
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
-            .store_parent_pointers = true,
             .include_misc_nodes = false,
         });
         return;

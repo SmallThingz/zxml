@@ -356,7 +356,6 @@ test "turbo validate closing tags also fails on mismatch" {
 test "turbo mode builds dom by default" {
     var parsed = try parseTestDoc("<root><a>v</a><b x='1'/></root>", .{
         .mode = .turbo,
-        .store_parent_pointers = false,
         .include_misc_nodes = false,
     });
     defer parsed.deinit();
@@ -368,24 +367,17 @@ test "turbo mode builds dom by default" {
     try std.testing.expectEqualStrings("1", root.firstChild().?.nextSibling().?.getAttributeValue("x").?);
 }
 
-test "store parent pointers option enabled" {
-    var parsed = try parseTestDoc("<a><b/></a>", .{ .store_parent_pointers = true });
+test "parent pointers are always available" {
+    var parsed = try parseTestDoc("<a><b/></a>", .{});
     defer parsed.deinit();
 
     const b = parsed.doc.nodeAt(2) orelse return error.TestUnexpectedResult;
     try std.testing.expect(b.parentNode() != null);
-}
-
-test "store parent pointers option disabled" {
-    var parsed = try parseTestDoc("<a><b/></a>", .{ .store_parent_pointers = false });
-    defer parsed.deinit();
-
-    const b = parsed.doc.nodeAt(2) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(?Node, null), b.parentNode());
+    try std.testing.expectEqualStrings("a", b.parentNode().?.nameSlice());
 }
 
 test "parent pointers traverse deep chains" {
-    var parsed = try parseTestDoc("<a><b><c><d/></c></b></a>", .{ .store_parent_pointers = true });
+    var parsed = try parseTestDoc("<a><b><c><d/></c></b></a>", .{});
     defer parsed.deinit();
 
     const d = parsed.doc.nodeAt(4) orelse return error.TestUnexpectedResult;
@@ -594,33 +586,9 @@ test "strict deep balanced close tags" {
     try doc.parse(xml.items, .{
         .mode = .strict,
         .validate_closing_tags = true,
-        .store_parent_pointers = true,
     });
 
     try std.testing.expectEqual(@as(usize, 129), countKind(&doc, .element));
-}
-
-fn typeSliceContains(comptime types: []const type, comptime needle: type) bool {
-    inline for (types) |t| {
-        if (t == needle) return true;
-    }
-    return false;
-}
-
-fn skipRecursiveDeclNamespace(comptime T: type) bool {
-    const name = @typeName(T);
-    return std.mem.eql(u8, name, "std") or
-        std.mem.startsWith(u8, name, "std.") or
-        std.mem.eql(u8, name, "builtin") or
-        std.mem.startsWith(u8, name, "builtin.");
-}
-
-fn isNamespaceLikeContainer(comptime T: type) bool {
-    return switch (@typeInfo(T)) {
-        .@"struct" => |s| s.fields.len == 0,
-        .@"union", .@"enum", .@"opaque" => false,
-        else => false,
-    };
 }
 
 fn refAllDeclsRecursive(comptime T: type) void {
@@ -629,17 +597,32 @@ fn refAllDeclsRecursive(comptime T: type) void {
 
 fn refAllDeclsRecursiveSeen(comptime T: type, comptime seen: []const type) void {
     if (!@import("builtin").is_test) return;
-    if (skipRecursiveDeclNamespace(T)) return;
-    if (typeSliceContains(seen, T)) return;
+    const name = @typeName(T);
+    if (std.mem.eql(u8, name, "std") or
+        std.mem.startsWith(u8, name, "std.") or
+        std.mem.eql(u8, name, "builtin") or
+        std.mem.startsWith(u8, name, "builtin."))
+    {
+        return;
+    }
+    inline for (seen) |seen_type| {
+        if (seen_type == T) return;
+    }
 
     const next_seen = seen ++ [_]type{T};
     std.testing.refAllDecls(T);
 
+    // Recurse into namespace-style containers only; value-carrying types blow
+    // up the traversal without contributing additional declaration coverage.
     inline for (comptime std.meta.declarations(T)) |decl| {
         const decl_value = @field(T, decl.name);
         if (@TypeOf(decl_value) != type) continue;
         const Child = decl_value;
-        if (comptime !isNamespaceLikeContainer(Child)) continue;
+        if (comptime switch (@typeInfo(Child)) {
+            .@"struct" => |s| s.fields.len != 0,
+            .@"union", .@"enum", .@"opaque" => true,
+            else => true,
+        }) continue;
         refAllDeclsRecursiveSeen(Child, next_seen);
     }
 }

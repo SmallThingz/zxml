@@ -14,7 +14,6 @@ pub const ParseOptions = struct {
     validate_closing_tags: bool = false,
     decode_entities_on_parse: bool = false,
     normalize_text_whitespace: bool = false,
-    store_parent_pointers: bool = false,
     include_misc_nodes: bool = true,
 
     pub fn GetSpan(_: @This()) type {
@@ -129,6 +128,7 @@ pub const RawNode = struct {
     attr_start: u32 = 0,
     attr_len: u32 = 0,
 
+    parent: u32 = InvalidIndex,
     last_child: u32 = InvalidIndex,
     prev_sibling: u32 = InvalidIndex,
     subtree_end: u32 = 0,
@@ -176,8 +176,7 @@ pub const Node = struct {
     }
 
     pub fn parentNode(self: @This()) ?Node {
-        const parent_idx = self.doc.parentIndex(self.index) orelse return null;
-        return self.doc.nodeAt(parent_idx);
+        return self.doc.nodeAt(self.raw().parent);
     }
 
     pub fn getAttributeValue(self: @This(), name: []const u8) ?[]const u8 {
@@ -210,7 +209,6 @@ pub const Document = struct {
     nodes: std.ArrayList(RawNode) = .empty,
     attrs: std.ArrayList(RawAttribute) = .empty,
     parse_stack: std.ArrayList(ParseStackEntry) = .empty,
-    parents: std.ArrayList(u32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Document {
         return .{
@@ -222,14 +220,12 @@ pub const Document = struct {
         self.nodes.deinit(self.allocator);
         self.attrs.deinit(self.allocator);
         self.parse_stack.deinit(self.allocator);
-        self.parents.deinit(self.allocator);
     }
 
     pub fn clear(self: *Document) void {
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
-        self.parents.items.len = 0;
     }
 
     pub fn parse(noalias self: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
@@ -237,9 +233,6 @@ pub const Document = struct {
         self.source = input;
         self.postprocess_decode_entities = opts.decode_entities_on_parse;
         self.postprocess_normalize_text = opts.normalize_text_whitespace;
-        if (comptime opts.store_parent_pointers) {
-            try self.reserveParentsForInput(input.len);
-        }
         try parser.parseInto(self, input, opts);
     }
 
@@ -282,22 +275,6 @@ pub const Document = struct {
             try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
         }
         self.reserved_input_hint_len = input_len;
-    }
-
-    pub fn reserveParentsForInput(self: *Document, input_len: usize) !void {
-        const est_nodes = @max(@as(usize, 16), input_len / 14 + 8);
-        if (est_nodes > self.parents.capacity) {
-            try self.parents.ensureTotalCapacity(self.allocator, est_nodes);
-        }
-    }
-
-    fn parentIndex(self: *const Document, idx: u32) ?u32 {
-        if (idx == InvalidIndex or idx == 0 or idx >= self.nodes.items.len) return null;
-        if (idx < self.parents.items.len) {
-            const parent = self.parents.items[idx];
-            if (parent != InvalidIndex) return parent;
-        }
-        return null;
     }
 
     fn ensureNodeValueProcessed(self: *Document, idx: u32) void {
@@ -379,9 +356,6 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     try std.testing.expect(doc.attrs.capacity >= 16);
     try std.testing.expect(doc.parse_stack.capacity >= 8);
 
-    try doc.reserveParentsForInput(256);
-    try std.testing.expect(doc.parents.capacity >= 16);
-
     var xml = "<r a='&amp;'>&lt;x&gt;</r>".*;
     try doc.parse(&xml, .{ .mode = .strict, .decode_entities_on_parse = true });
     try std.testing.expect(doc.root() != null);
@@ -390,6 +364,8 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     const root = doc.nodeAt(1).?;
     try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
     try std.testing.expectEqualStrings("<x>", root.firstChild().?.valueSlice());
+    try std.testing.expectEqual(@as(u32, 0), root.parentNode().?.index);
+    try std.testing.expectEqual(root.index, root.firstChild().?.parentNode().?.index);
 
     doc.clear();
     try std.testing.expect(doc.root() == null);

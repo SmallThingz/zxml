@@ -13,7 +13,31 @@ const EntityDecode = struct {
 
 pub fn decodeInPlaceIfEntity(noalias buf: []u8, strict: bool) DecodeError!usize {
     const first = std.mem.indexOfScalar(u8, buf, '&') orelse return buf.len;
-    return decodeInPlaceFrom(buf, strict, first);
+    var src: usize = first;
+    var dst: usize = first;
+
+    while (src < buf.len) {
+        if (buf[src] != '&') {
+            if (dst != src) buf[dst] = buf[src];
+            src += 1;
+            dst += 1;
+            continue;
+        }
+
+        const decoded = try decodeEntity(buf, src, strict);
+        if (decoded) |d| {
+            std.mem.copyForwards(u8, buf[dst .. dst + d.len], d.bytes[0..d.len]);
+            src += d.consumed;
+            dst += d.len;
+            continue;
+        }
+
+        if (dst != src) buf[dst] = '&';
+        src += 1;
+        dst += 1;
+    }
+
+    return dst;
 }
 
 pub fn decodeAndNormalizeInPlace(noalias buf: []u8, strict: bool) DecodeError!usize {
@@ -67,34 +91,6 @@ pub fn validateEntities(noalias buf: []const u8, strict: bool) DecodeError!void 
     }
 }
 
-fn decodeInPlaceFrom(noalias buf: []u8, strict: bool, start: usize) DecodeError!usize {
-    var src: usize = start;
-    var dst: usize = start;
-
-    while (src < buf.len) {
-        if (buf[src] != '&') {
-            if (dst != src) buf[dst] = buf[src];
-            src += 1;
-            dst += 1;
-            continue;
-        }
-
-        const decoded = try decodeEntity(buf, src, strict);
-        if (decoded) |d| {
-            std.mem.copyForwards(u8, buf[dst .. dst + d.len], d.bytes[0..d.len]);
-            src += d.consumed;
-            dst += d.len;
-            continue;
-        }
-
-        if (dst != src) buf[dst] = '&';
-        src += 1;
-        dst += 1;
-    }
-
-    return dst;
-}
-
 fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError!?EntityDecode {
     const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
         if (strict) return error.UnterminatedEntity;
@@ -107,7 +103,19 @@ fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError
         return null;
     }
 
-    if (decodeNamed(body)) |c| {
+    const named: ?u8 = if (std.mem.eql(u8, body, "amp"))
+        '&'
+    else if (std.mem.eql(u8, body, "lt"))
+        '<'
+    else if (std.mem.eql(u8, body, "gt"))
+        '>'
+    else if (std.mem.eql(u8, body, "apos"))
+        '\''
+    else if (std.mem.eql(u8, body, "quot"))
+        '"'
+    else
+        null;
+    if (named) |c| {
         return .{
             .consumed = semi - start + 1,
             .bytes = .{ c, 0, 0, 0 },
@@ -179,15 +187,6 @@ pub fn normalizeWhitespaceInPlace(noalias buf: []u8) usize {
     return dst;
 }
 
-fn decodeNamed(body: []const u8) ?u8 {
-    if (std.mem.eql(u8, body, "amp")) return '&';
-    if (std.mem.eql(u8, body, "lt")) return '<';
-    if (std.mem.eql(u8, body, "gt")) return '>';
-    if (std.mem.eql(u8, body, "apos")) return '\'';
-    if (std.mem.eql(u8, body, "quot")) return '"';
-    return null;
-}
-
 fn parseNumericEntity(text: []const u8) DecodeError!u21 {
     if (text.len == 0) return error.InvalidNumericCharacterEntity;
 
@@ -197,7 +196,19 @@ fn parseNumericEntity(text: []const u8) DecodeError!u21 {
 
     var value: u32 = 0;
     for (digits) |c| {
-        const d = if (is_hex) hexVal(c) else decVal(c);
+        const d: u8 = if (is_hex)
+            if (c >= '0' and c <= '9')
+                c - '0'
+            else if (c >= 'a' and c <= 'f')
+                c - 'a' + 10
+            else if (c >= 'A' and c <= 'F')
+                c - 'A' + 10
+            else
+                255
+        else if (c >= '0' and c <= '9')
+            c - '0'
+        else
+            255;
         if (d == 255) return error.InvalidNumericCharacterEntity;
         if (is_hex) {
             value = value * 16 + d;
@@ -209,18 +220,6 @@ fn parseNumericEntity(text: []const u8) DecodeError!u21 {
 
     if (value >= 0xD800 and value <= 0xDFFF) return error.InvalidNumericCharacterEntity;
     return @intCast(value);
-}
-
-fn decVal(c: u8) u8 {
-    if (c >= '0' and c <= '9') return c - '0';
-    return 255;
-}
-
-fn hexVal(c: u8) u8 {
-    if (c >= '0' and c <= '9') return c - '0';
-    if (c >= 'a' and c <= 'f') return c - 'a' + 10;
-    if (c >= 'A' and c <= 'F') return c - 'A' + 10;
-    return 255;
 }
 
 test "decodeInPlaceIfEntity leaves plain text untouched" {

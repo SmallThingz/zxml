@@ -689,7 +689,7 @@ fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const Pa
     return out;
 }
 
-test "evaluateGateRows records best external parser and threshold" {
+test "evaluateGateRows records best external parser" {
     const alloc = std.testing.allocator;
     const profile = Profile{
         .name = "test",

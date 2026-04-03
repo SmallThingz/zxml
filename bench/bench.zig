@@ -21,7 +21,6 @@ pub fn runParseFile(io: Io, alloc: std.mem.Allocator, path: []const u8, iteratio
                 try doc.parse(input, .{
                     .mode = .strict,
                     .validate_closing_tags = true,
-                    .store_parent_pointers = false,
                     // Benchmark the full payload. Skipping CDATA/comment/PI
                     // nodes makes some real-world feeds artificially cheap.
                     .include_misc_nodes = true,
@@ -33,7 +32,6 @@ pub fn runParseFile(io: Io, alloc: std.mem.Allocator, path: []const u8, iteratio
             while (i < iterations) : (i += 1) {
                 try doc.parse(input, .{
                     .mode = .turbo,
-                    .store_parent_pointers = false,
                     .include_misc_nodes = true,
                 });
             }
