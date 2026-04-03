@@ -107,6 +107,8 @@ try doc.parse(input, .{
 });
 ```
 
+`decode_entities_on_parse = false` keeps parsing non-destructive. When set to `true`, entity decoding rewrites text and attribute value bytes in the original mutable input buffer on first value access.
+
 `turbo` keeps DOM construction but drops expensive validation work by default. `strict` enforces stronger well-formedness checks and is the correctness-first profile.
 
 ## Build And Validation

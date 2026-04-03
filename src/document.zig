@@ -15,6 +15,8 @@ pub const ParseOptions = struct {
     mode: ParseMode = .turbo,
     validate_closing_tags: bool = false,
     require_closed_elements_on_eof: bool = false,
+    // When true, entity decoding rewrites text/attribute value bytes in the
+    // original input buffer on first value access.
     decode_entities_on_parse: bool = false,
     drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
