@@ -185,41 +185,61 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const name_start = self.i;
             self.i = scanner.findNameEnd(self.input, self.i);
             const name_end = self.i;
-
-            self.skipWhitespace();
+            const input = self.input;
+            const input_len = input.len;
 
             var value_start = self.i;
             var value_end = self.i;
 
-            if (self.i < self.input.len and self.input[self.i] == '=') {
-                self.i += 1;
+            parse_value: {
+                if (self.i + 1 < input_len and input[self.i] == '=') {
+                    const quote = input[self.i + 1];
+                    if (quote == '\'' or quote == '"') {
+                        value_start = self.i + 2;
+                        if (scanner.findByte(input, value_start, quote)) |quote_pos| {
+                            value_end = quote_pos;
+                            self.i = quote_pos + 1;
+                        } else {
+                            if (strict_mode) return error.ExpectedQuote;
+                            value_end = input_len;
+                            self.i = input_len;
+                        }
+                        break :parse_value;
+                    }
+                }
+
                 self.skipWhitespace();
 
-                if (self.i >= self.input.len) return error.UnexpectedEndOfData;
-
-                const c = self.input[self.i];
-                if (c == '\'' or c == '"') {
-                    const quote = c;
+                if (self.i < input_len and input[self.i] == '=') {
                     self.i += 1;
-                    value_start = self.i;
-                    if (scanner.findByte(self.input, self.i, quote)) |quote_pos| {
-                        value_end = quote_pos;
-                        self.i = quote_pos + 1;
+                    self.skipWhitespace();
+
+                    if (self.i >= input_len) return error.UnexpectedEndOfData;
+
+                    const c = input[self.i];
+                    if (c == '\'' or c == '"') {
+                        const quote = c;
+                        self.i += 1;
+                        value_start = self.i;
+                        if (scanner.findByte(input, self.i, quote)) |quote_pos| {
+                            value_end = quote_pos;
+                            self.i = quote_pos + 1;
+                        } else {
+                            if (strict_mode) return error.ExpectedQuote;
+                            value_end = input_len;
+                            self.i = input_len;
+                        }
                     } else {
                         if (strict_mode) return error.ExpectedQuote;
-                        value_end = self.input.len;
-                        self.i = self.input.len;
+                        value_start = self.i;
+                        self.i = scanner.findAttrUnquotedEnd(input, self.i);
+                        value_end = self.i;
                     }
-                } else {
-                    if (strict_mode) return error.ExpectedQuote;
-                    value_start = self.i;
-                    self.i = scanner.findAttrUnquotedEnd(self.input, self.i);
-                    value_end = self.i;
                 }
             }
 
             if (decode_entities and strict_mode and value_end >= value_start) {
-                const value = self.input[value_start..value_end];
+                const value = input[value_start..value_end];
                 entities.validateEntities(value, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
                     error.UnterminatedEntity => return error.UnterminatedEntity,

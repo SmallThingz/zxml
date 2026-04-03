@@ -476,6 +476,17 @@ test "single and double quoted attributes both parse" {
     try std.testing.expectEqualStrings("2", root.getAttributeValue("b").?);
 }
 
+test "quoted attributes tolerate whitespace around the equals sign" {
+    var parsed = try parseTestDoc("<r a = '1' b= \"2\" c =\"3\" d= '4'/>", .{});
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("1", root.getAttributeValue("a").?);
+    try std.testing.expectEqualStrings("2", root.getAttributeValue("b").?);
+    try std.testing.expectEqualStrings("3", root.getAttributeValue("c").?);
+    try std.testing.expectEqualStrings("4", root.getAttributeValue("d").?);
+}
+
 test "namespace-like element and attribute names parse" {
     var parsed = try parseTestDoc("<ns:root xml:lang='en'><ns:item data.id='7'/></ns:root>", .{});
     defer parsed.deinit();
