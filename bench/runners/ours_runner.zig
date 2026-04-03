@@ -16,7 +16,9 @@ fn run(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mo
                 .mode = .strict,
                 .validate_closing_tags = true,
                 .store_parent_pointers = false,
-                .include_misc_nodes = false,
+                // Benchmark the full payload. Skipping CDATA/comment/PI nodes
+                // makes some real-world feeds artificially cheap.
+                .include_misc_nodes = true,
             });
         }
     } else {
@@ -25,7 +27,7 @@ fn run(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mo
             try doc.parse(input, .{
                 .mode = .turbo,
                 .store_parent_pointers = false,
-                .include_misc_nodes = false,
+                .include_misc_nodes = true,
             });
         }
     }

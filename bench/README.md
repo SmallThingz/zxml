@@ -8,7 +8,7 @@ This suite compares `fastxml` against:
 
 The corpus mixes:
 
-- downloaded real XML fixtures (`note.xml`, `sitemaps.xml`, `plant_catalog.xml`, `cd_catalog.xml`, `hnrss.xml`, `xkcd_rss.xml`, `bbc_world.xml`, `arxiv_cs.xml`, `nasa_breaking_news.xml`, `ecb_usd.xml`, `planetpython.xml`)
+- downloaded real XML fixtures (`note.xml`, `sitemaps.xml`, `plant_catalog.xml`, `cd_catalog.xml`, `hnrss.xml`, `xkcd_rss.xml`, `bbc_world.xml`, `arxiv_cs.xml`, `ecb_usd.xml`, `planetpython.xml`)
 - curated UTF-8/XML samples copied from the vendored `pugixml` corpus (`tree.xml`, `character.xml`, `transitions.xml`, `xgconsole.xml`, `weekly_utf8.xml`, `pugixml_large.xml`)
 - generated synthetic stress fixtures for attributes, depth, entities, CDATA/PI/comment mixes, wide sibling sets, namespaces, long names, self-closing tags, and small-record workloads
 
@@ -31,6 +31,13 @@ Results are written to:
 
 - `bench/results/latest.json`
 - `bench/results/latest.md`
+
+Benchmarks build the full DOM, including declaration/comment/CDATA/PI/doctype
+nodes, so CDATA-heavy feeds are measured fairly against `pugixml` and
+`rapidxml`.
+
+Fixture setup rejects extremely opaque feeds. If a file is mostly CDATA payload,
+it benchmarks string scanning more than XML DOM work.
 
 Conformance suites live in `bench/conformance/*.json` and can also be run with:
 

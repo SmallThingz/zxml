@@ -11,6 +11,7 @@ const RESULTS_DIR = "bench/results";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
 const min_sample_ns: u64 = 20_000_000;
+const max_opaque_cdata_ratio = 0.90;
 
 const repeats: usize = 5;
 
@@ -42,7 +43,8 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "xkcd_rss.xml", .iterations = 100, .is_real = true },
     .{ .name = "bbc_world.xml", .iterations = 80, .is_real = true },
     .{ .name = "arxiv_cs.xml", .iterations = 80, .is_real = true },
-    .{ .name = "nasa_breaking_news.xml", .iterations = 80, .is_real = true },
+    .{ .name = "ecb_usd.xml", .iterations = 120, .is_real = true },
+    .{ .name = "planetpython.xml", .iterations = 40, .is_real = true },
     .{ .name = "pugixml_large.xml", .iterations = 24, .is_real = true },
     .{ .name = "weekly_utf8.xml", .iterations = 100, .is_real = true },
     .{ .name = "xgconsole.xml", .iterations = 160, .is_real = true },
@@ -65,7 +67,6 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "xkcd_rss.xml", .iterations = 220, .is_real = true },
     .{ .name = "bbc_world.xml", .iterations = 180, .is_real = true },
     .{ .name = "arxiv_cs.xml", .iterations = 180, .is_real = true },
-    .{ .name = "nasa_breaking_news.xml", .iterations = 180, .is_real = true },
     .{ .name = "ecb_usd.xml", .iterations = 220, .is_real = true },
     .{ .name = "planetpython.xml", .iterations = 160, .is_real = true },
     .{ .name = "tree.xml", .iterations = 240, .is_real = true },
@@ -352,6 +353,30 @@ fn copyFixtureIfPresent(io: std.Io, alloc: std.mem.Allocator, src: []const u8, d
     try common.writeFile(io, dst, bytes);
 }
 
+fn ensureFixtureIsNotOpaqueCdata(io: std.Io, alloc: std.mem.Allocator, path: []const u8, fixture_name: []const u8) !void {
+    const bytes = try common.readFileAlloc(io, alloc, path);
+    defer alloc.free(bytes);
+    if (bytes.len == 0) return error.InvalidFixture;
+
+    var cdata_bytes: usize = 0;
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, bytes, i, "<![CDATA[")) |start| {
+        const content_start = start + "<![CDATA[".len;
+        const end = std.mem.indexOfPos(u8, bytes, content_start, "]]>") orelse break;
+        cdata_bytes += end - content_start;
+        i = end + "]]>".len;
+    }
+
+    const ratio = @as(f64, @floatFromInt(cdata_bytes)) / @as(f64, @floatFromInt(bytes.len));
+    if (ratio > max_opaque_cdata_ratio) {
+        std.debug.print(
+            "fixture rejected: {s} is {d:.3}% CDATA payload and would skew DOM benchmarks\n",
+            .{ fixture_name, ratio * 100.0 },
+        );
+        return error.InvalidFixture;
+    }
+}
+
 fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
     try common.ensureDir(io, FIXTURES_DIR);
 
@@ -364,7 +389,6 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
         .{ .url = "https://xkcd.com/rss.xml", .out = "xkcd_rss.xml" },
         .{ .url = "https://feeds.bbci.co.uk/news/world/rss.xml", .out = "bbc_world.xml" },
         .{ .url = "https://export.arxiv.org/rss/cs", .out = "arxiv_cs.xml" },
-        .{ .url = "https://www.nasa.gov/rss/dyn/breaking_news.rss", .out = "nasa_breaking_news.xml" },
         .{ .url = "https://www.ecb.europa.eu/rss/fxref-usd.html", .out = "ecb_usd.xml" },
         .{ .url = "https://planetpython.org/rss20.xml", .out = "planetpython.xml" },
     };
@@ -396,6 +420,7 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
             target,
         };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
+        try ensureFixtureIsNotOpaqueCdata(io, alloc, target, item.out);
     }
 
     const bundled = [_]struct { src: []const u8, out: []const u8 }{
