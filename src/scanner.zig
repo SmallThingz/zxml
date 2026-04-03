@@ -30,58 +30,16 @@ pub const TextRun = struct {
 };
 
 pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
-    // Scan until the next `<` while cheaply tracking whether the span contains
-    // anything other than XML whitespace, which lets the parser skip
-    // whitespace-only text nodes in the hot path.
     if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
 
+    const lt_index = findByte(hay, start, '<') orelse hay.len;
     var i = start;
-    var has_non_whitespace = false;
-    const remaining = hay.len - start;
-
-    if (remaining < 64) {
-        while (i < hay.len and hay[i] != '<') : (i += 1) {
-            if (!tables.WhitespaceTable[hay[i]]) has_non_whitespace = true;
-        }
-        return .{ .lt_index = i, .has_non_whitespace = has_non_whitespace };
-    }
-
-    if (!@inComptime()) {
-        if (std.simd.suggestVectorLength(u8)) |block_len| {
-            const Block = @Vector(block_len, u8);
-            const lt_mask: Block = @splat('<');
-            const sp_mask: Block = @splat(' ');
-            const nl_mask: Block = @splat('\n');
-            const cr_mask: Block = @splat('\r');
-            const tab_mask: Block = @splat('\t');
-
-            while (i + block_len <= hay.len) : (i += block_len) {
-                const block: Block = hay[i..][0..block_len].*;
-                const lt_hits = block == lt_mask;
-                if (@reduce(.Or, lt_hits)) {
-                    const first_lt = std.simd.firstTrue(lt_hits).?;
-                    var j: usize = 0;
-                    while (j < first_lt) : (j += 1) {
-                        if (!tables.WhitespaceTable[hay[i + j]]) {
-                            return .{ .lt_index = i + first_lt, .has_non_whitespace = true };
-                        }
-                    }
-                    return .{ .lt_index = i + first_lt, .has_non_whitespace = has_non_whitespace };
-                }
-
-                const ws_hits = (block == sp_mask) |
-                    (block == nl_mask) |
-                    (block == cr_mask) |
-                    (block == tab_mask);
-                if (!@reduce(.And, ws_hits)) has_non_whitespace = true;
-            }
+    while (i < lt_index) : (i += 1) {
+        if (!tables.WhitespaceTable[hay[i]]) {
+            return .{ .lt_index = lt_index, .has_non_whitespace = true };
         }
     }
-
-    while (i < hay.len and hay[i] != '<') : (i += 1) {
-        if (!tables.WhitespaceTable[hay[i]]) has_non_whitespace = true;
-    }
-    return .{ .lt_index = i, .has_non_whitespace = has_non_whitespace };
+    return .{ .lt_index = lt_index, .has_non_whitespace = false };
 }
 
 pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: []const u8) ?usize {
