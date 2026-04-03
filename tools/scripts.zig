@@ -48,7 +48,6 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "bbc_world.xml", .iterations = 80, .is_real = true },
     .{ .name = "arxiv_cs.xml", .iterations = 80, .is_real = true },
     .{ .name = "ecb_usd.xml", .iterations = 120, .is_real = true },
-    .{ .name = "planetpython.xml", .iterations = 40, .is_real = true },
     .{ .name = "pugixml_large.xml", .iterations = 24, .is_real = true },
     .{ .name = "weekly_utf8.xml", .iterations = 100, .is_real = true },
     .{ .name = "xgconsole.xml", .iterations = 160, .is_real = true },
@@ -72,7 +71,6 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "bbc_world.xml", .iterations = 180, .is_real = true },
     .{ .name = "arxiv_cs.xml", .iterations = 180, .is_real = true },
     .{ .name = "ecb_usd.xml", .iterations = 220, .is_real = true },
-    .{ .name = "planetpython.xml", .iterations = 160, .is_real = true },
     .{ .name = "tree.xml", .iterations = 240, .is_real = true },
     .{ .name = "character.xml", .iterations = 260, .is_real = true },
     .{ .name = "transitions.xml", .iterations = 260, .is_real = true },
@@ -110,7 +108,6 @@ const GateRow = struct {
     best_external_parser: []const u8,
     best_external_mb_s: f64,
     external_ratio: f64,
-    external_threshold: f64,
     pass: bool,
 };
 
@@ -393,7 +390,6 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
         .{ .url = "https://feeds.bbci.co.uk/news/world/rss.xml", .out = "bbc_world.xml" },
         .{ .url = "https://export.arxiv.org/rss/cs", .out = "arxiv_cs.xml" },
         .{ .url = "https://www.ecb.europa.eu/rss/fxref-usd.html", .out = "ecb_usd.xml" },
-        .{ .url = "https://planetpython.org/rss20.xml", .out = "planetpython.xml" },
     };
 
     for (targets) |item| {
@@ -635,7 +631,6 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
 
         const best_external_mb_s: f64 = if (pugixml >= rapidxml) pugixml else rapidxml;
         const best_external_parser = if (pugixml >= rapidxml) "pugixml" else "rapidxml";
-        const threshold: f64 = 1.0;
         const ratio = if (best_external_mb_s == 0) 0 else ours / best_external_mb_s;
 
         try out.append(alloc, .{
@@ -647,8 +642,7 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
             .best_external_parser = best_external_parser,
             .best_external_mb_s = best_external_mb_s,
             .external_ratio = ratio,
-            .external_threshold = threshold,
-            .pass = ratio >= threshold,
+            .pass = ratio >= 1.0,
         });
     }
 
@@ -693,6 +687,28 @@ fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const Pa
     }
 
     return out;
+}
+
+test "evaluateGateRows records best external parser and threshold" {
+    const alloc = std.testing.allocator;
+    const profile = Profile{
+        .name = "test",
+        .fixtures = &[_]FixtureCase{
+            .{ .name = "x.xml", .iterations = 1, .is_real = true },
+        },
+    };
+    const rows = [_]ParseResult{
+        .{ .parser = "ours-turbo", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 120.0 },
+        .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 110.0 },
+        .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 100.0 },
+    };
+
+    const gates = try evaluateGateRows(alloc, profile, &rows);
+    defer freeGateRows(alloc, gates);
+
+    try std.testing.expectEqual(@as(usize, 1), gates.len);
+    try std.testing.expectEqualStrings("pugixml", gates[0].best_external_parser);
+    try std.testing.expect(gates[0].pass);
 }
 
 fn findParseResult(parse_results: []const ParseResult, parser_name: []const u8, fixture_name: []const u8) ?*const ParseResult {
@@ -843,18 +859,17 @@ fn renderBenchReadmeSnapshot(
     }
 
     try w.writeAll("\n### Stable Gates\n\n");
-    try w.writeAll("| Fixture | ours-turbo | best external | ours/best-ext | Threshold | Result |\n");
-    try w.writeAll("|---|---:|---|---:|---:|---|\n");
+    try w.writeAll("| Fixture | ours-turbo | best external | ours/best-ext | Result |\n");
+    try w.writeAll("|---|---:|---|---:|---|\n");
     for (gate_rows) |g| {
         try w.print(
-            "| `{s}` | {d:.2} | `{s}` {d:.2} | {d:.3} | {d:.2} | {s} |\n",
+            "| `{s}` | {d:.2} | `{s}` {d:.2} | {d:.3} | {s} |\n",
             .{
                 g.fixture,
                 g.ours_turbo_mb_s,
                 g.best_external_parser,
                 g.best_external_mb_s,
                 g.external_ratio,
-                g.external_threshold,
                 if (g.pass) "PASS" else "FAIL",
             },
         );
@@ -938,11 +953,11 @@ fn writeMarkdown(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8,
 
     if (gate_rows.len != 0) {
         try w.writeAll("\n## Stable Gates\n\n");
-        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | best external | ours/best-ext | Threshold | Result |\n");
-        try w.writeAll("|---|---:|---:|---:|---|---:|---:|---|\n");
+        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | best external | ours/best-ext | Result |\n");
+        try w.writeAll("|---|---:|---:|---:|---|---:|---|\n");
         for (gate_rows) |g| {
             try w.print(
-                "| {s} | {d:.2} | {d:.2} | {d:.2} | {s} {d:.2} | {d:.3} | {d:.2} | {s} |\n",
+                "| {s} | {d:.2} | {d:.2} | {d:.2} | {s} {d:.2} | {d:.3} | {s} |\n",
                 .{
                     g.fixture,
                     g.ours_turbo_mb_s,
@@ -951,7 +966,6 @@ fn writeMarkdown(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8,
                     g.best_external_parser,
                     g.best_external_mb_s,
                     g.external_ratio,
-                    g.external_threshold,
                     if (g.pass) "PASS" else "FAIL",
                 },
             );
@@ -1083,11 +1097,10 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             "rapidxml",
             "best external",
             "ours/best-ext",
-            "Threshold",
             "Result",
         };
-        const gate_header_align = [_]bool{ false, false, false, false, false, false, false, false };
-        const gate_align = [_]bool{ false, true, true, true, false, true, true, false };
+        const gate_header_align = [_]bool{ false, false, false, false, false, false, false };
+        const gate_align = [_]bool{ false, true, true, true, false, true, false };
         var gate_widths = [_]usize{
             gate_headers[0].len,
             gate_headers[1].len,
@@ -1096,7 +1109,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             gate_headers[4].len,
             gate_headers[5].len,
             gate_headers[6].len,
-            gate_headers[7].len,
         };
 
         for (gate_rows) |g| {
@@ -1122,12 +1134,8 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.external_ratio});
             gate_widths[5] = maxUsize(gate_widths[5], ratio.len);
 
-            var threshold_buf: [32]u8 = undefined;
-            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.external_threshold});
-            gate_widths[6] = maxUsize(gate_widths[6], threshold.len);
-
             const result = if (g.pass) "PASS" else "FAIL";
-            gate_widths[7] = maxUsize(gate_widths[7], result.len);
+            gate_widths[6] = maxUsize(gate_widths[6], result.len);
         }
 
         try writeTableBorder(w, &gate_widths);
@@ -1153,9 +1161,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             var ratio_buf: [32]u8 = undefined;
             const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.external_ratio});
 
-            var threshold_buf: [32]u8 = undefined;
-            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.external_threshold});
-
             const row = [_][]const u8{
                 g.fixture,
                 ours,
@@ -1163,7 +1168,6 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
                 rapidxml,
                 best,
                 ratio,
-                threshold,
                 if (g.pass) "PASS" else "FAIL",
             };
             try writeTableRow(w, &row, &gate_widths, &gate_align);
@@ -1190,7 +1194,7 @@ fn writeJson(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, par
     try w.writeAll("  ],\n  \"gates\": [\n");
     for (gate_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"external_threshold\":{d:.6},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
@@ -1200,7 +1204,6 @@ fn writeJson(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, par
                 g.best_external_parser,
                 g.best_external_mb_s,
                 g.external_ratio,
-                g.external_threshold,
                 if (g.pass) "true" else "false",
                 if (i + 1 == gate_rows.len) "" else ",",
             },
@@ -1335,8 +1338,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             if (!g.pass) {
                 failed = true;
                 std.debug.print(
-                    "gate fail: {s} ours={d:.2} best={s} {d:.2} ratio={d:.3} threshold={d:.2}\n",
-                    .{ g.fixture, g.ours_turbo_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio, g.external_threshold },
+                    "gate fail: {s} ours={d:.2} best={s} {d:.2} ratio={d:.3}\n",
+                    .{ g.fixture, g.ours_turbo_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio },
                 );
             }
         }

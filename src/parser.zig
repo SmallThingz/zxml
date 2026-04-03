@@ -666,3 +666,23 @@ fn Parser(comptime opts: ParseOptions) type {
         }
     };
 }
+
+test "parseInto builds a minimal DOM and enforces strict closing tags" {
+    var ok = "<root><child>v</child></root>".*;
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    doc.source = &ok;
+    try parseInto(&doc, &ok, .{ .mode = .strict, .validate_closing_tags = true });
+    try std.testing.expectEqual(@as(usize, 4), doc.nodes.items.len);
+    try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
+    try std.testing.expectEqualStrings("child", doc.nodeAt(2).?.nameSlice());
+    try std.testing.expectEqualStrings("v", doc.nodeAt(3).?.valueSlice());
+
+    var bad = "<root><child></root>".*;
+    doc.clear();
+    doc.source = &bad;
+    try std.testing.expectError(
+        error.InvalidClosingTagName,
+        parseInto(&doc, &bad, .{ .mode = .strict, .validate_closing_tags = true }),
+    );
+}

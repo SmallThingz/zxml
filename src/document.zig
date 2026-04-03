@@ -340,3 +340,59 @@ pub const Document = struct {
         attr.value_processed = true;
     }
 };
+
+test "ParseOptions type getters expose concrete DOM types" {
+    const opts: ParseOptions = .{};
+    try std.testing.expectEqual(Span, opts.GetSpan());
+    try std.testing.expectEqual(RawNode, opts.GetNodeRaw());
+    try std.testing.expectEqual(Node, opts.GetNode());
+    try std.testing.expectEqual(RawAttribute, opts.GetAttributeRaw());
+    try std.testing.expectEqual(Attribute, opts.GetAttribute());
+    try std.testing.expectEqual(Document, opts.GetDocument());
+}
+
+test "Span helpers expose slices and lengths" {
+    var buf = "abcdef".*;
+    const span: Span = .{ .start = 1, .end = 4 };
+    try std.testing.expectEqual(@as(u32, 3), span.len());
+    try std.testing.expect(!span.isEmpty());
+    try std.testing.expectEqualStrings("bcd", span.slice(&buf));
+
+    const mut = span.sliceMut(&buf);
+    mut[1] = 'Z';
+    try std.testing.expectEqualStrings("bZd", span.slice(&buf));
+
+    const empty: Span = .{ .start = 2, .end = 2 };
+    try std.testing.expect(empty.isEmpty());
+}
+
+test "Document reserve and lookup helpers behave on empty and populated state" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    try std.testing.expect(doc.root() == null);
+    try std.testing.expect(doc.nodeAt(InvalidIndex) == null);
+    try std.testing.expect(doc.nodeAt(0) == null);
+
+    try doc.reserveForInput(256);
+    try std.testing.expect(doc.nodes.capacity >= 16);
+    try std.testing.expect(doc.attrs.capacity >= 16);
+    try std.testing.expect(doc.parse_stack.capacity >= 8);
+
+    try doc.reserveParentsForInput(256);
+    try std.testing.expect(doc.parents.capacity >= 16);
+
+    var xml = "<r a='&amp;'>&lt;x&gt;</r>".*;
+    try doc.parse(&xml, .{ .mode = .strict, .decode_entities_on_parse = true });
+    try std.testing.expect(doc.root() != null);
+    try std.testing.expect(doc.nodeAt(1) != null);
+
+    const root = doc.nodeAt(1).?;
+    try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
+    try std.testing.expectEqualStrings("<x>", root.firstChild().?.valueSlice());
+
+    doc.clear();
+    try std.testing.expect(doc.root() == null);
+    try std.testing.expectEqual(@as(usize, 0), doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 0), doc.attrs.items.len);
+}

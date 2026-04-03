@@ -242,7 +242,25 @@ test "decodeAndNormalizeInPlace combines both operations" {
     try std.testing.expectEqualStrings(" a & b ", buf[0..len]);
 }
 
+test "normalizeWhitespaceInPlace coalesces repeated XML whitespace" {
+    var buf = "\t a \r\n b  c ".*;
+    const len = normalizeWhitespaceInPlace(&buf);
+    try std.testing.expectEqualStrings(" a b c ", buf[0..len]);
+}
+
+test "non-strict decode leaves malformed and unknown entities literal" {
+    var unknown = "&bogus; &amp".*;
+    const len_unknown = try decodeInPlaceIfEntity(&unknown, false);
+    try std.testing.expectEqualStrings("&bogus; &amp", unknown[0..len_unknown]);
+
+    var apost_quot = "&apos;&quot;".*;
+    const len_aq = try decodeInPlaceIfEntity(&apost_quot, true);
+    try std.testing.expectEqualStrings("'\"", apost_quot[0..len_aq]);
+}
+
 test "validateEntities rejects malformed strict input" {
     try std.testing.expectError(error.UnterminatedEntity, validateEntities("&amp", true));
     try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#x110000;", true));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#;", true));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateEntities("&#xD800;", true));
 }

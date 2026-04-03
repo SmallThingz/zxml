@@ -38,10 +38,6 @@ pub fn GetAttributeRaw(comptime options: ParseOptions) type {
     return options.GetAttributeRaw();
 }
 
-pub fn bufferedPrint() !void {
-    std.debug.print("fastxml: run `zig build test`\n", .{});
-}
-
 const ParsedDoc = struct {
     doc: Document,
     buf: []u8,

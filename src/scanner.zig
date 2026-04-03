@@ -112,13 +112,20 @@ pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: 
 
 test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, 3), findByte("abc<def", 0, '<'));
+    try std.testing.expectEqual(@as(?usize, null), findByte("abc", 9, '<'));
+    try std.testing.expectEqual(@as(?usize, 3), findSequence("abc?def", 0, "?"));
+    try std.testing.expectEqual(@as(?usize, 3), findSequence("abc?>def", 0, "?>"));
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abc]]>def", 0, "]]>"));
+    try std.testing.expectEqual(@as(?usize, 3), findSequence("abcqrstdef", 0, "qrst"));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 0, "?>"));
+    try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
 }
 
 test "name and attribute scanners stop at the right boundary" {
     try std.testing.expectEqual(@as(usize, 6), findNameEnd("node-1 x", 0));
     try std.testing.expectEqual(@as(usize, 6), findAttrUnquotedEnd("value/>", 0));
+    try std.testing.expectEqual(@as(usize, 0), findNameEnd(" x", 0));
+    try std.testing.expectEqual(@as(usize, 0), findAttrUnquotedEnd(" value", 0));
 }
 
 test "scanTextRun tracks non-whitespace text" {
@@ -129,4 +136,8 @@ test "scanTextRun tracks non-whitespace text" {
     const txt = scanTextRun(" hi<r/>", 0);
     try std.testing.expectEqual(@as(usize, 3), txt.lt_index);
     try std.testing.expect(txt.has_non_whitespace);
+
+    const end = scanTextRun("abc", 3);
+    try std.testing.expectEqual(@as(usize, 3), end.lt_index);
+    try std.testing.expect(!end.has_non_whitespace);
 }

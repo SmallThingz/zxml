@@ -76,16 +76,24 @@ test "character classifiers match XML expectations" {
     try std.testing.expect(isWhitespace(' '));
     try std.testing.expect(isWhitespace('\n'));
     try std.testing.expect(!isWhitespace('x'));
+    try std.testing.expectEqual(WhitespaceTable['\r'], isWhitespace('\r'));
 
     try std.testing.expect(isNameStart('a'));
     try std.testing.expect(isNameStart(':'));
     try std.testing.expect(!isNameStart('1'));
+    try std.testing.expect(isNameStart(0xC3));
+    try std.testing.expectEqual(NameStartTable['a'], isNameStart('a'));
 
     try std.testing.expect(isNameChar('-'));
     try std.testing.expect(isNameChar('7'));
     try std.testing.expect(!isNameChar(' '));
+    try std.testing.expectEqual(NameCharTable['7'], isNameChar('7'));
 
     try std.testing.expect(isAttrUnquotedValueChar('x'));
     try std.testing.expect(!isAttrUnquotedValueChar(' '));
     try std.testing.expect(!isAttrUnquotedValueChar('>'));
+    try std.testing.expectEqual(AttrUnquotedValueCharTable['x'], isAttrUnquotedValueChar('x'));
+
+    try std.testing.expect(eqlAsciiCaseInsensitive("DoCtYpE", "doctype"));
+    try std.testing.expect(!eqlAsciiCaseInsensitive("xml", "html"));
 }
