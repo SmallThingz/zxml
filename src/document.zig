@@ -256,11 +256,7 @@ pub const Document = struct {
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {
-        if (input_len <= self.reserved_input_hint_len and
-            self.nodes.capacity > 0 and
-            self.attrs.capacity > 0 and
-            self.parse_stack.capacity > 0)
-        {
+        if (input_len <= self.reserved_input_hint_len) {
             return;
         }
 
