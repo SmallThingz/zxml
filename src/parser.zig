@@ -1,4 +1,5 @@
 const std = @import("std");
+const common = @import("common.zig");
 const document = @import("document.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
@@ -7,9 +8,11 @@ const entities = @import("entities.zig");
 const ParseOptions = document.ParseOptions;
 const ParseError = document.ParseError;
 const NodeType = document.NodeType;
+const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 
 pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
+    if (!common.lenFits(input.len)) return error.InputTooLarge;
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     try p.parse();
 }
@@ -103,7 +106,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const idx = try self.appendElementNode(name_start, name_end);
             var node = &self.doc.nodes.items[idx];
 
-            const attr_start_idx: u32 = @intCast(self.doc.attrs.items.len);
+            const attr_start_idx: IndexInt = @intCast(self.doc.attrs.items.len);
 
             // Common path: start tag with no attributes.
             if (self.i < self.input.len) {
@@ -143,7 +146,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i += 1;
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
-                    node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
+                    node.attr_len = @as(IndexInt, @intCast(self.doc.attrs.items.len)) - attr_start_idx;
                     self.skipDroppedWhitespaceText();
                     if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
                         return;
@@ -160,7 +163,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i += 2;
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
-                    node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
+                    node.attr_len = @as(IndexInt, @intCast(self.doc.attrs.items.len)) - attr_start_idx;
                     return;
                 }
 
@@ -480,17 +483,17 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (self.i < self.input.len) self.i += 1;
         }
 
-        inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!u32 {
+        inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!IndexInt {
             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
             return self.appendChildNodeTo(parent_idx, kind);
         }
 
-        inline fn appendElementNode(noalias self: *Self, name_start: usize, name_end: usize) ParseError!u32 {
+        inline fn appendElementNode(noalias self: *Self, name_start: usize, name_end: usize) ParseError!IndexInt {
             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
             return self.appendElementNodeTo(parent_idx, name_start, name_end);
         }
 
-        inline fn appendElementNodeTo(noalias self: *Self, parent_idx: u32, name_start: usize, name_end: usize) ParseError!u32 {
+        inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
@@ -498,7 +501,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             var parent = &self.doc.nodes.items[parent_idx];
-            const idx: u32 = @intCast(len);
+            const idx: IndexInt = @intCast(len);
             const out = self.doc.nodes.addOneAssumeCapacity();
             out.* = .{
                 .kind = .element,
@@ -511,12 +514,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn appendTextNode(noalias self: *Self, start: usize, end: usize, value_processed: bool) ParseError!u32 {
+        inline fn appendTextNode(noalias self: *Self, start: usize, end: usize, value_processed: bool) ParseError!IndexInt {
             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
             return self.appendTextNodeTo(parent_idx, start, end, value_processed);
         }
 
-        inline fn appendTextNodeTo(noalias self: *Self, parent_idx: u32, start: usize, end: usize, value_processed: bool) ParseError!u32 {
+        inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start: usize, end: usize, value_processed: bool) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
@@ -524,7 +527,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             var parent = &self.doc.nodes.items[parent_idx];
-            const idx: u32 = @intCast(len);
+            const idx: IndexInt = @intCast(len);
             const out = self.doc.nodes.addOneAssumeCapacity();
             out.* = .{
                 .kind = .text,
@@ -538,7 +541,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn appendChildNodeTo(noalias self: *Self, parent_idx: u32, kind: NodeType) ParseError!u32 {
+        inline fn appendChildNodeTo(noalias self: *Self, parent_idx: IndexInt, kind: NodeType) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
@@ -546,7 +549,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             var parent = &self.doc.nodes.items[parent_idx];
-            const idx: u32 = @intCast(len);
+            const idx: IndexInt = @intCast(len);
             const out = self.doc.nodes.addOneAssumeCapacity();
             out.* = .{
                 .kind = kind,
@@ -558,14 +561,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn appendNodeRaw(noalias self: *Self, kind: NodeType, parent_idx: u32) ParseError!u32 {
+        inline fn appendNodeRaw(noalias self: *Self, kind: NodeType, parent_idx: IndexInt) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
             }
 
-            const idx: u32 = @intCast(len);
+            const idx: IndexInt = @intCast(len);
             const out = self.doc.nodes.addOneAssumeCapacity();
             out.* = .{
                 .kind = kind,
@@ -575,7 +578,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn pushStack(noalias self: *Self, idx: u32, tag_key: u64, tag_len: u16) ParseError!void {
+        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64, tag_len: u16) ParseError!void {
             const len = self.doc.parse_stack.items.len;
             if (len == self.doc.parse_stack.capacity) {
                 @branchHint(.unlikely);
@@ -589,14 +592,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             };
         }
 
-        inline fn popStack(noalias self: *Self) u32 {
+        inline fn popStack(noalias self: *Self) IndexInt {
             const top_idx = self.doc.parse_stack.items.len - 1;
             const idx = self.doc.parse_stack.items[top_idx].idx;
             self.doc.parse_stack.items.len = top_idx;
             return idx;
         }
 
-        inline fn finishNode(noalias self: *Self, idx: u32) void {
+        inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
             self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
         }
 
@@ -642,7 +645,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn tryFinishSimpleTextElement(
             noalias self: *Self,
-            idx: u32,
+            idx: IndexInt,
             name_start: usize,
             tag_len: u16,
             tag_key: u64,

@@ -1,10 +1,13 @@
 const std = @import("std");
+const common = @import("common.zig");
 const document_mod = @import("document.zig");
 const parser_mod = @import("parser.zig");
 const scanner_mod = @import("scanner.zig");
 const tables_mod = @import("tables.zig");
 const entities_mod = @import("entities.zig");
 
+pub const ParseInt = common.IndexInt;
+pub const MaxParseLen = common.MaxLen;
 pub const NodeType = document_mod.NodeType;
 pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
@@ -72,6 +75,7 @@ test "Types(options) matches document module type factory" {
     try std.testing.expectEqual(doc_types.Node, root_types.Node);
     try std.testing.expectEqual(doc_types.Attribute, root_types.Attribute);
     try std.testing.expectEqual(doc_types.Span, root_types.Span);
+    try std.testing.expectEqual(ParseInt, root_types.IndexInt);
 }
 
 test "smoke: parse nested nodes and attributes" {
@@ -446,7 +450,7 @@ test "attribute-heavy element parses and preserves lookups" {
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("v0", root.getAttributeValue("a0").?);
     try std.testing.expectEqualStrings("v63", root.getAttributeValue("a63").?);
-    try std.testing.expectEqual(@as(u32, 64), root.attr_len);
+    try std.testing.expectEqual(@as(ParseInt, 64), root.attr_len);
 }
 
 test "firstAttribute returns the first parsed attribute" {
@@ -616,6 +620,25 @@ test "document can be reused across parses" {
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("1", doc.nodeAt(1).?.getAttributeValue("x").?);
     try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueSlice());
+}
+
+test "u16 parse rejects input larger than ParseInt range" {
+    if (ParseInt != u16) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const opts: ParseOptions = .{};
+    const Document = Types(opts).Document;
+    var doc = Document.init(alloc);
+    defer doc.deinit();
+
+    const src = try alloc.alloc(u8, MaxParseLen + 1);
+    defer alloc.free(src);
+    @memset(src, 'a');
+    src[0] = '<';
+    src[1] = 'r';
+    src[2] = '>';
+
+    try std.testing.expectError(error.InputTooLarge, doc.parse(src, .{}));
 }
 
 test "strict deep balanced close tags" {

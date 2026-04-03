@@ -23,10 +23,10 @@ Source: `bench/results/latest.json` (`stable` profile).
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-turbo  │████████████████████│ 2768.09 MB/s (100.00%)
-ours-strict │███████████████████░│ 2620.56 MB/s (94.67%)
-pugixml     │██████████░░░░░░░░░░│ 1315.92 MB/s (47.54%)
-rapidxml    │█████████░░░░░░░░░░░│ 1306.37 MB/s (47.19%)
+ours-turbo  │████████████████████│ 2935.36 MB/s (100.00%)
+ours-strict │████████████████████│ 2911.18 MB/s (99.18%)
+pugixml     │█████████░░░░░░░░░░░│ 1371.81 MB/s (46.73%)
+rapidxml    │█████████░░░░░░░░░░░│ 1364.28 MB/s (46.48%)
 ```
 
 ### Stable Gate Snapshot
@@ -73,6 +73,8 @@ pub fn main() !void {
 - `fastxml.ParseOptions`
 - `fastxml.ParseMode`
 - `fastxml.ParseError`
+- `fastxml.ParseInt`
+- `fastxml.MaxParseLen`
 - `fastxml.Types(options).Document`
 - `fastxml.Types(options).Node`
 - `fastxml.Types(options).Attribute`
@@ -84,6 +86,14 @@ const Document = types.Document;
 const Node = types.Node;
 const Attribute = types.Attribute;
 ```
+
+Index width is configurable at build time, following the same config-module pattern as `htmlparser`:
+
+```bash
+zig build test -Dintlen=u64
+```
+
+Supported widths are `u16`, `u32`, `u64`, and `usize`. The default is `u32`.
 
 `Document.parse` is comptime-specialized:
 

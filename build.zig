@@ -1,19 +1,43 @@
 const std = @import("std");
 
+const IntLen = enum {
+    u16,
+    u32,
+    u64,
+    usize,
+};
+
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const intlen = b.option(IntLen, "intlen", "Integer width used for DOM spans and node indexes") orelse .u32;
+
+    const config_options = b.addOptions();
+    config_options.addOption(IntLen, "intlen", intlen);
 
     const mod = b.addModule("fastxml", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
+    mod.addOptions("config", config_options);
 
     const bench_exe = b.addExecutable(.{
         .name = "fastxml-bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("bench/bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "fastxml", .module = mod },
+            },
+        }),
+    });
+
+    const ours_runner_exe = b.addExecutable(.{
+        .name = "ours_runner",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/runners/ours_runner.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
@@ -35,6 +59,7 @@ pub fn build(b: *std.Build) void {
     });
 
     b.installArtifact(bench_exe);
+    b.installArtifact(ours_runner_exe);
     b.installArtifact(tools_exe);
 
     const bench_step = b.step("bench", "Run local fastxml benchmark");

@@ -465,18 +465,12 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     const zig_build = [_][]const u8{ "zig", "build", "-Doptimize=ReleaseFast" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
-    const ours = [_][]const u8{
-        "zig",
-        "build-exe",
-        "-O",
-        "ReleaseFast",
-        "--dep",
-        "fastxml",
-        "-Mroot=bench/runners/ours_runner.zig",
-        "-Mfastxml=src/root.zig",
-        "-femit-bin=bench/build/bin/ours_runner",
+    const copy_ours = [_][]const u8{
+        "cp",
+        "zig-out/bin/ours_runner",
+        "bench/build/bin/ours_runner",
     };
-    try runInheritWithBenchTmp(io, alloc, &ours, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &copy_ours, REPO_ROOT);
 
     const strlen_cc = [_][]const u8{
         "cc",

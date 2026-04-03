@@ -1,8 +1,10 @@
 const std = @import("std");
+const common = @import("common.zig");
 const parser = @import("parser.zig");
 const entities = @import("entities.zig");
 
-pub const InvalidIndex: u32 = std.math.maxInt(u32);
+pub const IndexInt = common.IndexInt;
+pub const InvalidIndex: IndexInt = common.InvalidIndex;
 
 pub const ParseMode = enum {
     turbo,
@@ -21,6 +23,7 @@ pub const ParseOptions = struct {
 pub fn Types(comptime options: ParseOptions) type {
     _ = options;
     return struct {
+        pub const IndexInt = @import("document.zig").IndexInt;
         pub const Span = @import("document.zig").Span;
         pub const RawAttribute = @import("document.zig").RawAttribute;
         pub const Attribute = @import("document.zig").Attribute;
@@ -32,6 +35,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
 pub const ParseError = error{
     OutOfMemory,
+    InputTooLarge,
     UnexpectedEndOfData,
     ExpectedLt,
     ExpectedGt,
@@ -46,7 +50,7 @@ pub const ParseError = error{
 };
 
 pub const ParseStackEntry = struct {
-    idx: u32,
+    idx: IndexInt,
     tag_key: u64 = 0,
     tag_len: u16 = 0,
 };
@@ -63,10 +67,10 @@ pub const NodeType = enum(u4) {
 };
 
 pub const Span = struct {
-    start: u32 = 0,
-    end: u32 = 0,
+    start: IndexInt = 0,
+    end: IndexInt = 0,
 
-    pub fn len(self: @This()) u32 {
+    pub fn len(self: @This()) IndexInt {
         return self.end - self.start;
     }
 
@@ -91,7 +95,7 @@ pub const RawAttribute = struct {
 
 pub const Attribute = struct {
     doc: *Document,
-    index: u32,
+    index: IndexInt,
 
     inline fn raw(self: @This()) *RawAttribute {
         return &self.doc.attrs.items[self.index];
@@ -107,7 +111,7 @@ pub const Attribute = struct {
             if (self.doc.postprocess_decode_entities) {
                 const value = attr.value.sliceMut(self.doc.source);
                 const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-                attr.value.end = attr.value.start + @as(u32, @intCast(final_len));
+                attr.value.end = attr.value.start + @as(IndexInt, @intCast(final_len));
             }
             attr.value_processed = true;
         }
@@ -122,21 +126,21 @@ pub const RawNode = struct {
     value: Span = .{},
     value_processed: bool = true,
 
-    attr_start: u32 = 0,
-    attr_len: u32 = 0,
+    attr_start: IndexInt = 0,
+    attr_len: IndexInt = 0,
 
-    parent: u32 = InvalidIndex,
-    last_child: u32 = InvalidIndex,
-    prev_sibling: u32 = InvalidIndex,
-    subtree_end: u32 = 0,
+    parent: IndexInt = InvalidIndex,
+    last_child: IndexInt = InvalidIndex,
+    prev_sibling: IndexInt = InvalidIndex,
+    subtree_end: IndexInt = 0,
 };
 
 pub const Node = struct {
     doc: *Document,
-    index: u32,
+    index: IndexInt,
     kind: NodeType,
-    attr_start: u32 = 0,
-    attr_len: u32 = 0,
+    attr_start: IndexInt = 0,
+    attr_len: IndexInt = 0,
 
     inline fn raw(self: @This()) *RawNode {
         return &self.doc.nodes.items[self.index];
@@ -152,7 +156,7 @@ pub const Node = struct {
             if (node.kind == .text and self.doc.postprocess_decode_entities) {
                 const value = node.value.sliceMut(self.doc.source);
                 const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-                node.value.end = node.value.start + @as(u32, @intCast(final_len));
+                node.value.end = node.value.start + @as(IndexInt, @intCast(final_len));
             }
             node.value_processed = true;
         }
@@ -171,7 +175,7 @@ pub const Node = struct {
 
     pub fn nextSibling(self: @This()) ?Node {
         const next_idx = self.raw().subtree_end + 1;
-        if (next_idx >= self.doc.nodes.items.len) return null;
+        if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.items.len) return null;
         if (self.doc.nodes.items[next_idx].prev_sibling != self.index) return null;
         return self.doc.nodeAt(next_idx);
     }
@@ -243,8 +247,8 @@ pub const Document = struct {
         return @constCast(self).nodeAt(0);
     }
 
-    pub fn nodeAt(self: *const Document, idx: u32) ?Node {
-        if (idx == InvalidIndex or idx >= self.nodes.items.len) return null;
+    pub fn nodeAt(self: *const Document, idx: IndexInt) ?Node {
+        if (idx == InvalidIndex or @as(usize, @intCast(idx)) >= self.nodes.items.len) return null;
         const doc = @constCast(self);
         return .{
             .doc = doc,
@@ -287,6 +291,7 @@ test "Types(options) exposes concrete DOM types" {
     try std.testing.expectEqual(RawAttribute, types.RawAttribute);
     try std.testing.expectEqual(Attribute, types.Attribute);
     try std.testing.expectEqual(Document, types.Document);
+    try std.testing.expectEqual(IndexInt, types.IndexInt);
 }
 
 test "Span helpers expose slices and lengths" {
@@ -294,7 +299,7 @@ test "Span helpers expose slices and lengths" {
     const SpanType = Types(opts).Span;
     var buf = "abcdef".*;
     const span: SpanType = .{ .start = 1, .end = 4 };
-    try std.testing.expectEqual(@as(u32, 3), span.len());
+    try std.testing.expectEqual(@as(IndexInt, 3), span.len());
     try std.testing.expect(!span.isEmpty());
     try std.testing.expectEqualStrings("bcd", span.slice(&buf));
 
@@ -329,7 +334,7 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     const root = doc.nodeAt(1).?;
     try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
     try std.testing.expectEqualStrings("<x>", root.firstChild().?.valueSlice());
-    try std.testing.expectEqual(@as(u32, 0), root.parentNode().?.index);
+    try std.testing.expectEqual(@as(IndexInt, 0), root.parentNode().?.index);
     try std.testing.expectEqual(root.index, root.firstChild().?.parentNode().?.index);
 
     doc.clear();
