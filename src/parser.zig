@@ -96,7 +96,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const name_start = self.i;
-            const scan = scanNameAndKey(self.input, self.i);
+            const scan = scanner.scanNameAndKey(self.input, self.i);
             self.i = scan.end;
             const name_end = scan.end;
             const tag_len = scan.len;
@@ -231,8 +231,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     } else {
                         if (strict_mode) return error.ExpectedQuote;
                         value_start = self.i;
-                        self.i = scanner.findAttrUnquotedEnd(input, self.i);
-                        value_end = self.i;
+                        const raw_end = scanner.findAttrUnquotedEnd(input, self.i);
+                        if (raw_end > value_start and raw_end < input_len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
+                            value_end = raw_end - 1;
+                            self.i = raw_end - 1;
+                        } else {
+                            self.i = raw_end;
+                            value_end = self.i;
+                        }
                     }
                 }
             }
@@ -290,7 +296,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const close_start = self.i;
-            const scan = scanNameAndKey(self.input, self.i);
+            const scan = scanner.scanNameAndKey(self.input, self.i);
             self.i = scan.end;
             const close_end = scan.end;
             const close_len = scan.len;
@@ -628,7 +634,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_start = lt + 2;
             const close_end = close_start + tag_len;
             if (close_end > self.input.len) return false;
-            const close_key = prefixKey(self.input[close_start..close_end]);
+            const close_key = scanner.prefixKey(self.input[close_start..close_end]);
             if (tag_key != close_key) return false;
             const name_end = name_start + tag_len;
             if (tag_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) {
@@ -674,61 +680,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        const NameScan = struct {
-            end: usize,
-            len: u16,
-            /// Prefix fingerprint used as a fast reject for close-tag matching.
-            key: u64,
         };
-
-        inline fn prefixKey(input: []const u8) u64 {
-            return switch (input.len) {
-                0 => 0,
-                1 => @as(u64, input[0]),
-                2 => @as(u64, input[0]) |
-                    (@as(u64, input[1]) << 8),
-                3 => @as(u64, input[0]) |
-                    (@as(u64, input[1]) << 8) |
-                    (@as(u64, input[2]) << 16),
-                4 => @as(u64, std.mem.readInt(u32, input[0..4], .little)),
-                5 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
-                    (@as(u64, input[4]) << 32),
-                6 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
-                    (@as(u64, input[4]) << 32) |
-                    (@as(u64, input[5]) << 40),
-                7 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
-                    (@as(u64, input[4]) << 32) |
-                    (@as(u64, input[5]) << 40) |
-                    (@as(u64, input[6]) << 48),
-                else => std.mem.readInt(u64, input[0..8], .little),
-            };
-        }
-
-        inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
-            // Cache the leading bytes alongside the span length so closing-tag
-            // checks usually avoid a full string compare.
-            var i = start;
-            var key: u64 = 0;
-            inline for (0..8) |n| {
-                if (i >= input.len or !tables.isNameChar(input[i])) {
-                    return .{
-                        .end = i,
-                        .len = @intCast(i - start),
-                        .key = key,
-                    };
-                }
-                key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), n * 8);
-                i += 1;
-            }
-            while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
-            return .{
-                .end = i,
-                .len = @intCast(i - start),
-                .key = key,
-            };
-        }
-    };
-}
+    }
 
 test "parseInto builds a minimal DOM and enforces strict closing tags" {
     const options: ParseOptions = .{};

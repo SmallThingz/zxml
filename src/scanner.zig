@@ -23,6 +23,58 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
 }
 
+pub const NameScan = struct {
+    end: usize,
+    len: u16,
+    /// Prefix fingerprint used as a fast reject for tag matching.
+    key: u64,
+};
+
+pub inline fn prefixKey(input: []const u8) u64 {
+    return switch (input.len) {
+        0 => 0,
+        1 => @as(u64, input[0]),
+        2 => @as(u64, input[0]) |
+            (@as(u64, input[1]) << 8),
+        3 => @as(u64, input[0]) |
+            (@as(u64, input[1]) << 8) |
+            (@as(u64, input[2]) << 16),
+        4 => @as(u64, std.mem.readInt(u32, input[0..4], .little)),
+        5 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+            (@as(u64, input[4]) << 32),
+        6 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+            (@as(u64, input[4]) << 32) |
+            (@as(u64, input[5]) << 40),
+        7 => @as(u64, std.mem.readInt(u32, input[0..4], .little)) |
+            (@as(u64, input[4]) << 32) |
+            (@as(u64, input[5]) << 40) |
+            (@as(u64, input[6]) << 48),
+        else => std.mem.readInt(u64, input[0..8], .little),
+    };
+}
+
+pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
+    var i = start;
+    var key: u64 = 0;
+    inline for (0..8) |n| {
+        if (i >= input.len or !tables.isNameChar(input[i])) {
+            return .{
+                .end = i,
+                .len = @intCast(i - start),
+                .key = key,
+            };
+        }
+        key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), n * 8);
+        i += 1;
+    }
+    while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
+    return .{
+        .end = i,
+        .len = @intCast(i - start),
+        .key = key,
+    };
+}
+
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
     while (i + 8 <= input.len) : (i += 8) {

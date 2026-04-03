@@ -5,6 +5,7 @@ const parser_mod = @import("parser.zig");
 const scanner_mod = @import("scanner.zig");
 const tables_mod = @import("tables.zig");
 const entities_mod = @import("entities.zig");
+const streaming_mod = @import("streaming.zig");
 
 pub const ParseInt = common.IndexInt;
 pub const MaxParseLen = common.MaxLen;
@@ -15,7 +16,21 @@ pub const ParseError = document_mod.ParseError;
 pub const InvalidIndex = document_mod.InvalidIndex;
 
 pub fn Types(comptime options: ParseOptions) type {
-    return document_mod.Types(options);
+    const doc_types = document_mod.Types(options);
+    const stream_types = streaming_mod.Types(options);
+    return struct {
+        pub const IndexInt = doc_types.IndexInt;
+        pub const Span = doc_types.Span;
+        pub const RawAttribute = doc_types.RawAttribute;
+        pub const Attribute = doc_types.Attribute;
+        pub const RawNode = doc_types.RawNode;
+        pub const Node = doc_types.Node;
+        pub const Document = doc_types.Document;
+        pub const StreamAttribute = stream_types.Attribute;
+        pub const StreamAttributeIterator = stream_types.AttributeIterator;
+        pub const StreamNode = stream_types.Node;
+        pub const StreamParser = stream_types.Parser;
+    };
 }
 
 fn ParsedDoc(comptime opts: ParseOptions) type {
@@ -71,11 +86,15 @@ test "Types(options) matches document module type factory" {
     const opts: ParseOptions = .{};
     const root_types = Types(opts);
     const doc_types = document_mod.Types(opts);
+    const stream_types = streaming_mod.Types(opts);
     try std.testing.expectEqual(doc_types.Document, root_types.Document);
     try std.testing.expectEqual(doc_types.Node, root_types.Node);
     try std.testing.expectEqual(doc_types.Attribute, root_types.Attribute);
     try std.testing.expectEqual(doc_types.Span, root_types.Span);
     try std.testing.expectEqual(ParseInt, root_types.IndexInt);
+    try std.testing.expectEqual(stream_types.Node, root_types.StreamNode);
+    try std.testing.expectEqual(stream_types.Attribute, root_types.StreamAttribute);
+    try std.testing.expectEqual(stream_types.Parser, root_types.StreamParser);
 }
 
 test "smoke: parse nested nodes and attributes" {
@@ -672,7 +691,7 @@ test "turbo unquoted attributes parse" {
     defer parsed.deinit();
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqualStrings("1/", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
 }
 
 test "strict unterminated quoted attribute fails" {
@@ -848,6 +867,141 @@ test "strict deep balanced close tags" {
     try std.testing.expectEqual(@as(usize, 129), countKind(&doc, .element));
 }
 
+test "streaming parser visits nodes in document order and exposes attributes" {
+    const opts: ParseOptions = .{};
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        names: std.ArrayList([]const u8),
+        kinds: std.ArrayList(NodeType),
+        depths: std.ArrayList(ParseInt),
+        saw_root_attr: bool = false,
+        saw_child_attr: bool = false,
+
+        fn onNode(self: *@This(), node: StreamNode) bool {
+            self.names.append(std.testing.allocator, node.nameSlice()) catch unreachable;
+            self.kinds.append(std.testing.allocator, node.kind) catch unreachable;
+            self.depths.append(std.testing.allocator, node.depth) catch unreachable;
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "r")) {
+                self.saw_root_attr = std.mem.eql(u8, node.getAttributeValueRaw("id").?, "1");
+            }
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "a")) {
+                self.saw_child_attr = std.mem.eql(u8, node.getAttributeValueRaw("x").?, "y");
+            }
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{
+        .names = .empty,
+        .kinds = .empty,
+        .depths = .empty,
+    };
+    defer ctx.names.deinit(std.testing.allocator);
+    defer ctx.kinds.deinit(std.testing.allocator);
+    defer ctx.depths.deinit(std.testing.allocator);
+
+    try parser.parse("<r id='1'><a x='y'>t</a><b/></r>", &ctx, Ctx.onNode);
+
+    try std.testing.expectEqual(@as(usize, 4), ctx.kinds.items.len);
+    try std.testing.expectEqualSlices(NodeType, &.{ .element, .element, .text, .element }, ctx.kinds.items);
+    try std.testing.expectEqualStrings("r", ctx.names.items[0]);
+    try std.testing.expectEqualStrings("a", ctx.names.items[1]);
+    try std.testing.expectEqualStrings("", ctx.names.items[2]);
+    try std.testing.expectEqualStrings("b", ctx.names.items[3]);
+    try std.testing.expectEqualSlices(ParseInt, &.{ 0, 1, 2, 1 }, ctx.depths.items);
+    try std.testing.expect(ctx.saw_root_attr);
+    try std.testing.expect(ctx.saw_child_attr);
+}
+
+test "streaming parser can skip a subtree and expose adjacent text" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        names: std.ArrayList([]const u8),
+        saw_skip_following_text: bool = false,
+        saw_keep_leading_text: bool = false,
+
+        fn onNode(self: *@This(), node: StreamNode) bool {
+            self.names.append(std.testing.allocator, node.nameSlice()) catch unreachable;
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip")) {
+                const following = node.followingTextRaw() catch unreachable;
+                self.saw_skip_following_text = std.mem.eql(u8, following, "tail");
+                return false;
+            }
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "keep")) {
+                self.saw_keep_leading_text = std.mem.eql(u8, node.leadingTextRaw(), "ok");
+            }
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{ .names = .empty };
+    defer ctx.names.deinit(std.testing.allocator);
+
+    try parser.parse("<r><skip><x/></skip>tail<keep>ok</keep></r>", &ctx, Ctx.onNode);
+
+    try std.testing.expectEqual(@as(usize, 5), ctx.names.items.len);
+    try std.testing.expectEqualStrings("r", ctx.names.items[0]);
+    try std.testing.expectEqualStrings("skip", ctx.names.items[1]);
+    try std.testing.expectEqualStrings("", ctx.names.items[2]);
+    try std.testing.expectEqualStrings("keep", ctx.names.items[3]);
+    try std.testing.expectEqualStrings("", ctx.names.items[4]);
+    try std.testing.expect(ctx.saw_skip_following_text);
+    try std.testing.expect(ctx.saw_keep_leading_text);
+}
+
+test "streaming parser strict validation fails on mismatched close tags" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: StreamNode) bool {
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{};
+    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<r><a></r>", &ctx, Ctx.onNode));
+}
+
+test "streaming parser turbo mode accepts unquoted attributes" {
+    const opts: ParseOptions = .{ .mode = .turbo };
+    const StreamParser = Types(opts).StreamParser;
+    const StreamNode = Types(opts).StreamNode;
+
+    const Ctx = struct {
+        saw_attr: bool = false,
+
+        fn onNode(self: *@This(), node: StreamNode) bool {
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "r")) {
+                self.saw_attr = std.mem.eql(u8, node.getAttributeValueRaw("a").?, "1");
+            }
+            return true;
+        }
+    };
+
+    var parser = StreamParser.init(std.testing.allocator);
+    defer parser.deinit();
+
+    var ctx: Ctx = .{};
+    try parser.parse("<r a=1/>", &ctx, Ctx.onNode);
+    try std.testing.expect(ctx.saw_attr);
+}
+
 fn refAllDeclsRecursive(comptime T: type) void {
     refAllDeclsRecursiveSeen(T, &.{});
 }
@@ -891,4 +1045,5 @@ test "refAllDeclsRecursive: every fastxml module compiles all declarations" {
     refAllDeclsRecursive(scanner_mod);
     refAllDeclsRecursive(tables_mod);
     refAllDeclsRecursive(entities_mod);
+    refAllDeclsRecursive(streaming_mod);
 }

@@ -13,7 +13,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (args.items.len != 4) {
-        std.debug.print("usage: {s} <strict|turbo> <xml-file> <iterations>\n", .{args.items[0]});
+        std.debug.print("usage: {s} <strict|turbo|stream-strict|stream-turbo> <xml-file> <iterations>\n", .{args.items[0]});
         return error.InvalidArguments;
     }
 
@@ -21,6 +21,10 @@ pub fn main(init: std.process.Init) !void {
         .strict
     else if (std.mem.eql(u8, args.items[1], "turbo"))
         .turbo
+    else if (std.mem.eql(u8, args.items[1], "stream-strict"))
+        .stream_strict
+    else if (std.mem.eql(u8, args.items[1], "stream-turbo"))
+        .stream_turbo
     else
         return error.InvalidArguments;
 

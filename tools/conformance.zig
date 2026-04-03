@@ -1,6 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
-const fastxml = @import("fastxml");
+const fastxml = @import("zxml");
 
 pub const ConformanceError = error{
     InvalidArguments,

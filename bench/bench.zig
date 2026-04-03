@@ -17,6 +17,10 @@ pub fn main(init: std.process.Init) !void {
             run_parse.BenchMode.strict
         else if (std.mem.eql(u8, args.items[2], "turbo"))
             run_parse.BenchMode.turbo
+        else if (std.mem.eql(u8, args.items[2], "stream-strict"))
+            run_parse.BenchMode.stream_strict
+        else if (std.mem.eql(u8, args.items[2], "stream-turbo"))
+            run_parse.BenchMode.stream_turbo
         else
             return error.InvalidBenchMode;
         const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
@@ -32,6 +36,9 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
-    std.debug.print("usage:\n  {s} <xml-file> <iterations>\n  {s} parse <strict|turbo> <xml-file> <iterations>\n", .{ args.items[0], args.items[0] });
+    std.debug.print(
+        "usage:\n  {s} <xml-file> <iterations>\n  {s} parse <strict|turbo|stream-strict|stream-turbo> <xml-file> <iterations>\n",
+        .{ args.items[0], args.items[0] },
+    );
     return error.InvalidArguments;
 }
