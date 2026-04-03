@@ -33,17 +33,13 @@ fn Parser(comptime opts: ParseOptions) type {
         fn parse(noalias self: *Self) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
             _ = try self.appendNodeRaw(.document, InvalidIndex);
-            try self.pushStack(0);
+            try self.pushStack(0, 0, 0);
 
             while (self.i < self.input.len) {
                 if (self.input[self.i] != '<') {
-                    const lt = scanner.findByte(self.input, self.i, '<') orelse {
-                        try self.parseTextRange(self.i, self.input.len);
-                        self.i = self.input.len;
-                        break;
-                    };
-                    try self.parseTextRange(self.i, lt);
-                    self.i = lt;
+                    const run = scanner.scanTextRun(self.input, self.i);
+                    try self.parseTextRange(self.i, run.lt_index, run.has_non_whitespace);
+                    self.i = run.lt_index;
                     continue;
                 }
 
@@ -65,16 +61,14 @@ fn Parser(comptime opts: ParseOptions) type {
                 return error.UnexpectedEndOfData;
             }
 
-            while (self.doc.parse_stack.items.len > 0) {
-                _ = self.popStack();
-            }
+            self.finishOpenElements();
         }
 
-        inline fn parseTextRange(noalias self: *Self, start: usize, end: usize) ParseError!void {
+        inline fn parseTextRange(noalias self: *Self, start: usize, end: usize, has_non_whitespace: bool) ParseError!void {
             if (end <= start) return;
 
             const raw = self.input[start..end];
-            if (!decode_entities and !normalize_text and isWhitespaceOnlyFast(raw)) return;
+            if (!decode_entities and !normalize_text and !has_non_whitespace) return;
             if (decode_entities and strict_mode) {
                 entities.validateEntities(raw, true) catch |e| switch (e) {
                     error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
@@ -100,8 +94,11 @@ fn Parser(comptime opts: ParseOptions) type {
             }
 
             const name_start = self.i;
-            self.i = scanner.findNameEnd(self.input, self.i);
-            const name_end = self.i;
+            const scan = scanNameAndKey(self.input, self.i);
+            self.i = scan.end;
+            const name_end = scan.end;
+            const tag_len = scan.len;
+            const tag_key = scan.key;
 
             const idx = try self.appendChildNode(.element);
             var node = &self.doc.nodes.items[idx];
@@ -117,7 +114,14 @@ fn Parser(comptime opts: ParseOptions) type {
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
                     node.attr_len = 0;
-                    try self.pushStack(idx);
+                    if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
+                        return;
+                    }
+                    if (comptime strict_or_validate) {
+                        try self.pushStack(idx, tag_key, tag_len);
+                    } else {
+                        try self.pushStack(idx, 0, 0);
+                    }
                     return;
                 }
 
@@ -140,7 +144,14 @@ fn Parser(comptime opts: ParseOptions) type {
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
                     node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
-                    try self.pushStack(idx);
+                    if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
+                        return;
+                    }
+                    if (comptime strict_or_validate) {
+                        try self.pushStack(idx, tag_key, tag_len);
+                    } else {
+                        try self.pushStack(idx, 0, 0);
+                    }
                     return;
                 }
 
@@ -246,30 +257,40 @@ fn Parser(comptime opts: ParseOptions) type {
                 return;
             }
 
-            const top_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-            const top = &self.doc.nodes.items[top_idx];
-            const top_name = top.name.slice(self.input);
+            const close_start = self.i;
+            const scan = scanNameAndKey(self.input, self.i);
+            self.i = scan.end;
+            const close_end = scan.end;
+            const close_len = scan.len;
+            const close_key = scan.key;
 
-            if (self.i + top_name.len <= self.input.len and std.mem.eql(u8, self.input[self.i .. self.i + top_name.len], top_name)) {
-                self.i += top_name.len;
+            const top = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1];
+            if (top.tag_len == close_len and top.tag_key == close_key) {
+                if (close_len > 8) {
+                    const open_name = self.doc.nodes.items[top.idx].name.slice(self.input);
+                    if (!std.mem.eql(u8, open_name[8..], self.input[close_start + 8 .. close_end])) {
+                        return error.InvalidClosingTagName;
+                    }
+                }
+
                 if (self.i >= self.input.len) {
                     if (strict_mode) return error.UnexpectedEndOfData;
                     return error.InvalidClosingTagName;
                 }
-                if (self.i < self.input.len and self.input[self.i] == '>') {
+                if (self.input[self.i] == '>') {
                     self.i += 1;
-                    _ = self.popStack();
+                    self.finishNode(self.popStack());
                     return;
                 }
-                if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) {
+                if (tables.isWhitespace(self.input[self.i])) {
                     self.skipWhitespace();
                     if (self.i >= self.input.len) {
                         if (strict_mode) return error.UnexpectedEndOfData;
                         return error.InvalidClosingTagName;
                     }
-                    if (self.i < self.input.len and self.input[self.i] == '>') {
+                    if (self.input[self.i] == '>') {
                         self.i += 1;
-                        _ = self.popStack();
+                        self.finishNode(self.popStack());
                         return;
                     }
                 }
@@ -285,7 +306,7 @@ fn Parser(comptime opts: ParseOptions) type {
                 return;
             };
             self.i = gt + 1;
-            if (self.doc.parse_stack.items.len > 1) _ = self.popStack();
+            if (self.doc.parse_stack.items.len > 1) self.finishNode(self.popStack());
         }
 
         fn parsePiOrDeclaration(noalias self: *Self) ParseError!void {
@@ -454,83 +475,153 @@ fn Parser(comptime opts: ParseOptions) type {
         inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!u32 {
             const parent_idx = self.currentParent();
             const idx = try self.appendNodeRaw(kind, parent_idx);
-            self.linkToCurrentParent(idx);
+            self.linkChild(parent_idx, idx);
             return idx;
         }
 
         inline fn appendNodeRaw(noalias self: *Self, kind: NodeType, parent_idx: u32) ParseError!u32 {
-            if (self.doc.nodes.items.len == self.doc.nodes.capacity) {
-                self.doc.nodes.ensureUnusedCapacity(self.doc.allocator, 8) catch return error.OutOfMemory;
+            const len = self.doc.nodes.items.len;
+            if (len == self.doc.nodes.capacity) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+            if (comptime opts.store_parent_pointers) {
+                if (self.doc.parents.items.len == self.doc.parents.capacity) {
+                    @branchHint(.unlikely);
+                    self.doc.parents.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+                }
             }
 
-            const idx: u32 = @intCast(self.doc.nodes.items.len);
-            const at = self.doc.nodes.items.len;
-            self.doc.nodes.items.len = at + 1;
+            const idx: u32 = @intCast(len);
+            const out = self.doc.nodes.addOneAssumeCapacity();
+            out.* = .{
+                .kind = kind,
+                .subtree_end = idx,
+            };
             if (comptime opts.store_parent_pointers) {
-                self.doc.nodes.items[at] = .{
-                    .doc = self.doc,
-                    .kind = kind,
-                    .parent = parent_idx,
-                };
-            } else {
-                self.doc.nodes.items[at] = .{
-                    .doc = self.doc,
-                    .kind = kind,
-                };
+                const parent_out = self.doc.parents.addOneAssumeCapacity();
+                parent_out.* = parent_idx;
             }
             return idx;
         }
 
         inline fn appendAttributeRaw(noalias self: *Self, name: Span, value: Span) ParseError!void {
-            if (self.doc.attrs.items.len == self.doc.attrs.capacity) {
-                self.doc.attrs.ensureUnusedCapacity(self.doc.allocator, 8) catch return error.OutOfMemory;
+            const len = self.doc.attrs.items.len;
+            if (len == self.doc.attrs.capacity) {
+                @branchHint(.unlikely);
+                self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
             }
-            const at = self.doc.attrs.items.len;
-            self.doc.attrs.items.len = at + 1;
-            self.doc.attrs.items[at] = .{
-                .doc = self.doc,
+            const out = self.doc.attrs.addOneAssumeCapacity();
+            out.* = .{
                 .name = name,
                 .value = value,
                 .value_processed = !decode_entities,
             };
         }
 
-        inline fn linkToCurrentParent(noalias self: *Self, child_idx: u32) void {
-            var parent_entry = &self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1];
-            const last = parent_entry.last_child;
-            if (last == InvalidIndex) {
-                parent_entry.first_child = child_idx;
-            } else {
-                self.doc.nodes.items[last].next_sibling = child_idx;
-            }
-            parent_entry.last_child = child_idx;
+        inline fn linkChild(noalias self: *Self, parent_idx: u32, child_idx: u32) void {
+            var parent = &self.doc.nodes.items[parent_idx];
+            self.doc.nodes.items[child_idx].prev_sibling = parent.last_child;
+            parent.last_child = child_idx;
         }
 
-        inline fn pushStack(noalias self: *Self, idx: u32) ParseError!void {
-            if (self.doc.parse_stack.items.len == self.doc.parse_stack.capacity) {
-                self.doc.parse_stack.ensureUnusedCapacity(self.doc.allocator, 8) catch return error.OutOfMemory;
+        inline fn pushStack(noalias self: *Self, idx: u32, tag_key: u64, tag_len: u16) ParseError!void {
+            const len = self.doc.parse_stack.items.len;
+            if (len == self.doc.parse_stack.capacity) {
+                @branchHint(.unlikely);
+                self.doc.parse_stack.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
             }
-            const at = self.doc.parse_stack.items.len;
-            self.doc.parse_stack.items.len = at + 1;
-            self.doc.parse_stack.items[at] = .{ .idx = idx };
+            const out = self.doc.parse_stack.addOneAssumeCapacity();
+            out.* = .{
+                .idx = idx,
+                .tag_key = tag_key,
+                .tag_len = tag_len,
+            };
         }
 
         inline fn popStack(noalias self: *Self) u32 {
-            const old_len = self.doc.parse_stack.items.len;
-            const top_idx = old_len - 1;
-            const entry = self.doc.parse_stack.items[top_idx];
+            const top_idx = self.doc.parse_stack.items.len - 1;
+            const idx = self.doc.parse_stack.items[top_idx].idx;
             self.doc.parse_stack.items.len = top_idx;
+            return idx;
+        }
 
-            if (entry.first_child != InvalidIndex) {
-                var node = &self.doc.nodes.items[entry.idx];
-                node.first_child = entry.first_child;
+        inline fn finishNode(noalias self: *Self, idx: u32) void {
+            self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
+        }
+
+        fn finishOpenElements(noalias self: *Self) void {
+            while (self.doc.parse_stack.items.len > 1) {
+                self.finishNode(self.popStack());
             }
-            return entry.idx;
+            if (self.doc.nodes.items.len != 0) {
+                self.finishNode(0);
+            }
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {
             if (self.i >= self.input.len or !tables.isWhitespace(self.input[self.i])) return;
             while (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) : (self.i += 1) {}
+        }
+
+        inline fn tryFinishSimpleTextElement(
+            noalias self: *Self,
+            idx: u32,
+            name_start: usize,
+            tag_len: u16,
+            tag_key: u64,
+        ) ParseError!bool {
+            const text_start = self.i;
+            if (text_start >= self.input.len or self.input[text_start] == '<') return false;
+
+            const lt = scanner.findByte(self.input, text_start, '<') orelse return false;
+            if (lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
+
+            const close_start = lt + 2;
+            const close_end = close_start + tag_len;
+            if (close_end > self.input.len) return false;
+            if (tag_key != spanKey(self.input, close_start, close_end)) return false;
+            const name_end = name_start + tag_len;
+            if (tag_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) {
+                return false;
+            }
+
+            var j = close_end;
+            if (j >= self.input.len) {
+                if (strict_mode) return error.UnexpectedEndOfData;
+                return false;
+            }
+            if (self.input[j] == '>') {
+                self.i = j + 1;
+            } else if (tables.isWhitespace(self.input[j])) {
+                j += 1;
+                while (j < self.input.len and tables.isWhitespace(self.input[j])) : (j += 1) {}
+                if (j >= self.input.len) {
+                    if (strict_mode) return error.UnexpectedEndOfData;
+                    return false;
+                }
+                if (self.input[j] != '>') return false;
+                self.i = j + 1;
+            } else {
+                return false;
+            }
+
+            const raw = self.input[text_start..lt];
+            if (!decode_entities and !normalize_text and tables.isWhitespace(raw[0]) and isWhitespaceOnlyFast(raw)) return true;
+            if (decode_entities and strict_mode) {
+                entities.validateEntities(raw, true) catch |e| switch (e) {
+                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
+                    error.UnterminatedEntity => return error.UnterminatedEntity,
+                };
+            }
+
+            const text_idx = try self.appendNodeRaw(.text, idx);
+            self.linkChild(idx, text_idx);
+            self.doc.nodes.items[idx].subtree_end = text_idx;
+            var text_node = &self.doc.nodes.items[text_idx];
+            text_node.value = .{ .start = @intCast(text_start), .end = @intCast(lt) };
+            text_node.value_processed = !(decode_entities or normalize_text);
+            return true;
         }
 
         fn isWhitespaceOnlyFast(bytes: []const u8) bool {
@@ -544,6 +635,43 @@ fn Parser(comptime opts: ParseOptions) type {
                 if (!tables.isWhitespace(bytes[i])) return false;
             }
             return true;
+        }
+
+        inline fn spanKey(input: []const u8, start: usize, end: usize) u64 {
+            return sliceKey(input[start..end]);
+        }
+
+        inline fn sliceKey(bytes: []const u8) u64 {
+            const n = @min(bytes.len, 8);
+            var key: u64 = 0;
+            var i: usize = 0;
+            while (i < n) : (i += 1) {
+                key |= @as(u64, bytes[i]) << @as(std.math.Log2Int(u64), @intCast(i * 8));
+            }
+            return key;
+        }
+
+        const NameScan = struct {
+            end: usize,
+            len: u16,
+            key: u64,
+        };
+
+        inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
+            var i = start;
+            var key: u64 = 0;
+            var key_len: usize = 0;
+            while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {
+                if (key_len < 8) {
+                    key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), @intCast(key_len * 8));
+                    key_len += 1;
+                }
+            }
+            return .{
+                .end = i,
+                .len = @intCast(i - start),
+                .key = key,
+            };
         }
     };
 }

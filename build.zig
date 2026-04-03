@@ -87,17 +87,20 @@ pub fn build(b: *std.Build) void {
         conformance_cmd.addArgs(args);
     }
 
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("test_root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const mod_tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = test_mod,
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
     });
     const run_mod_tests = b.addRunArtifact(mod_tests);
-
-    const exe_tests = b.addTest(.{
-        .root_module = exe.root_module,
-    });
-    const run_exe_tests = b.addRunArtifact(exe_tests);
+    if (b.args) |args| {
+        run_mod_tests.addArgs(args);
+    }
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
-    test_step.dependOn(&run_exe_tests.step);
 }

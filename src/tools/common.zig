@@ -1,12 +1,12 @@
 const std = @import("std");
 
-pub fn fileExists(path: []const u8) bool {
-    std.fs.cwd().access(path, .{}) catch return false;
+pub fn fileExists(io: std.Io, path: []const u8) bool {
+    std.Io.Dir.cwd().access(io, path, .{}) catch return false;
     return true;
 }
 
-pub fn ensureDir(path: []const u8) !void {
-    try std.fs.cwd().makePath(path);
+pub fn ensureDir(io: std.Io, path: []const u8) !void {
+    try std.Io.Dir.cwd().createDirPath(io, path);
 }
 
 pub fn joinArgs(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {
@@ -26,35 +26,41 @@ pub fn joinArgs(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     return out.toOwnedSlice(alloc);
 }
 
-pub fn runInherit(alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
+pub fn runInherit(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
     const pretty = try joinArgs(alloc, argv);
     defer alloc.free(pretty);
     std.debug.print("{s}\n", .{pretty});
 
-    var child = std.process.Child.init(argv, alloc);
-    child.cwd = cwd;
-    child.stdin_behavior = .Inherit;
-    child.stdout_behavior = .Inherit;
-    child.stderr_behavior = .Inherit;
-    try child.spawn();
-    const term = try child.wait();
+    const cwd_opt: std.process.Child.Cwd = if (cwd) |p| .{ .path = p } else .inherit;
+    var child = try std.process.spawn(io, .{
+        .argv = argv,
+        .cwd = cwd_opt,
+        .expand_arg0 = .expand,
+        .stdin = .ignore,
+        .stdout = .inherit,
+        .stderr = .inherit,
+    });
+    const term = try child.wait(io);
     switch (term) {
-        .Exited => |code| if (code != 0) return error.ChildProcessFailed,
+        .exited => |code| if (code != 0) return error.ChildProcessFailed,
         else => return error.ChildProcessFailed,
     }
 }
 
-pub fn runCaptureStdout(alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) ![]u8 {
-    const res = try std.process.Child.run(.{
-        .allocator = alloc,
+pub fn runCaptureStdout(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) ![]u8 {
+    const cwd_opt: std.process.Child.Cwd = if (cwd) |p| .{ .path = p } else .inherit;
+    const res = try std.process.run(alloc, io, .{
         .argv = argv,
-        .cwd = cwd,
+        .cwd = cwd_opt,
+        .expand_arg0 = .expand,
+        .stdout_limit = .limited(2 * 1024 * 1024),
+        .stderr_limit = .limited(2 * 1024 * 1024),
     });
     defer alloc.free(res.stdout);
     defer alloc.free(res.stderr);
 
     switch (res.term) {
-        .Exited => |code| if (code != 0) return error.ChildProcessFailed,
+        .exited => |code| if (code != 0) return error.ChildProcessFailed,
         else => return error.ChildProcessFailed,
     }
 
@@ -83,16 +89,18 @@ pub fn medianU64(alloc: std.mem.Allocator, vals: []const u64) !u64 {
     return copy[copy.len / 2];
 }
 
-pub fn writeFile(path: []const u8, bytes: []const u8) !void {
-    const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
-    try file.writeAll(bytes);
+pub fn writeFile(io: std.Io, path: []const u8, bytes: []const u8) !void {
+    try std.Io.Dir.cwd().writeFile(io, .{
+        .sub_path = path,
+        .data = bytes,
+        .flags = .{ .truncate = true },
+    });
 }
 
-pub fn readFileAlloc(alloc: std.mem.Allocator, path: []const u8) ![]u8 {
-    return std.fs.cwd().readFileAlloc(alloc, path, std.math.maxInt(usize));
+pub fn readFileAlloc(io: std.Io, alloc: std.mem.Allocator, path: []const u8) ![]u8 {
+    return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
 }
 
-pub fn nowUnix() i64 {
-    return std.time.timestamp();
+pub fn nowUnix(io: std.Io) i64 {
+    return std.Io.Timestamp.now(io, .real).toSeconds();
 }

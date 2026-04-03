@@ -1,13 +1,16 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common.zig");
 const conformance = @import("conformance.zig");
 
 const REPO_ROOT = ".";
 const BUILD_DIR = "bench/build";
 const BIN_DIR = "bench/build/bin";
+const TMP_SCRATCH_DIR = BUILD_DIR ++ "/tmp";
 const RESULTS_DIR = "bench/results";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
+const min_sample_ns: u64 = 20_000_000;
 
 const repeats: usize = 5;
 
@@ -37,10 +40,18 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "sitemaps.xml", .iterations = 120, .is_real = true },
     .{ .name = "plant_catalog.xml", .iterations = 50, .is_real = true },
     .{ .name = "cd_catalog.xml", .iterations = 80, .is_real = true },
+    .{ .name = "hnrss.xml", .iterations = 80, .is_real = true },
+    .{ .name = "pugixml_large.xml", .iterations = 24, .is_real = true },
+    .{ .name = "weekly_utf8.xml", .iterations = 100, .is_real = true },
+    .{ .name = "xgconsole.xml", .iterations = 160, .is_real = true },
     .{ .name = "synthetic_flat_attrs.xml", .iterations = 120, .is_real = false },
     .{ .name = "synthetic_deep_tree.xml", .iterations = 150, .is_real = false },
     .{ .name = "synthetic_entities.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_cdata_mix.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_wide_siblings.xml", .iterations = 120, .is_real = false },
+    .{ .name = "synthetic_namespace_mix.xml", .iterations = 120, .is_real = false },
+    .{ .name = "synthetic_long_names.xml", .iterations = 120, .is_real = false },
+    .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 120, .is_real = false },
 };
 
 const stable_fixtures = [_]FixtureCase{
@@ -48,10 +59,23 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "sitemaps.xml", .iterations = 300, .is_real = true },
     .{ .name = "plant_catalog.xml", .iterations = 140, .is_real = true },
     .{ .name = "cd_catalog.xml", .iterations = 200, .is_real = true },
+    .{ .name = "hnrss.xml", .iterations = 200, .is_real = true },
+    .{ .name = "tree.xml", .iterations = 240, .is_real = true },
+    .{ .name = "character.xml", .iterations = 260, .is_real = true },
+    .{ .name = "transitions.xml", .iterations = 260, .is_real = true },
+    .{ .name = "xgconsole.xml", .iterations = 320, .is_real = true },
+    .{ .name = "weekly_utf8.xml", .iterations = 220, .is_real = true },
+    .{ .name = "pugixml_large.xml", .iterations = 40, .is_real = true },
     .{ .name = "synthetic_flat_attrs.xml", .iterations = 280, .is_real = false },
     .{ .name = "synthetic_deep_tree.xml", .iterations = 320, .is_real = false },
     .{ .name = "synthetic_entities.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_cdata_mix.xml", .iterations = 240, .is_real = false },
+    .{ .name = "synthetic_wide_siblings.xml", .iterations = 260, .is_real = false },
+    .{ .name = "synthetic_namespace_mix.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_long_names.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_mixed_content.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_small_records.xml", .iterations = 200, .is_real = false },
 };
 
 const ParseResult = struct {
@@ -86,22 +110,22 @@ fn getProfile(name: []const u8) !Profile {
     return error.InvalidProfile;
 }
 
-fn pathExists(path: []const u8) bool {
-    return common.fileExists(path);
+fn pathExists(io: std.Io, path: []const u8) bool {
+    return common.fileExists(io, path);
 }
 
-fn setupParsers(alloc: std.mem.Allocator) !void {
-    try common.ensureDir(PARSERS_DIR);
+fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
+    try common.ensureDir(io, PARSERS_DIR);
 
     const pugixml_git = PARSERS_DIR ++ "/pugixml/.git";
-    if (!pathExists(pugixml_git)) {
+    if (!pathExists(io, pugixml_git)) {
         const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", PARSERS_DIR ++ "/pugixml" };
-        try common.runInherit(alloc, &argv, REPO_ROOT);
+        try common.runInherit(io, alloc, &argv, REPO_ROOT);
     } else {
         std.debug.print("already present: pugixml\n", .{});
     }
 
-    try common.ensureDir(PARSERS_DIR ++ "/rapidxml");
+    try common.ensureDir(io, PARSERS_DIR ++ "/rapidxml");
     const rapid_files = [_][]const u8{
         "rapidxml.hpp",
         "rapidxml_iterators.hpp",
@@ -114,39 +138,45 @@ fn setupParsers(alloc: std.mem.Allocator) !void {
         defer alloc.free(src);
         const dst = try std.fmt.allocPrint(alloc, PARSERS_DIR ++ "/rapidxml/{s}", .{f});
         defer alloc.free(dst);
-        if (pathExists(dst)) continue;
+        if (pathExists(io, dst)) continue;
         const cp = [_][]const u8{ "cp", src, dst };
-        try common.runInherit(alloc, &cp, REPO_ROOT);
+        try common.runInherit(io, alloc, &cp, REPO_ROOT);
     }
 
-    try common.ensureDir(PARSERS_DIR ++ "/yxml");
+    try common.ensureDir(io, PARSERS_DIR ++ "/yxml");
     const yxml_files = [_][]const u8{ "yxml.c", "yxml.h" };
     for (yxml_files) |f| {
         const dst = try std.fmt.allocPrint(alloc, PARSERS_DIR ++ "/yxml/{s}", .{f});
         defer alloc.free(dst);
-        if (pathExists(dst)) continue;
+        if (pathExists(io, dst)) continue;
 
         const url = try std.fmt.allocPrint(alloc, "https://g.blicky.net/yxml.git/plain/{s}", .{f});
         defer alloc.free(url);
         const argv = [_][]const u8{ "curl", "-L", "--fail", "--retry", "2", "--retry-delay", "1", url, "-o", dst };
-        try common.runInherit(alloc, &argv, REPO_ROOT);
+        try common.runInherit(io, alloc, &argv, REPO_ROOT);
     }
 
     std.debug.print("parsers ready\n", .{});
 }
 
-fn writeSyntheticFixtures() !void {
-    try writeFlatAttrs(FIXTURES_DIR ++ "/synthetic_flat_attrs.xml");
-    try writeDeepTree(FIXTURES_DIR ++ "/synthetic_deep_tree.xml");
-    try writeEntities(FIXTURES_DIR ++ "/synthetic_entities.xml");
-    try writeCdataMix(FIXTURES_DIR ++ "/synthetic_cdata_mix.xml");
+fn writeSyntheticFixtures(io: std.Io) !void {
+    try writeFlatAttrs(io, FIXTURES_DIR ++ "/synthetic_flat_attrs.xml");
+    try writeDeepTree(io, FIXTURES_DIR ++ "/synthetic_deep_tree.xml");
+    try writeEntities(io, FIXTURES_DIR ++ "/synthetic_entities.xml");
+    try writeCdataMix(io, FIXTURES_DIR ++ "/synthetic_cdata_mix.xml");
+    try writeWideSiblings(io, FIXTURES_DIR ++ "/synthetic_wide_siblings.xml");
+    try writeNamespaceMix(io, FIXTURES_DIR ++ "/synthetic_namespace_mix.xml");
+    try writeLongNames(io, FIXTURES_DIR ++ "/synthetic_long_names.xml");
+    try writeSelfClosingSwarm(io, FIXTURES_DIR ++ "/synthetic_self_closing_swarm.xml");
+    try writeMixedContent(io, FIXTURES_DIR ++ "/synthetic_mixed_content.xml");
+    try writeSmallRecords(io, FIXTURES_DIR ++ "/synthetic_small_records.xml");
 }
 
-fn writeFlatAttrs(path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
+fn writeFlatAttrs(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
     var out_buf: [4096]u8 = undefined;
-    var out_writer = file.writer(&out_buf);
+    var out_writer = file.writer(io, &out_buf);
     const out = &out_writer.interface;
     try out.writeAll("<rows>");
     var i: usize = 0;
@@ -157,11 +187,11 @@ fn writeFlatAttrs(path: []const u8) !void {
     try out.flush();
 }
 
-fn writeDeepTree(path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
+fn writeDeepTree(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
     var out_buf: [4096]u8 = undefined;
-    var out_writer = file.writer(&out_buf);
+    var out_writer = file.writer(io, &out_buf);
     const out = &out_writer.interface;
     var depth: usize = 0;
     while (depth < 128) : (depth += 1) {
@@ -175,11 +205,11 @@ fn writeDeepTree(path: []const u8) !void {
     try out.flush();
 }
 
-fn writeEntities(path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
+fn writeEntities(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
     var out_buf: [4096]u8 = undefined;
-    var out_writer = file.writer(&out_buf);
+    var out_writer = file.writer(io, &out_buf);
     const out = &out_writer.interface;
     try out.writeAll("<root>");
     var i: usize = 0;
@@ -190,11 +220,11 @@ fn writeEntities(path: []const u8) !void {
     try out.flush();
 }
 
-fn writeCdataMix(path: []const u8) !void {
-    var file = try std.fs.cwd().createFile(path, .{ .truncate = true });
-    defer file.close();
+fn writeCdataMix(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
     var out_buf: [4096]u8 = undefined;
-    var out_writer = file.writer(&out_buf);
+    var out_writer = file.writer(io, &out_buf);
     const out = &out_writer.interface;
     try out.writeAll("<?xml version='1.0'?><!DOCTYPE doc [<!ELEMENT doc ANY>]><doc>");
     var i: usize = 0;
@@ -205,14 +235,139 @@ fn writeCdataMix(path: []const u8) !void {
     try out.flush();
 }
 
-fn setupFixtures(alloc: std.mem.Allocator, refresh: bool) !void {
-    try common.ensureDir(FIXTURES_DIR);
+fn writeWideSiblings(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    var i: usize = 0;
+    while (i < 16000) : (i += 1) {
+        try out.print("<n id='{d}'>v{d}</n>", .{ i, i });
+    }
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeNamespaceMix(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll(
+        "<feed xmlns='urn:root' xmlns:a='urn:a' xmlns:b='urn:b' xmlns:c='urn:c'>",
+    );
+    var i: usize = 0;
+    while (i < 5000) : (i += 1) {
+        try out.print(
+            "<a:item id='{d}' a:key='alpha' b:key='beta' c:key='gamma'><b:title>entry-{d}</b:title><c:meta code='x{d}'/></a:item>",
+            .{ i, i, i },
+        );
+    }
+    try out.writeAll("</feed>");
+    try out.flush();
+}
+
+fn writeLongNames(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    var i: usize = 0;
+    while (i < 3500) : (i += 1) {
+        try out.print(
+            "<customer_order_transaction_record_{d} long_attribute_identifier_primary='value-{d}' long_attribute_identifier_secondary='payload-{d}'><customer_order_transaction_payload_{d}>text-{d}</customer_order_transaction_payload_{d}></customer_order_transaction_record_{d}>",
+            .{ i, i, i, i, i, i, i },
+        );
+    }
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeSelfClosingSwarm(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    var i: usize = 0;
+    while (i < 32000) : (i += 1) {
+        try out.print("<entry id='{d}' kind='sample' state='ok'/>", .{i});
+    }
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeMixedContent(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<?xml version='1.0'?><doc>");
+    var i: usize = 0;
+    while (i < 6000) : (i += 1) {
+        try out.print(
+            "<p>prefix-{d}<b>bold-{d}</b><![CDATA[cdata-{d}<x>]]><!--m{d}--><?go value='{d}'?><i>tail-{d}</i></p>",
+            .{ i, i, i, i, i, i },
+        );
+    }
+    try out.writeAll("</doc>");
+    try out.flush();
+}
+
+fn writeSmallRecords(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<records>");
+    var i: usize = 0;
+    while (i < 12000) : (i += 1) {
+        try out.print(
+            "<record id='{d}'><name>name-{d}</name><kind>k</kind><value>{d}</value><flag>true</flag></record>",
+            .{ i, i, i },
+        );
+    }
+    try out.writeAll("</records>");
+    try out.flush();
+}
+
+fn copyFixtureIfPresent(io: std.Io, alloc: std.mem.Allocator, src: []const u8, dst_name: []const u8, refresh: bool) !void {
+    const dst = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{dst_name});
+    defer alloc.free(dst);
+
+    if (!refresh) {
+        const st = std.Io.Dir.cwd().statFile(io, dst, .{}) catch null;
+        if (st != null and st.?.size > 0) {
+            std.debug.print("cached: {s}\n", .{dst_name});
+            return;
+        }
+    }
+
+    const src_stat = std.Io.Dir.cwd().statFile(io, src, .{}) catch null;
+    if (src_stat == null or src_stat.?.size == 0) return;
+
+    const bytes = try common.readFileAlloc(io, alloc, src);
+    defer alloc.free(bytes);
+    try common.writeFile(io, dst, bytes);
+}
+
+fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
+    try common.ensureDir(io, FIXTURES_DIR);
 
     const targets = [_]struct { url: []const u8, out: []const u8 }{
         .{ .url = "https://www.w3schools.com/xml/note.xml", .out = "note.xml" },
         .{ .url = "https://www.sitemaps.org/sitemap.xml", .out = "sitemaps.xml" },
         .{ .url = "https://www.w3schools.com/xml/plant_catalog.xml", .out = "plant_catalog.xml" },
         .{ .url = "https://www.w3schools.com/xml/cd_catalog.xml", .out = "cd_catalog.xml" },
+        .{ .url = "https://hnrss.org/frontpage", .out = "hnrss.xml" },
     };
 
     for (targets) |item| {
@@ -220,7 +375,7 @@ fn setupFixtures(alloc: std.mem.Allocator, refresh: bool) !void {
         defer alloc.free(target);
 
         if (!refresh) {
-            const st = std.fs.cwd().statFile(target) catch null;
+            const st = std.Io.Dir.cwd().statFile(io, target, .{}) catch null;
             if (st != null and st.?.size > 0) {
                 std.debug.print("cached: {s}\n", .{item.out});
                 continue;
@@ -241,21 +396,39 @@ fn setupFixtures(alloc: std.mem.Allocator, refresh: bool) !void {
             "-o",
             target,
         };
-        try common.runInherit(alloc, &argv, REPO_ROOT);
+        try common.runInherit(io, alloc, &argv, REPO_ROOT);
     }
 
-    try writeSyntheticFixtures();
+    const bundled = [_]struct { src: []const u8, out: []const u8 }{
+        .{ .src = PARSERS_DIR ++ "/pugixml/docs/samples/tree.xml", .out = "tree.xml" },
+        .{ .src = PARSERS_DIR ++ "/pugixml/docs/samples/character.xml", .out = "character.xml" },
+        .{ .src = PARSERS_DIR ++ "/pugixml/docs/samples/transitions.xml", .out = "transitions.xml" },
+        .{ .src = PARSERS_DIR ++ "/pugixml/docs/samples/xgconsole.xml", .out = "xgconsole.xml" },
+        .{ .src = PARSERS_DIR ++ "/pugixml/docs/samples/weekly-utf-8.xml", .out = "weekly_utf8.xml" },
+        .{ .src = PARSERS_DIR ++ "/pugixml/tests/data/large.xml", .out = "pugixml_large.xml" },
+    };
+    for (bundled) |item| {
+        try copyFixtureIfPresent(io, alloc, item.src, item.out, refresh);
+    }
+
+    try writeSyntheticFixtures(io);
     std.debug.print("fixtures ready\n", .{});
 }
 
-fn ensureExternalParsersBuilt(alloc: std.mem.Allocator) !void {
-    if (!pathExists(PARSERS_DIR ++ "/pugixml/CMakeLists.txt")) {
-        try setupParsers(alloc);
+fn ensureExternalParsersBuilt(io: std.Io, alloc: std.mem.Allocator) !void {
+    if (!pathExists(io, PARSERS_DIR ++ "/pugixml/CMakeLists.txt")) {
+        try setupParsers(io, alloc);
     }
 }
 
-fn appendPkgConfigArgs(alloc: std.mem.Allocator, list: *std.ArrayList([]const u8), package: []const u8) !void {
-    const out = try common.runCaptureStdout(alloc, &[_][]const u8{ "pkg-config", "--cflags", "--libs", package }, REPO_ROOT);
+fn appendPkgConfigArgs(io: std.Io, alloc: std.mem.Allocator, list: *std.ArrayList([]const u8), package: []const u8) !void {
+    const out = common.runCaptureStdout(io, alloc, &[_][]const u8{ "pkg-config", "--cflags", "--libs", package }, REPO_ROOT) catch |err| {
+        if (err == error.FileNotFound and std.mem.eql(u8, package, "libxml-2.0")) {
+            try list.appendSlice(alloc, &.{ "-I/usr/include/libxml2", "-lxml2" });
+            return;
+        }
+        return err;
+    };
     defer alloc.free(out);
 
     var it = std.mem.tokenizeAny(u8, out, " \t\n\r");
@@ -268,12 +441,26 @@ fn freeOwnedArgs(alloc: std.mem.Allocator, args: []const []const u8) void {
     for (args) |a| alloc.free(a);
 }
 
-fn buildRunners(alloc: std.mem.Allocator) !void {
-    try common.ensureDir(BUILD_DIR);
-    try common.ensureDir(BIN_DIR);
+fn runInheritWithBenchTmp(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
+    var with_env = std.ArrayList([]const u8).empty;
+    defer with_env.deinit(alloc);
+    try with_env.appendSlice(alloc, &.{
+        "env",
+        "TMPDIR=" ++ TMP_SCRATCH_DIR,
+        "TMP=" ++ TMP_SCRATCH_DIR,
+        "TEMP=" ++ TMP_SCRATCH_DIR,
+    });
+    try with_env.appendSlice(alloc, argv);
+    try common.runInherit(io, alloc, with_env.items, cwd);
+}
+
+fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
+    try common.ensureDir(io, BUILD_DIR);
+    try common.ensureDir(io, BIN_DIR);
+    try common.ensureDir(io, TMP_SCRATCH_DIR);
 
     const zig_build = [_][]const u8{ "zig", "build", "-Doptimize=ReleaseFast" };
-    try common.runInherit(alloc, &zig_build, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
     const ours = [_][]const u8{
         "zig",
@@ -286,7 +473,7 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-Mfastxml=src/root.zig",
         "-femit-bin=bench/build/bin/ours_runner",
     };
-    try common.runInherit(alloc, &ours, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &ours, REPO_ROOT);
 
     const strlen_cc = [_][]const u8{
         "cc",
@@ -296,7 +483,7 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-o",
         "bench/build/bin/strlen_runner",
     };
-    try common.runInherit(alloc, &strlen_cc, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &strlen_cc, REPO_ROOT);
 
     var libxml_args = std.ArrayList([]const u8).empty;
     const base_arg_count: usize = 5;
@@ -311,8 +498,8 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-o",
         "bench/build/bin/libxml2_runner",
     });
-    try appendPkgConfigArgs(alloc, &libxml_args, "libxml-2.0");
-    try common.runInherit(alloc, libxml_args.items, REPO_ROOT);
+    try appendPkgConfigArgs(io, alloc, &libxml_args, "libxml-2.0");
+    try runInheritWithBenchTmp(io, alloc, libxml_args.items, REPO_ROOT);
 
     const pugixml_cc = [_][]const u8{
         "c++",
@@ -324,7 +511,7 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-o",
         "bench/build/bin/pugixml_runner",
     };
-    try common.runInherit(alloc, &pugixml_cc, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &pugixml_cc, REPO_ROOT);
 
     const rapidxml_cc = [_][]const u8{
         "c++",
@@ -335,7 +522,7 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-o",
         "bench/build/bin/rapidxml_runner",
     };
-    try common.runInherit(alloc, &rapidxml_cc, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &rapidxml_cc, REPO_ROOT);
 
     const yxml_cc = [_][]const u8{
         "cc",
@@ -346,77 +533,87 @@ fn buildRunners(alloc: std.mem.Allocator) !void {
         "-o",
         "bench/build/bin/yxml_runner",
     };
-    try common.runInherit(alloc, &yxml_cc, REPO_ROOT);
+    try runInheritWithBenchTmp(io, alloc, &yxml_cc, REPO_ROOT);
 }
 
-fn runParser(alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, iterations: usize) !u64 {
+fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, iterations: usize) !u64 {
     const iters = try std.fmt.allocPrint(alloc, "{d}", .{iterations});
     defer alloc.free(iters);
 
-    var argv: [4][]const u8 = undefined;
+    var argv: [7][]const u8 = undefined;
     var argc: usize = 0;
+    const pin = builtin.os.tag == .linux;
+
+    if (pin) {
+        argv[0] = "taskset";
+        argv[1] = "-c";
+        argv[2] = "0";
+        argc = 3;
+    }
 
     if (std.mem.eql(u8, parser_name, "ours-strict")) {
-        argv[0] = BIN_DIR ++ "/ours_runner";
-        argv[1] = "strict";
-        argv[2] = fixture_path;
-        argv[3] = iters;
-        argc = 4;
+        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
+        argv[argc + 1] = "strict";
+        argv[argc + 2] = fixture_path;
+        argv[argc + 3] = iters;
+        argc += 4;
     } else if (std.mem.eql(u8, parser_name, "ours-turbo")) {
-        argv[0] = BIN_DIR ++ "/ours_runner";
-        argv[1] = "turbo";
-        argv[2] = fixture_path;
-        argv[3] = iters;
-        argc = 4;
+        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
+        argv[argc + 1] = "turbo";
+        argv[argc + 2] = fixture_path;
+        argv[argc + 3] = iters;
+        argc += 4;
     } else if (std.mem.eql(u8, parser_name, "strlen")) {
-        argv[0] = BIN_DIR ++ "/strlen_runner";
-        argv[1] = fixture_path;
-        argv[2] = iters;
-        argc = 3;
+        argv[argc + 0] = BIN_DIR ++ "/strlen_runner";
+        argv[argc + 1] = fixture_path;
+        argv[argc + 2] = iters;
+        argc += 3;
     } else if (std.mem.eql(u8, parser_name, "libxml2")) {
-        argv[0] = BIN_DIR ++ "/libxml2_runner";
-        argv[1] = fixture_path;
-        argv[2] = iters;
-        argc = 3;
+        argv[argc + 0] = BIN_DIR ++ "/libxml2_runner";
+        argv[argc + 1] = fixture_path;
+        argv[argc + 2] = iters;
+        argc += 3;
     } else if (std.mem.eql(u8, parser_name, "yxml")) {
-        argv[0] = BIN_DIR ++ "/yxml_runner";
-        argv[1] = fixture_path;
-        argv[2] = iters;
-        argc = 3;
+        argv[argc + 0] = BIN_DIR ++ "/yxml_runner";
+        argv[argc + 1] = fixture_path;
+        argv[argc + 2] = iters;
+        argc += 3;
     } else if (std.mem.eql(u8, parser_name, "pugixml")) {
-        argv[0] = BIN_DIR ++ "/pugixml_runner";
-        argv[1] = fixture_path;
-        argv[2] = iters;
-        argc = 3;
+        argv[argc + 0] = BIN_DIR ++ "/pugixml_runner";
+        argv[argc + 1] = fixture_path;
+        argv[argc + 2] = iters;
+        argc += 3;
     } else if (std.mem.eql(u8, parser_name, "rapidxml")) {
-        argv[0] = BIN_DIR ++ "/rapidxml_runner";
-        argv[1] = fixture_path;
-        argv[2] = iters;
-        argc = 3;
+        argv[argc + 0] = BIN_DIR ++ "/rapidxml_runner";
+        argv[argc + 1] = fixture_path;
+        argv[argc + 2] = iters;
+        argc += 3;
     } else {
         return error.UnknownParser;
     }
 
-    const out = try common.runCaptureStdout(alloc, argv[0..argc], REPO_ROOT);
+    const out = try common.runCaptureStdout(io, alloc, argv[0..argc], REPO_ROOT);
     defer alloc.free(out);
     return common.parseLastInt(out);
 }
 
-fn runParseBench(alloc: std.mem.Allocator, parser_name: []const u8, fixture: FixtureCase) !ParseResult {
+fn runParseBench(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture: FixtureCase) !ParseResult {
     const fixture_path = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{fixture.name});
     defer alloc.free(fixture_path);
 
-    const fixture_stat = try std.fs.cwd().statFile(fixture_path);
+    const fixture_stat = try std.Io.Dir.cwd().statFile(io, fixture_path, .{});
+
+    const calibrated_iterations = try calibrateIterations(io, alloc, parser_name, fixture_path, fixture.iterations);
 
     const samples = try alloc.alloc(u64, repeats);
     errdefer alloc.free(samples);
     for (samples, 0..) |*s, rep| {
         _ = rep;
-        s.* = try runParser(alloc, parser_name, fixture_path, fixture.iterations);
+        s.* = try runParser(io, alloc, parser_name, fixture_path, calibrated_iterations);
     }
 
     const median = try common.medianU64(alloc, samples);
-    const bytes_total = @as(f64, @floatFromInt(fixture_stat.size)) * @as(f64, @floatFromInt(fixture.iterations));
+    const bytes_total = @as(f64, @floatFromInt(fixture_stat.size)) * @as(f64, @floatFromInt(calibrated_iterations));
     const throughput = if (median == 0) 0.0 else (bytes_total / (1024.0 * 1024.0)) / (@as(f64, @floatFromInt(median)) / 1_000_000_000.0);
 
     const parser_name_copy = try alloc.dupe(u8, parser_name);
@@ -428,11 +625,20 @@ fn runParseBench(alloc: std.mem.Allocator, parser_name: []const u8, fixture: Fix
         .parser = parser_name_copy,
         .fixture = fixture_name_copy,
         .is_real = fixture.is_real,
-        .iterations = fixture.iterations,
+        .iterations = calibrated_iterations,
         .samples_ns = samples,
         .median_ns = median,
         .throughput_mb_s = throughput,
     };
+}
+
+fn calibrateIterations(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, base_iterations: usize) !usize {
+    const base_ns = try runParser(io, alloc, parser_name, fixture_path, base_iterations);
+    if (base_ns >= min_sample_ns or base_ns == 0) return base_iterations;
+
+    const factor_u64 = std.math.divCeil(u64, min_sample_ns, base_ns) catch return base_iterations;
+    const factor = @as(usize, @intCast(@min(factor_u64, 10_000)));
+    return std.math.mul(usize, base_iterations, factor) catch std.math.maxInt(usize);
 }
 
 fn freeParseResult(alloc: std.mem.Allocator, row: *ParseResult) void {
@@ -529,12 +735,12 @@ fn writeTableRow(writer: anytype, cells: []const []const u8, widths: []const usi
     try writer.writeByte('\n');
 }
 
-fn writeMarkdown(alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(alloc);
-    const w = out.writer(alloc);
+fn writeMarkdown(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
 
-    try w.print("# FastXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(), profile_name });
+    try w.print("# FastXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
 
     try w.writeAll("## Parse Throughput\n\n");
     try w.writeAll("| Fixture | Parser | Throughput (MB/s) | Median Time (ms) | Iterations |\n");
@@ -566,15 +772,15 @@ fn writeMarkdown(alloc: std.mem.Allocator, profile_name: []const u8, parse_resul
         }
     }
 
-    return out.toOwnedSlice(alloc);
+    return out.toOwnedSlice();
 }
 
-fn writeTerminalReport(alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(alloc);
-    const w = out.writer(alloc);
+fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
 
-    try w.print("FastXML Benchmark Results\nGenerated (unix): {d}\nProfile: {s}\n\n", .{ common.nowUnix(), profile_name });
+    try w.print("FastXML Benchmark Results\nGenerated (unix): {d}\nProfile: {s}\n\n", .{ common.nowUnix(io), profile_name });
 
     try w.writeAll("Parse Throughput (Per Fixture, sorted by speed)\n");
 
@@ -789,15 +995,15 @@ fn writeTerminalReport(alloc: std.mem.Allocator, profile_name: []const u8, parse
         try w.print("Gate Summary: {d}/{d} passed\n", .{ pass_count, gate_rows.len });
     }
 
-    return out.toOwnedSlice(alloc);
+    return out.toOwnedSlice();
 }
 
-fn writeJson(alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(alloc);
-    const w = out.writer(alloc);
+fn writeJson(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, parse_results: []const ParseResult, gate_rows: []const GateRow) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
 
-    try w.print("{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"parse_results\": [\n", .{ common.nowUnix(), profile_name });
+    try w.print("{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"parse_results\": [\n", .{ common.nowUnix(io), profile_name });
     for (parse_results, 0..) |r, i| {
         try w.print(
             "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mb_s\":{d:.6}}}{s}\n",
@@ -828,7 +1034,7 @@ fn writeJson(alloc: std.mem.Allocator, profile_name: []const u8, parse_results: 
     }
     try w.writeAll("  ]\n}\n");
 
-    return out.toOwnedSlice(alloc);
+    return out.toOwnedSlice();
 }
 
 fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap(f64) {
@@ -872,7 +1078,7 @@ fn freeBaselineMap(alloc: std.mem.Allocator, map: *std.StringHashMap(f64)) void 
     map.deinit();
 }
 
-fn runBenchmarks(alloc: std.mem.Allocator, args: []const []const u8) !void {
+fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
     var profile_name: []const u8 = "quick";
     var baseline_path: ?[]const u8 = null;
     var write_baseline = false;
@@ -897,11 +1103,11 @@ fn runBenchmarks(alloc: std.mem.Allocator, args: []const []const u8) !void {
 
     const profile = try getProfile(profile_name);
 
-    try common.ensureDir(RESULTS_DIR);
-    try setupParsers(alloc);
-    try setupFixtures(alloc, false);
-    try ensureExternalParsersBuilt(alloc);
-    try buildRunners(alloc);
+    try common.ensureDir(io, RESULTS_DIR);
+    try setupParsers(io, alloc);
+    try setupFixtures(io, alloc, false);
+    try ensureExternalParsersBuilt(io, alloc);
+    try buildRunners(io, alloc);
 
     var parse_results = std.ArrayList(ParseResult).empty;
     defer {
@@ -912,26 +1118,26 @@ fn runBenchmarks(alloc: std.mem.Allocator, args: []const []const u8) !void {
     for (profile.fixtures) |fx| {
         for (parse_parsers) |p| {
             std.debug.print("running parse: parser={s} fixture={s} iterations={d}\n", .{ p, fx.name, fx.iterations });
-            try parse_results.append(alloc, try runParseBench(alloc, p, fx));
+            try parse_results.append(alloc, try runParseBench(io, alloc, p, fx));
         }
     }
 
     const gate_rows = try evaluateGateRows(alloc, profile, parse_results.items);
     defer freeGateRows(alloc, gate_rows);
 
-    const md = try writeMarkdown(alloc, profile.name, parse_results.items, gate_rows);
+    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows);
     defer alloc.free(md);
-    try common.writeFile(RESULTS_DIR ++ "/latest.md", md);
+    try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
-    const terminal = try writeTerminalReport(alloc, profile.name, parse_results.items, gate_rows);
+    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows);
     defer alloc.free(terminal);
 
-    const json = try writeJson(alloc, profile.name, parse_results.items, gate_rows);
+    const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows);
     defer alloc.free(json);
-    try common.writeFile(RESULTS_DIR ++ "/latest.json", json);
+    try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     try stdout.writeAll("\n");
     try stdout.writeAll(terminal);
@@ -943,7 +1149,7 @@ fn runBenchmarks(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const baseline = baseline_path orelse baseline_default;
 
     if (write_baseline) {
-        try common.writeFile(baseline, json);
+        try common.writeFile(io, baseline, json);
         std.debug.print("wrote baseline {s}\n", .{baseline});
     }
 
@@ -961,8 +1167,8 @@ fn runBenchmarks(alloc: std.mem.Allocator, args: []const []const u8) !void {
         }
     }
 
-    if (pathExists(baseline)) {
-        const baseline_bytes = try common.readFileAlloc(alloc, baseline);
+    if (pathExists(io, baseline)) {
+        const baseline_bytes = try common.readFileAlloc(io, alloc, baseline);
         defer alloc.free(baseline_bytes);
 
         var base_map = try parseBaseline(alloc, baseline_bytes);
@@ -1000,45 +1206,48 @@ fn usage() void {
     , .{});
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(alloc);
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-
-    if (args.len < 2) {
-        usage();
-        std.process.exit(2);
+    var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer it.deinit();
+    while (it.next()) |arg| {
+        try args.append(alloc, try alloc.dupe(u8, arg));
     }
 
-    const cmd = args[1];
+    if (args.items.len < 2) {
+        usage();
+        return error.InvalidArguments;
+    }
+
+    const cmd = args.items[1];
     if (std.mem.eql(u8, cmd, "setup-parsers")) {
-        try setupParsers(alloc);
+        try setupParsers(init.io, alloc);
         return;
     }
 
     if (std.mem.eql(u8, cmd, "setup-fixtures")) {
         var refresh = false;
         var i: usize = 2;
-        while (i < args.len) : (i += 1) {
-            if (std.mem.eql(u8, args[i], "--refresh")) refresh = true else return error.InvalidArguments;
+        while (i < args.items.len) : (i += 1) {
+            if (std.mem.eql(u8, args.items[i], "--refresh")) refresh = true else return error.InvalidArguments;
         }
-        try setupFixtures(alloc, refresh);
+        try setupFixtures(init.io, alloc, refresh);
         return;
     }
 
     if (std.mem.eql(u8, cmd, "run-benchmarks")) {
-        try runBenchmarks(alloc, args[2..]);
+        try runBenchmarks(init.io, alloc, args.items[2..]);
         return;
     }
 
     if (std.mem.eql(u8, cmd, "run-conformance") or std.mem.eql(u8, cmd, "run-compliance")) {
-        try conformance.runConformance(alloc, args[2..]);
+        try conformance.runConformance(init.io, alloc, args.items[2..]);
         return;
     }
 
     usage();
-    std.process.exit(2);
+    return error.InvalidArguments;
 }

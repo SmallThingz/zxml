@@ -1,17 +1,14 @@
 const std = @import("std");
 const fastxml = @import("fastxml");
+const Io = std.Io;
 
-fn run(path: []const u8, iterations: usize, mode: []const u8) !u64 {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
-
-    const input = try std.fs.cwd().readFileAlloc(alloc, path, std.math.maxInt(usize));
+fn run(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: []const u8) !u64 {
+    const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
     var doc = fastxml.Document.init(alloc);
     defer doc.deinit();
 
-    const start = std.time.nanoTimestamp();
+    const start = Io.Clock.Timestamp.now(io, .awake);
     if (std.mem.eql(u8, mode, "strict")) {
         var i: usize = 0;
         while (i < iterations) : (i += 1) {
@@ -32,23 +29,27 @@ fn run(path: []const u8, iterations: usize, mode: []const u8) !u64 {
             });
         }
     }
-    const end = std.time.nanoTimestamp();
-    return @intCast(end - start);
+    const end = Io.Clock.Timestamp.now(io, .awake);
+    const elapsed = start.durationTo(end);
+    return @intCast(@max(elapsed.raw.nanoseconds, 0));
 }
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    const alloc = init.arena.allocator();
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(alloc);
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
-
-    if (args.len != 4) {
-        std.debug.print("usage: {s} <strict|turbo> <xml-file> <iterations>\n", .{args[0]});
-        std.process.exit(2);
+    var it = try std.process.Args.Iterator.initAllocator(init.minimal.args, init.gpa);
+    defer it.deinit();
+    while (it.next()) |arg| {
+        try args.append(alloc, try alloc.dupe(u8, arg));
     }
 
-    const total_ns = try run(args[2], try std.fmt.parseInt(usize, args[3], 10), args[1]);
+    if (args.items.len != 4) {
+        std.debug.print("usage: {s} <strict|turbo> <xml-file> <iterations>\n", .{args.items[0]});
+        return error.InvalidArguments;
+    }
+
+    const total_ns = try run(init.io, alloc, args.items[2], try std.fmt.parseInt(usize, args.items[3], 10), args.items[1]);
     std.debug.print("{d}\n", .{total_ns});
 }

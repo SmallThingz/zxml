@@ -1,9 +1,15 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const tables = @import("tables.zig");
 
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
-    return findByteDispatch(haystack, start, needle);
+    if (haystack.len -| start < 32) {
+        var i = start;
+        while (i < haystack.len) : (i += 1) {
+            if (haystack[i] == needle) return i;
+        }
+        return null;
+    }
+    return std.mem.indexOfScalarPos(u8, haystack, start, needle);
 }
 
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
@@ -16,6 +22,63 @@ pub inline fn findAttrUnquotedEnd(noalias input: []const u8, start: usize) usize
     var i = start;
     while (i < input.len and tables.isAttrUnquotedValueChar(input[i])) : (i += 1) {}
     return i;
+}
+
+pub const TextRun = struct {
+    lt_index: usize,
+    has_non_whitespace: bool,
+};
+
+pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
+    if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
+
+    var i = start;
+    var has_non_whitespace = false;
+    const remaining = hay.len - start;
+
+    if (remaining < 64) {
+        while (i < hay.len and hay[i] != '<') : (i += 1) {
+            if (!tables.WhitespaceTable[hay[i]]) has_non_whitespace = true;
+        }
+        return .{ .lt_index = i, .has_non_whitespace = has_non_whitespace };
+    }
+
+    if (!@inComptime()) {
+        if (std.simd.suggestVectorLength(u8)) |block_len| {
+            const Block = @Vector(block_len, u8);
+            const lt_mask: Block = @splat('<');
+            const sp_mask: Block = @splat(' ');
+            const nl_mask: Block = @splat('\n');
+            const cr_mask: Block = @splat('\r');
+            const tab_mask: Block = @splat('\t');
+
+            while (i + block_len <= hay.len) : (i += block_len) {
+                const block: Block = hay[i..][0..block_len].*;
+                const lt_hits = block == lt_mask;
+                if (@reduce(.Or, lt_hits)) {
+                    const first_lt = std.simd.firstTrue(lt_hits).?;
+                    var j: usize = 0;
+                    while (j < first_lt) : (j += 1) {
+                        if (!tables.WhitespaceTable[hay[i + j]]) {
+                            return .{ .lt_index = i + first_lt, .has_non_whitespace = true };
+                        }
+                    }
+                    return .{ .lt_index = i + first_lt, .has_non_whitespace = has_non_whitespace };
+                }
+
+                const ws_hits = (block == sp_mask) |
+                    (block == nl_mask) |
+                    (block == cr_mask) |
+                    (block == tab_mask);
+                if (!@reduce(.And, ws_hits)) has_non_whitespace = true;
+            }
+        }
+    }
+
+    while (i < hay.len and hay[i] != '<') : (i += 1) {
+        if (!tables.WhitespaceTable[hay[i]]) has_non_whitespace = true;
+    }
+    return .{ .lt_index = i, .has_non_whitespace = has_non_whitespace };
 }
 
 pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: []const u8) ?usize {
@@ -72,45 +135,6 @@ pub fn findTagEndRespectQuotes(input: []const u8, start: usize) ?TagEnd {
     }
 
     return null;
-}
-
-inline fn findByteDispatch(hay: []const u8, start: usize, needle: u8) ?usize {
-    if (start >= hay.len) return null;
-    const rem = hay.len - start;
-
-    if (comptime builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) {
-        if (rem < 64) return std.mem.indexOfScalarPos(u8, hay, start, needle);
-        return findByteVec(32, hay, start, needle);
-    }
-    if (comptime builtin.cpu.arch == .x86_64 and std.Target.x86.featureSetHas(builtin.cpu.features, .sse2)) {
-        if (rem < 32) return std.mem.indexOfScalarPos(u8, hay, start, needle);
-        return findByteVec(16, hay, start, needle);
-    }
-    if (comptime builtin.cpu.arch == .aarch64) {
-        if (rem < 32) return std.mem.indexOfScalarPos(u8, hay, start, needle);
-        return findByteVec(16, hay, start, needle);
-    }
-    return std.mem.indexOfScalarPos(u8, hay, start, needle);
-}
-
-inline fn findByteVec(comptime lanes: comptime_int, hay: []const u8, start: usize, needle: u8) ?usize {
-    const Vec = @Vector(lanes, u8);
-    const needle_vec: Vec = @splat(needle);
-
-    var i = start;
-    while (i + lanes <= hay.len) : (i += lanes) {
-        const chunk: [lanes]u8 = hay[i..][0..lanes].*;
-        const vec: Vec = chunk;
-        const mask = vec == needle_vec;
-        if (@reduce(.Or, mask)) {
-            var j: usize = 0;
-            while (j < lanes) : (j += 1) {
-                if (chunk[j] == needle) return i + j;
-            }
-        }
-    }
-
-    return std.mem.indexOfScalarPos(u8, hay, i, needle);
 }
 
 fn trimRightSlashAndWs(input: []const u8, start: usize, end_exclusive: usize) usize {

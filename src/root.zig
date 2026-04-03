@@ -11,11 +11,7 @@ pub const ParseError = @import("xml/document.zig").ParseError;
 pub const InvalidIndex = @import("xml/document.zig").InvalidIndex;
 
 pub fn bufferedPrint() !void {
-    var stdout_buffer: [256]u8 = undefined;
-    var stdout_writer = std.fs.File.stdout().writer(&stdout_buffer);
-    const stdout = &stdout_writer.interface;
-    try stdout.print("fastxml: run `zig build test`\n", .{});
-    try stdout.flush();
+    std.debug.print("fastxml: run `zig build test`\n", .{});
 }
 
 test "smoke: parse nested nodes and attributes" {
@@ -134,7 +130,7 @@ test "store parent pointers option" {
 
     try doc.parse(&src, .{ .store_parent_pointers = false });
     const b2 = doc.nodeAt(2) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(?*const Node, null), b2.parentNode());
+    try std.testing.expectEqual(@as(?Node, null), b2.parentNode());
 }
 
 test "attribute-heavy element parses and preserves lookups" {
@@ -142,10 +138,9 @@ test "attribute-heavy element parses and preserves lookups" {
     defer xml.deinit(std.testing.allocator);
 
     try xml.appendSlice(std.testing.allocator, "<root");
-    const w = xml.writer(std.testing.allocator);
     var i: usize = 0;
     while (i < 64) : (i += 1) {
-        try w.print(" a{d}='v{d}'", .{ i, i });
+        try xml.print(std.testing.allocator, " a{d}='v{d}'", .{ i, i });
     }
     try xml.appendSlice(std.testing.allocator, "></root>");
 
@@ -164,15 +159,14 @@ test "strict deep balanced close tags" {
     defer xml.deinit(std.testing.allocator);
 
     try xml.appendSlice(std.testing.allocator, "<r>");
-    const w = xml.writer(std.testing.allocator);
     var i: usize = 0;
     while (i < 128) : (i += 1) {
-        try w.print("<n{d}>", .{i});
+        try xml.print(std.testing.allocator, "<n{d}>", .{i});
     }
     i = 128;
     while (i > 0) {
         i -= 1;
-        try w.print("</n{d}>", .{i});
+        try xml.print(std.testing.allocator, "</n{d}>", .{i});
     }
     try xml.appendSlice(std.testing.allocator, "</r>");
 

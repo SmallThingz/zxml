@@ -19,7 +19,7 @@ const SuiteSummary = struct {
     failed: usize,
 };
 
-pub fn runConformance(alloc: std.mem.Allocator, args: []const []const u8) !void {
+pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
     var suite_paths = std.ArrayList([]u8).empty;
     defer {
         for (suite_paths.items) |p| alloc.free(p);
@@ -36,7 +36,7 @@ pub fn runConformance(alloc: std.mem.Allocator, args: []const []const u8) !void 
     }
 
     if (suite_paths.items.len == 0) {
-        try discoverSuites(alloc, &suite_paths);
+        try discoverSuites(io, alloc, &suite_paths);
     }
 
     if (suite_paths.items.len == 0) {
@@ -59,7 +59,7 @@ pub fn runConformance(alloc: std.mem.Allocator, args: []const []const u8) !void 
     var failed_total: usize = 0;
 
     for (suite_paths.items) |suite_path| {
-        const summary = try runSuiteFile(alloc, suite_path);
+        const summary = try runSuiteFile(io, alloc, suite_path);
         if (summary.failed != 0) failed_total += summary.failed;
         try summaries.append(alloc, summary);
     }
@@ -72,22 +72,22 @@ pub fn runConformance(alloc: std.mem.Allocator, args: []const []const u8) !void 
     if (failed_total != 0) return ConformanceError.ConformanceFailed;
 }
 
-fn discoverSuites(alloc: std.mem.Allocator, out: *std.ArrayList([]u8)) !void {
-    const primary_count = try appendSuitesFromDir(alloc, out, conformance_primary_dir);
+fn discoverSuites(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList([]u8)) !void {
+    const primary_count = try appendSuitesFromDir(io, alloc, out, conformance_primary_dir);
     if (primary_count != 0) return;
-    _ = try appendSuitesFromDir(alloc, out, conformance_legacy_dir);
+    _ = try appendSuitesFromDir(io, alloc, out, conformance_legacy_dir);
 }
 
-fn appendSuitesFromDir(alloc: std.mem.Allocator, out: *std.ArrayList([]u8), base_dir: []const u8) !usize {
-    var dir = std.fs.cwd().openDir(base_dir, .{ .iterate = true }) catch |e| {
+fn appendSuitesFromDir(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList([]u8), base_dir: []const u8) !usize {
+    var dir = std.Io.Dir.cwd().openDir(io, base_dir, .{ .iterate = true }) catch |e| {
         if (e == error.FileNotFound) return 0;
         return e;
     };
-    defer dir.close();
+    defer dir.close(io);
 
     var count: usize = 0;
     var it = dir.iterate();
-    while (try it.next()) |entry| {
+    while (try it.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
         const path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ base_dir, entry.name });
@@ -98,8 +98,8 @@ fn appendSuitesFromDir(alloc: std.mem.Allocator, out: *std.ArrayList([]u8), base
     return count;
 }
 
-fn runSuiteFile(alloc: std.mem.Allocator, suite_path: []const u8) !SuiteSummary {
-    const suite_bytes = try common.readFileAlloc(alloc, suite_path);
+fn runSuiteFile(io: std.Io, alloc: std.mem.Allocator, suite_path: []const u8) !SuiteSummary {
+    const suite_bytes = try common.readFileAlloc(io, alloc, suite_path);
     defer alloc.free(suite_bytes);
 
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, suite_bytes, .{});
@@ -268,9 +268,9 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     const expect_root_attr_name = spec.expect_root_attr_name;
     const expect_root_attr_value = spec.expect_root_attr_value;
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const case_alloc = gpa.allocator();
+    var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    defer arena.deinit();
+    const case_alloc = arena.allocator();
 
     var doc = fastxml.Document.init(case_alloc);
     defer doc.deinit();
@@ -649,44 +649,42 @@ fn countMisc(doc: *const fastxml.Document) usize {
 
 fn countElementsByName(doc: *const fastxml.Document, name: []const u8) usize {
     var n: usize = 0;
-    for (doc.nodes.items) |*node| {
+    for (doc.nodes.items) |node| {
         if (node.kind != .element) continue;
-        if (std.mem.eql(u8, node.nameSlice(), name)) n += 1;
+        if (std.mem.eql(u8, node.name.slice(doc.source), name)) n += 1;
     }
     return n;
 }
 
-fn firstElement(doc: *const fastxml.Document) ?*const fastxml.Node {
-    for (doc.nodes.items) |*node| {
-        if (node.kind == .element) return node;
+fn firstElement(doc: *const fastxml.Document) ?fastxml.Node {
+    for (doc.nodes.items, 0..) |node, i| {
+        if (node.kind == .element) return doc.nodeAt(@intCast(i));
     }
     return null;
 }
 
 fn firstText(doc: *const fastxml.Document) ?[]const u8 {
-    for (doc.nodes.items) |*node| {
-        if (node.kind == .text) return node.valueSlice();
+    for (doc.nodes.items, 0..) |node, i| {
+        if (node.kind == .text) return doc.nodeAt(@intCast(i)).?.valueSlice();
     }
     return null;
 }
 
 fn elementTextByName(doc: *const fastxml.Document, name: []const u8) ?[]const u8 {
-    for (doc.nodes.items) |*node| {
+    for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .element) continue;
-        if (!std.mem.eql(u8, node.nameSlice(), name)) continue;
+        if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
 
-        var child_idx = node.first_child;
-        while (child_idx != fastxml.InvalidIndex) {
-            const child = &doc.nodes.items[child_idx];
-            if (child.kind == .text) return child.valueSlice();
-            child_idx = child.next_sibling;
+        var child = doc.nodeAt(@intCast(i)).?.firstChild();
+        while (child) |n| : (child = n.nextSibling()) {
+            if (n.kind == .text) return n.valueSlice();
         }
         return null;
     }
     return null;
 }
 
-fn hasUniqueAttributes(root: *const fastxml.Node) bool {
+fn hasUniqueAttributes(root: fastxml.Node) bool {
     const attrs = root.doc.attrs.items;
     const start = root.attr_start;
     const end = root.attr_start + root.attr_len;
@@ -695,7 +693,7 @@ fn hasUniqueAttributes(root: *const fastxml.Node) bool {
     while (i < end) : (i += 1) {
         var j = i + 1;
         while (j < end) : (j += 1) {
-            if (std.mem.eql(u8, attrs[i].nameSlice(), attrs[j].nameSlice())) {
+            if (std.mem.eql(u8, attrs[i].name.slice(root.doc.source), attrs[j].name.slice(root.doc.source))) {
                 return false;
             }
         }

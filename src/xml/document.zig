@@ -35,8 +35,8 @@ pub const ParseError = error{
 
 pub const ParseStackEntry = struct {
     idx: u32,
-    first_child: u32 = InvalidIndex,
-    last_child: u32 = InvalidIndex,
+    tag_key: u64 = 0,
+    tag_len: u16 = 0,
 };
 
 pub const NodeType = enum(u4) {
@@ -71,25 +71,31 @@ pub const Span = struct {
     }
 };
 
-pub const Attribute = struct {
-    doc: *Document,
+pub const RawAttribute = struct {
     name: Span,
     value: Span,
     value_processed: bool = true,
+};
 
-    pub fn nameSlice(self: *const @This()) []const u8 {
-        return self.name.slice(self.doc.source);
+pub const Attribute = struct {
+    doc: *Document,
+    index: u32,
+
+    inline fn raw(self: @This()) *RawAttribute {
+        return &self.doc.attrs.items[self.index];
     }
 
-    pub fn valueSlice(self: *const @This()) []const u8 {
-        const doc = @constCast(self.doc);
-        doc.ensureAttributeValueProcessed(@constCast(self));
-        return self.value.slice(self.doc.source);
+    pub fn nameSlice(self: @This()) []const u8 {
+        return self.raw().name.slice(self.doc.source);
+    }
+
+    pub fn valueSlice(self: @This()) []const u8 {
+        self.doc.ensureAttributeValueProcessed(self.index);
+        return self.raw().value.slice(self.doc.source);
     }
 };
 
-pub const Node = struct {
-    doc: *Document,
+pub const RawNode = struct {
     kind: NodeType,
 
     name: Span = .{},
@@ -99,87 +105,74 @@ pub const Node = struct {
     attr_start: u32 = 0,
     attr_len: u32 = 0,
 
-    first_child: u32 = InvalidIndex,
-    next_sibling: u32 = InvalidIndex,
-    parent: u32 = InvalidIndex,
+    last_child: u32 = InvalidIndex,
+    prev_sibling: u32 = InvalidIndex,
+    subtree_end: u32 = 0,
+};
 
-    pub fn nameSlice(self: *const @This()) []const u8 {
-        return self.name.slice(self.doc.source);
+pub const Node = struct {
+    doc: *Document,
+    index: u32,
+    kind: NodeType,
+    attr_start: u32 = 0,
+    attr_len: u32 = 0,
+
+    inline fn raw(self: @This()) *RawNode {
+        return &self.doc.nodes.items[self.index];
     }
 
-    pub fn valueSlice(self: *const @This()) []const u8 {
-        const doc = @constCast(self.doc);
-        doc.ensureNodeValueProcessed(@constCast(self));
-        return self.value.slice(self.doc.source);
+    pub fn nameSlice(self: @This()) []const u8 {
+        return self.raw().name.slice(self.doc.source);
     }
 
-    pub fn firstChild(self: *const @This()) ?*const @This() {
-        return self.doc.nodeAt(self.first_child);
+    pub fn valueSlice(self: @This()) []const u8 {
+        self.doc.ensureNodeValueProcessed(self.index);
+        return self.raw().value.slice(self.doc.source);
     }
 
-    pub fn lastChild(self: *const @This()) ?*const @This() {
-        var idx = self.first_child;
-        if (idx == InvalidIndex) return null;
-        while (true) {
-            const next = self.doc.nodes.items[idx].next_sibling;
-            if (next == InvalidIndex) break;
-            idx = next;
-        }
-        return self.doc.nodeAt(idx);
+    pub fn firstChild(self: @This()) ?Node {
+        const node_raw = self.raw();
+        if (node_raw.subtree_end <= self.index) return null;
+        return self.doc.nodeAt(self.index + 1);
     }
 
-    pub fn nextSibling(self: *const @This()) ?*const @This() {
-        return self.doc.nodeAt(self.next_sibling);
+    pub fn lastChild(self: @This()) ?Node {
+        return self.doc.nodeAt(self.raw().last_child);
     }
 
-    pub fn prevSibling(self: *const @This()) ?*const @This() {
-        const self_index = self.indexOfSelf();
-
-        if (self.parent != InvalidIndex) {
-            const p = self.doc.nodeAt(self.parent) orelse return null;
-            var prev = InvalidIndex;
-            var cur = p.first_child;
-            while (cur != InvalidIndex and cur != self_index) {
-                prev = cur;
-                cur = self.doc.nodes.items[cur].next_sibling;
-            }
-            return self.doc.nodeAt(prev);
-        }
-
-        // Fallback when parent pointers are disabled: scan next-sibling links.
-        var i: u32 = 0;
-        while (i < self.doc.nodes.items.len) : (i += 1) {
-            if (self.doc.nodes.items[i].next_sibling == self_index) return &self.doc.nodes.items[i];
-        }
-        return null;
+    pub fn nextSibling(self: @This()) ?Node {
+        const next_idx = self.raw().subtree_end + 1;
+        if (next_idx >= self.doc.nodes.items.len) return null;
+        if (self.doc.nodes.items[next_idx].prev_sibling != self.index) return null;
+        return self.doc.nodeAt(next_idx);
     }
 
-    pub fn parentNode(self: *const @This()) ?*const @This() {
-        return self.doc.nodeAt(self.parent);
+    pub fn prevSibling(self: @This()) ?Node {
+        return self.doc.nodeAt(self.raw().prev_sibling);
     }
 
-    pub fn getAttributeValue(self: *const @This(), name: []const u8) ?[]const u8 {
-        var i = self.attr_start;
-        const end = self.attr_start + self.attr_len;
+    pub fn parentNode(self: @This()) ?Node {
+        const parent_idx = self.doc.parentIndex(self.index) orelse return null;
+        return self.doc.nodeAt(parent_idx);
+    }
+
+    pub fn getAttributeValue(self: @This(), name: []const u8) ?[]const u8 {
+        const node_raw = self.raw();
+        var i = node_raw.attr_start;
+        const end = node_raw.attr_start + node_raw.attr_len;
         while (i < end) : (i += 1) {
-            const attr = &self.doc.attrs.items[i];
-            if (std.mem.eql(u8, attr.name.slice(self.doc.source), name)) {
+            if (std.mem.eql(u8, self.doc.attrs.items[i].name.slice(self.doc.source), name)) {
+                const attr: Attribute = .{ .doc = self.doc, .index = i };
                 return attr.valueSlice();
             }
         }
         return null;
     }
 
-    pub fn firstAttribute(self: *const @This()) ?*const Attribute {
-        if (self.attr_len == 0) return null;
-        return &self.doc.attrs.items[self.attr_start];
-    }
-
-    fn indexOfSelf(self: *const @This()) u32 {
-        const base = @intFromPtr(self.doc.nodes.items.ptr);
-        const here = @intFromPtr(self);
-        const stride = @sizeOf(@This());
-        return @intCast((here - base) / stride);
+    pub fn firstAttribute(self: @This()) ?Attribute {
+        const node_raw = self.raw();
+        if (node_raw.attr_len == 0) return null;
+        return .{ .doc = self.doc, .index = node_raw.attr_start };
     }
 };
 
@@ -190,9 +183,10 @@ pub const Document = struct {
     postprocess_decode_entities: bool = false,
     postprocess_normalize_text: bool = false,
 
-    nodes: std.ArrayListUnmanaged(Node) = .{},
-    attrs: std.ArrayListUnmanaged(Attribute) = .{},
-    parse_stack: std.ArrayListUnmanaged(ParseStackEntry) = .{},
+    nodes: std.ArrayList(RawNode) = .empty,
+    attrs: std.ArrayList(RawAttribute) = .empty,
+    parse_stack: std.ArrayList(ParseStackEntry) = .empty,
+    parents: std.ArrayList(u32) = .empty,
 
     pub fn init(allocator: std.mem.Allocator) Document {
         return .{
@@ -204,12 +198,14 @@ pub const Document = struct {
         self.nodes.deinit(self.allocator);
         self.attrs.deinit(self.allocator);
         self.parse_stack.deinit(self.allocator);
+        self.parents.deinit(self.allocator);
     }
 
     pub fn clear(self: *Document) void {
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
+        self.parents.items.len = 0;
     }
 
     pub fn parse(noalias self: *Document, noalias input: []u8, comptime opts: ParseOptions) ParseError!void {
@@ -217,42 +213,54 @@ pub const Document = struct {
         self.source = input;
         self.postprocess_decode_entities = opts.decode_entities_on_parse;
         self.postprocess_normalize_text = opts.normalize_text_whitespace;
+        if (comptime opts.store_parent_pointers) {
+            try self.reserveParentsForInput(input.len);
+        }
         try parser.parseInto(self, input, opts);
     }
 
-    pub fn root(self: *const Document) ?*const Node {
-        if (self.nodes.items.len == 0) return null;
-        return &self.nodes.items[0];
+    pub fn root(self: *const Document) ?Node {
+        return @constCast(self).nodeAt(0);
     }
 
-    pub fn rootMut(self: *Document) ?*Node {
-        if (self.nodes.items.len == 0) return null;
-        return &self.nodes.items[0];
+    pub fn rootMut(self: *Document) ?Node {
+        return self.nodeAt(0);
     }
 
-    pub fn nodeAt(self: *const Document, idx: u32) ?*const Node {
+    pub fn nodeAt(self: *const Document, idx: u32) ?Node {
         if (idx == InvalidIndex or idx >= self.nodes.items.len) return null;
-        return &self.nodes.items[idx];
+        const doc = @constCast(self);
+        return .{
+            .doc = doc,
+            .index = idx,
+            .kind = doc.nodes.items[idx].kind,
+            .attr_start = doc.nodes.items[idx].attr_start,
+            .attr_len = doc.nodes.items[idx].attr_len,
+        };
     }
 
-    pub fn nodeAtMut(self: *Document, idx: u32) ?*Node {
-        if (idx == InvalidIndex or idx >= self.nodes.items.len) return null;
-        return &self.nodes.items[idx];
+    pub fn nodeAtMut(self: *Document, idx: u32) ?Node {
+        return self.nodeAt(idx);
     }
 
     pub fn appendNode(noalias self: *Document, kind: NodeType, parent_idx: u32, comptime store_parent: bool) !u32 {
         if (self.nodes.items.len == self.nodes.capacity) {
             try self.nodes.ensureUnusedCapacity(self.allocator, 1);
         }
+        if (comptime store_parent) {
+            if (self.parents.items.len == self.parents.capacity) {
+                try self.parents.ensureUnusedCapacity(self.allocator, 1);
+            }
+        }
         const idx: u32 = @intCast(self.nodes.items.len);
-        const node = Node{
-            .doc = self,
-            .kind = kind,
-            .parent = if (store_parent) parent_idx else InvalidIndex,
-        };
+        const node = RawNode{ .kind = kind, .subtree_end = idx };
 
         const out = self.nodes.addOneAssumeCapacity();
         out.* = node;
+        if (comptime store_parent) {
+            const parent_out = self.parents.addOneAssumeCapacity();
+            parent_out.* = parent_idx;
+        }
         return idx;
     }
 
@@ -262,11 +270,7 @@ pub const Document = struct {
         }
         const idx: u32 = @intCast(self.attrs.items.len);
         const out = self.attrs.addOneAssumeCapacity();
-        out.* = .{
-            .doc = self,
-            .name = name,
-            .value = value,
-        };
+        out.* = .{ .name = name, .value = value };
 
         return idx;
     }
@@ -296,7 +300,24 @@ pub const Document = struct {
         self.reserved_input_hint_len = input_len;
     }
 
-    fn ensureNodeValueProcessed(self: *Document, node: *Node) void {
+    pub fn reserveParentsForInput(self: *Document, input_len: usize) !void {
+        const est_nodes = @max(@as(usize, 16), input_len / 14 + 8);
+        if (est_nodes > self.parents.capacity) {
+            try self.parents.ensureTotalCapacity(self.allocator, est_nodes);
+        }
+    }
+
+    fn parentIndex(self: *const Document, idx: u32) ?u32 {
+        if (idx == InvalidIndex or idx == 0 or idx >= self.nodes.items.len) return null;
+        if (idx < self.parents.items.len) {
+            const parent = self.parents.items[idx];
+            if (parent != InvalidIndex) return parent;
+        }
+        return null;
+    }
+
+    fn ensureNodeValueProcessed(self: *Document, idx: u32) void {
+        var node = &self.nodes.items[idx];
         if (node.value_processed) return;
         if (node.kind != .text) {
             node.value_processed = true;
@@ -321,7 +342,8 @@ pub const Document = struct {
         node.value_processed = true;
     }
 
-    fn ensureAttributeValueProcessed(self: *Document, attr: *Attribute) void {
+    fn ensureAttributeValueProcessed(self: *Document, idx: u32) void {
+        var attr = &self.attrs.items[idx];
         if (attr.value_processed) return;
         if (!self.postprocess_decode_entities) {
             attr.value_processed = true;
