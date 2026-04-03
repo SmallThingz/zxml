@@ -15,8 +15,6 @@ pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: Parse
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
-    const Span = document.Types(opts).Span;
-
     return struct {
         doc: *DocType,
         input: []u8,
@@ -226,13 +224,23 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
             }
 
-            try self.appendAttributeRaw(.{
-                .start = @intCast(name_start),
-                .end = @intCast(name_end),
-            }, .{
-                .start = @intCast(value_start),
-                .end = @intCast(value_end),
-            });
+            const len = self.doc.attrs.items.len;
+            if (len == self.doc.attrs.capacity) {
+                @branchHint(.unlikely);
+                self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+            const out = self.doc.attrs.addOneAssumeCapacity();
+            out.* = .{
+                .name = .{
+                    .start = @intCast(name_start),
+                    .end = @intCast(name_end),
+                },
+                .value = .{
+                    .start = @intCast(value_start),
+                    .end = @intCast(value_end),
+                },
+                .value_processed = !decode_entities,
+            };
         }
 
         inline fn parseClosingTag(noalias self: *Self) ParseError!void {
@@ -351,7 +359,19 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         fn parseBangNode(noalias self: *Self) ParseError!void {
             if (self.i + 3 < self.input.len and self.input[self.i + 2] == '-' and self.input[self.i + 3] == '-') {
-                try self.parseComment();
+                const value_start = self.i + 4;
+                const end = scanner.findSequence(self.input, value_start, "-->") orelse {
+                    if (strict_mode) return error.UnexpectedEndOfData;
+                    self.i = self.input.len;
+                    return;
+                };
+                self.i = end + 3;
+
+                if (!opts.include_misc_nodes) return;
+
+                const idx = try self.appendChildNode(.comment);
+                var n = &self.doc.nodes.items[idx];
+                n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
                 return;
             }
 
@@ -364,7 +384,19 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.input[self.i + 7] == 'A' and
                 self.input[self.i + 8] == '[')
             {
-                try self.parseCdata();
+                const value_start = self.i + 9;
+                const end = scanner.findSequence(self.input, value_start, "]]>") orelse {
+                    if (strict_mode) return error.UnexpectedEndOfData;
+                    self.i = self.input.len;
+                    return;
+                };
+                self.i = end + 3;
+
+                if (!opts.include_misc_nodes) return;
+
+                const idx = try self.appendChildNode(.cdata);
+                var n = &self.doc.nodes.items[idx];
+                n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
                 return;
             }
 
@@ -379,92 +411,56 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 ((self.input[self.i + 7] | 0x20) == 'p') and
                 ((self.input[self.i + 8] | 0x20) == 'e'))
             {
-                try self.parseDoctype();
+                var j = self.i + 9;
+                var bracket_depth: i32 = 0;
+                var quote: u8 = 0;
+
+                while (j < self.input.len) : (j += 1) {
+                    const c = self.input[j];
+                    if (quote != 0) {
+                        if (c == quote) quote = 0;
+                        continue;
+                    }
+
+                    if (c == '\'' or c == '"') {
+                        quote = c;
+                        continue;
+                    }
+
+                    if (c == '[') {
+                        bracket_depth += 1;
+                        continue;
+                    }
+
+                    if (c == ']') {
+                        if (bracket_depth > 0) bracket_depth -= 1;
+                        continue;
+                    }
+
+                    if (c == '>' and bracket_depth == 0) break;
+                }
+
+                if (j >= self.input.len) {
+                    if (strict_mode) return error.UnexpectedEndOfData;
+                    self.i = self.input.len;
+                    return;
+                }
+
+                const value_start = self.i + 9;
+                const value_end = j;
+                self.i = j + 1;
+
+                if (!opts.include_misc_nodes) return;
+
+                const idx = try self.appendChildNode(.doctype);
+                var n = &self.doc.nodes.items[idx];
+                n.value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
                 return;
             }
 
             if (strict_mode) return error.ExpectedGt;
             self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
             if (self.i < self.input.len) self.i += 1;
-        }
-
-        fn parseComment(noalias self: *Self) ParseError!void {
-            const value_start = self.i + 4;
-            const end = scanner.findSequence(self.input, value_start, "-->") orelse {
-                if (strict_mode) return error.UnexpectedEndOfData;
-                self.i = self.input.len;
-                return;
-            };
-            self.i = end + 3;
-
-            if (!opts.include_misc_nodes) return;
-
-            const idx = try self.appendChildNode(.comment);
-            var n = &self.doc.nodes.items[idx];
-            n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
-        }
-
-        fn parseCdata(noalias self: *Self) ParseError!void {
-            const value_start = self.i + 9;
-            const end = scanner.findSequence(self.input, value_start, "]]>") orelse {
-                if (strict_mode) return error.UnexpectedEndOfData;
-                self.i = self.input.len;
-                return;
-            };
-            self.i = end + 3;
-
-            if (!opts.include_misc_nodes) return;
-
-            const idx = try self.appendChildNode(.cdata);
-            var n = &self.doc.nodes.items[idx];
-            n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
-        }
-
-        fn parseDoctype(noalias self: *Self) ParseError!void {
-            var j = self.i + 9;
-            var bracket_depth: i32 = 0;
-            var quote: u8 = 0;
-
-            while (j < self.input.len) : (j += 1) {
-                const c = self.input[j];
-                if (quote != 0) {
-                    if (c == quote) quote = 0;
-                    continue;
-                }
-
-                if (c == '\'' or c == '"') {
-                    quote = c;
-                    continue;
-                }
-
-                if (c == '[') {
-                    bracket_depth += 1;
-                    continue;
-                }
-
-                if (c == ']') {
-                    if (bracket_depth > 0) bracket_depth -= 1;
-                    continue;
-                }
-
-                if (c == '>' and bracket_depth == 0) break;
-            }
-
-            if (j >= self.input.len) {
-                if (strict_mode) return error.UnexpectedEndOfData;
-                self.i = self.input.len;
-                return;
-            }
-
-            const value_start = self.i + 9;
-            const value_end = j;
-            self.i = j + 1;
-
-            if (!opts.include_misc_nodes) return;
-
-            const idx = try self.appendChildNode(.doctype);
-            var n = &self.doc.nodes.items[idx];
-            n.value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
         }
 
         inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!u32 {
@@ -489,20 +485,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 .subtree_end = idx,
             };
             return idx;
-        }
-
-        inline fn appendAttributeRaw(noalias self: *Self, name: Span, value: Span) ParseError!void {
-            const len = self.doc.attrs.items.len;
-            if (len == self.doc.attrs.capacity) {
-                @branchHint(.unlikely);
-                self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
-            }
-            const out = self.doc.attrs.addOneAssumeCapacity();
-            out.* = .{
-                .name = name,
-                .value = value,
-                .value_processed = !decode_entities,
-            };
         }
 
         inline fn linkChild(noalias self: *Self, parent_idx: u32, child_idx: u32) void {

@@ -102,8 +102,16 @@ pub const Attribute = struct {
     }
 
     pub fn valueSlice(self: @This()) []const u8 {
-        self.doc.ensureAttributeValueProcessed(self.index);
-        return self.raw().value.slice(self.doc.source);
+        var attr = self.raw();
+        if (!attr.value_processed) {
+            if (self.doc.postprocess_decode_entities) {
+                const value = attr.value.sliceMut(self.doc.source);
+                const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
+                attr.value.end = attr.value.start + @as(u32, @intCast(final_len));
+            }
+            attr.value_processed = true;
+        }
+        return attr.value.slice(self.doc.source);
     }
 };
 
@@ -139,8 +147,16 @@ pub const Node = struct {
     }
 
     pub fn valueSlice(self: @This()) []const u8 {
-        self.doc.ensureNodeValueProcessed(self.index);
-        return self.raw().value.slice(self.doc.source);
+        var node = self.raw();
+        if (!node.value_processed) {
+            if (node.kind == .text and self.doc.postprocess_decode_entities) {
+                const value = node.value.sliceMut(self.doc.source);
+                const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
+                node.value.end = node.value.start + @as(u32, @intCast(final_len));
+            }
+            node.value_processed = true;
+        }
+        return node.value.slice(self.doc.source);
     }
 
     pub fn firstChild(self: @This()) ?Node {
@@ -264,37 +280,6 @@ pub const Document = struct {
         self.reserved_input_hint_len = input_len;
     }
 
-    fn ensureNodeValueProcessed(self: *Document, idx: u32) void {
-        var node = &self.nodes.items[idx];
-        if (node.value_processed) return;
-        if (node.kind != .text) {
-            node.value_processed = true;
-            return;
-        }
-        if (!self.postprocess_decode_entities) {
-            node.value_processed = true;
-            return;
-        }
-
-        const value = node.value.sliceMut(self.source);
-        const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-        node.value.end = node.value.start + @as(u32, @intCast(final_len));
-        node.value_processed = true;
-    }
-
-    fn ensureAttributeValueProcessed(self: *Document, idx: u32) void {
-        var attr = &self.attrs.items[idx];
-        if (attr.value_processed) return;
-        if (!self.postprocess_decode_entities) {
-            attr.value_processed = true;
-            return;
-        }
-
-        const value = attr.value.sliceMut(self.source);
-        const final_len = entities.decodeInPlaceIfEntity(value, false) catch value.len;
-        attr.value.end = attr.value.start + @as(u32, @intCast(final_len));
-        attr.value_processed = true;
-    }
 };
 
 test "Types(options) exposes concrete DOM types" {

@@ -124,9 +124,52 @@ fn decodeEntity(noalias buf: []const u8, start: usize, strict: bool) DecodeError
     }
 
     if (body[0] == '#') {
-        const cp = parseNumericEntity(body[1..]) catch |e| {
-            if (strict) return e;
-            return null;
+        const cp: u21 = blk: {
+            const text = body[1..];
+            if (text.len == 0) {
+                if (strict) return error.InvalidNumericCharacterEntity;
+                return null;
+            }
+
+            const is_hex = text[0] == 'x' or text[0] == 'X';
+            const digits = if (is_hex) text[1..] else text;
+            if (digits.len == 0) {
+                if (strict) return error.InvalidNumericCharacterEntity;
+                return null;
+            }
+
+            var value: u32 = 0;
+            for (digits) |c| {
+                const d: u8 = if (is_hex)
+                    if (c >= '0' and c <= '9')
+                        c - '0'
+                    else if (c >= 'a' and c <= 'f')
+                        c - 'a' + 10
+                    else if (c >= 'A' and c <= 'F')
+                        c - 'A' + 10
+                    else
+                        255
+                else if (c >= '0' and c <= '9')
+                    c - '0'
+                else
+                    255;
+
+                if (d == 255) {
+                    if (strict) return error.InvalidNumericCharacterEntity;
+                    return null;
+                }
+                value = if (is_hex) value * 16 + d else value * 10 + d;
+                if (value > 0x10FFFF) {
+                    if (strict) return error.InvalidNumericCharacterEntity;
+                    return null;
+                }
+            }
+
+            if (value >= 0xD800 and value <= 0xDFFF) {
+                if (strict) return error.InvalidNumericCharacterEntity;
+                return null;
+            }
+            break :blk @intCast(value);
         };
 
         var out: [4]u8 = undefined;
@@ -186,42 +229,6 @@ pub fn normalizeWhitespaceInPlace(noalias buf: []u8) usize {
 
     return dst;
 }
-
-fn parseNumericEntity(text: []const u8) DecodeError!u21 {
-    if (text.len == 0) return error.InvalidNumericCharacterEntity;
-
-    const is_hex = text[0] == 'x' or text[0] == 'X';
-    const digits = if (is_hex) text[1..] else text;
-    if (digits.len == 0) return error.InvalidNumericCharacterEntity;
-
-    var value: u32 = 0;
-    for (digits) |c| {
-        const d: u8 = if (is_hex)
-            if (c >= '0' and c <= '9')
-                c - '0'
-            else if (c >= 'a' and c <= 'f')
-                c - 'a' + 10
-            else if (c >= 'A' and c <= 'F')
-                c - 'A' + 10
-            else
-                255
-        else if (c >= '0' and c <= '9')
-            c - '0'
-        else
-            255;
-        if (d == 255) return error.InvalidNumericCharacterEntity;
-        if (is_hex) {
-            value = value * 16 + d;
-        } else {
-            value = value * 10 + d;
-        }
-        if (value > 0x10FFFF) return error.InvalidNumericCharacterEntity;
-    }
-
-    if (value >= 0xD800 and value <= 0xDFFF) return error.InvalidNumericCharacterEntity;
-    return @intCast(value);
-}
-
 test "decodeInPlaceIfEntity leaves plain text untouched" {
     var buf = "plain text".*;
     const len = try decodeInPlaceIfEntity(&buf, true);
