@@ -486,8 +486,26 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!u32 {
             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-            const idx = try self.appendNodeRaw(kind, parent_idx);
-            self.linkChild(parent_idx, idx);
+            return self.appendChildNodeTo(parent_idx, kind);
+        }
+
+        inline fn appendChildNodeTo(noalias self: *Self, parent_idx: u32, kind: NodeType) ParseError!u32 {
+            const len = self.doc.nodes.items.len;
+            if (len == self.doc.nodes.capacity) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+
+            var parent = &self.doc.nodes.items[parent_idx];
+            const idx: u32 = @intCast(len);
+            const out = self.doc.nodes.addOneAssumeCapacity();
+            out.* = .{
+                .kind = kind,
+                .parent = parent_idx,
+                .prev_sibling = parent.last_child,
+                .subtree_end = idx,
+            };
+            parent.last_child = idx;
             return idx;
         }
 
@@ -506,12 +524,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 .subtree_end = idx,
             };
             return idx;
-        }
-
-        inline fn linkChild(noalias self: *Self, parent_idx: u32, child_idx: u32) void {
-            var parent = &self.doc.nodes.items[parent_idx];
-            self.doc.nodes.items[child_idx].prev_sibling = parent.last_child;
-            parent.last_child = child_idx;
         }
 
         inline fn pushStack(noalias self: *Self, idx: u32, tag_key: u64, tag_len: u16) ParseError!void {
@@ -635,8 +647,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
             }
 
-            const text_idx = try self.appendNodeRaw(.text, idx);
-            self.linkChild(idx, text_idx);
+            const text_idx = try self.appendChildNodeTo(idx, .text);
             self.doc.nodes.items[idx].subtree_end = text_idx;
             var text_node = &self.doc.nodes.items[text_idx];
             text_node.value = .{ .start = @intCast(text_start), .end = @intCast(lt) };
