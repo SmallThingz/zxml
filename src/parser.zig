@@ -117,6 +117,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
                     node.attr_len = 0;
+                    self.skipDroppedWhitespaceText();
                     if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
                         return;
                     }
@@ -147,6 +148,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     node = &self.doc.nodes.items[idx];
                     node.attr_start = attr_start_idx;
                     node.attr_len = @intCast(self.doc.attrs.items.len - attr_start_idx);
+                    self.skipDroppedWhitespaceText();
                     if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
                         return;
                     }
@@ -521,6 +523,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         inline fn skipWhitespace(noalias self: *Self) void {
             if (self.i >= self.input.len or !tables.isWhitespace(self.input[self.i])) return;
             self.i = scanner.skipWhitespace(self.input, self.i);
+        }
+
+        inline fn skipDroppedWhitespaceText(noalias self: *Self) void {
+            if (!drop_whitespace_text_nodes) return;
+            if (self.i >= self.input.len or !tables.WhitespaceTable[self.input[self.i]]) return;
+            const next = scanner.skipWhitespace(self.input, self.i);
+            if (next < self.input.len and self.input[next] == '<') {
+                self.i = next;
+            }
         }
 
         inline fn tryFinishSimpleTextElement(

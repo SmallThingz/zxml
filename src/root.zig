@@ -202,6 +202,21 @@ test "drop_whitespace_text_nodes false keeps pure whitespace nodes" {
     try std.testing.expectEqualStrings(" \n\t ", text.valueSlice());
 }
 
+test "default whitespace dropping skips indentation between child elements" {
+    var parsed = try parseTestDoc("<r>\n  <a/>\n  <b/>\n</r>", .{});
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const a = root.firstChild() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(NodeType.element, a.kind);
+    try std.testing.expectEqualStrings("a", a.nameSlice());
+
+    const b = a.nextSibling() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(NodeType.element, b.kind);
+    try std.testing.expectEqualStrings("b", b.nameSlice());
+    try std.testing.expect(b.nextSibling() == null);
+}
+
 test "entity decode on parse" {
     var parsed = try parseTestDoc("<r a='&amp;&#x41;'>&lt;ok&gt;&#65;</r>", .{ .mode = .strict, .decode_entities_on_parse = true });
     defer parsed.deinit();
