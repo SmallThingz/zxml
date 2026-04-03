@@ -241,6 +241,20 @@ test "decode disabled leaves literal entities in text and attributes" {
     try std.testing.expectEqualStrings("&lt;ok&gt;", root.firstChild().?.valueSlice());
 }
 
+test "decode disabled never mutates source bytes on value access" {
+    var parsed = try parseTestDoc("<r a='&amp;'>&lt;ok&gt;</r>", .{});
+    defer parsed.deinit();
+
+    const before = try std.testing.allocator.dupe(u8, parsed.buf);
+    defer std.testing.allocator.free(before);
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    _ = root.getAttributeValue("a").?;
+    _ = root.firstChild().?.valueSlice();
+
+    try std.testing.expectEqualStrings(before, parsed.buf);
+}
+
 test "decode preserves surrounding whitespace" {
     var parsed = try parseTestDoc("<r> a\n&amp;\t b  </r>", .{
         .mode = .strict,
@@ -251,6 +265,25 @@ test "decode preserves surrounding whitespace" {
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     const text = root.firstChild() orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings(" a\n&\t b  ", text.valueSlice());
+}
+
+test "decode enabled mutates source bytes lazily on first access" {
+    var parsed = try parseTestDoc("<r a='&amp;'>&lt;ok&gt;</r>", .{
+        .mode = .strict,
+        .decode_entities_on_parse = true,
+    });
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("&amp;", parsed.buf[6..11]);
+    try std.testing.expectEqualStrings("&lt;ok&gt;", parsed.buf[13..23]);
+
+    try std.testing.expectEqualStrings("&", root.getAttributeValue("a").?);
+    try std.testing.expectEqualStrings("&", parsed.buf[6..7]);
+
+    const text = root.firstChild() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("<ok>", text.valueSlice());
+    try std.testing.expectEqualStrings("<ok>", parsed.buf[13..17]);
 }
 
 test "misc nodes enabled parses declaration nodes" {
@@ -501,6 +534,17 @@ test "namespace-like element and attribute names parse" {
     try std.testing.expectEqualStrings("en", root.getAttributeValue("xml:lang").?);
     try std.testing.expectEqualStrings("ns:item", item.nameSlice());
     try std.testing.expectEqualStrings("7", item.getAttributeValue("data.id").?);
+}
+
+test "element and attribute names preserve case exactly" {
+    var parsed = try parseTestDoc("<Root Attr='x' attr='y'/>", .{});
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("Root", root.nameSlice());
+    try std.testing.expectEqualStrings("x", root.getAttributeValue("Attr").?);
+    try std.testing.expectEqualStrings("y", root.getAttributeValue("attr").?);
+    try std.testing.expect(root.getAttributeValue("ATTR") == null);
 }
 
 test "strict unquoted attributes fail" {

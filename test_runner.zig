@@ -160,6 +160,8 @@ fn printHelp() void {
 }
 
 fn testGroupKey(name: []const u8) []const u8 {
+    // Keep tests from the same module adjacent so parallel scheduling does not
+    // make the live dashboard jump between unrelated groups every line.
     const marker = ".test.";
     if (std.mem.indexOf(u8, name, marker)) |idx| {
         return name[0 .. idx + marker.len];

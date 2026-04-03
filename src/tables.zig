@@ -64,7 +64,7 @@ pub inline fn isAttrUnquotedValueChar(c: u8) bool {
     return AttrUnquotedValueCharTable[c];
 }
 
-pub fn eqlAsciiCaseInsensitive(a: []const u8, b: []const u8) bool {
+fn eqlAsciiCaseInsensitive(a: []const u8, b: []const u8) bool {
     if (a.len != b.len) return false;
     var i: usize = 0;
     while (i < a.len) : (i += 1) {

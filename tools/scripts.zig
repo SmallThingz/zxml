@@ -354,6 +354,8 @@ fn copyFixtureIfPresent(io: std.Io, alloc: std.mem.Allocator, src: []const u8, d
 }
 
 fn ensureFixtureIsNotOpaqueCdata(io: std.Io, alloc: std.mem.Allocator, path: []const u8, fixture_name: []const u8) !void {
+    // Extremely CDATA-heavy fixtures mostly benchmark raw byte copying rather
+    // than DOM work, so reject them before they skew parser comparisons.
     const bytes = try common.readFileAlloc(io, alloc, path);
     defer alloc.free(bytes);
     if (bytes.len == 0) return error.InvalidFixture;
@@ -720,6 +722,8 @@ fn updateFileSection(
     end_marker: []const u8,
     replacement: []const u8,
 ) !void {
+    // Mirror zhtmlparser-style README snapshots by replacing only the
+    // auto-generated section between stable markers.
     const current = try common.readFileAlloc(io, alloc, path);
     defer alloc.free(current);
 

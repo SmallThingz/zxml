@@ -108,6 +108,8 @@ pub const Attribute = struct {
     }
 
     pub fn valueSlice(self: @This()) []const u8 {
+        // Values stay as source spans until first access so the parse path
+        // remains allocation-free and non-destructive when decode is disabled.
         var attr = self.raw();
         if (!attr.value_processed) {
             if (self.doc.postprocess_decode_entities) {
@@ -153,6 +155,8 @@ pub const Node = struct {
     }
 
     pub fn valueSlice(self: @This()) []const u8 {
+        // Text decoding is deferred until first access to keep the hot parse
+        // path span-based. This may rewrite source bytes when decode is enabled.
         var node = self.raw();
         if (!node.value_processed) {
             if (node.kind == .text and self.doc.postprocess_decode_entities) {

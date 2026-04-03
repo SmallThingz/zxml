@@ -33,13 +33,36 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         fn parse(noalias self: *Self) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
-            _ = try self.appendNodeRaw(.document, InvalidIndex);
+            const root_len = self.doc.nodes.items.len;
+            if (root_len == self.doc.nodes.capacity) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, root_len + root_len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+            }
+            _ = self.doc.nodes.addOneAssumeCapacity();
+            self.doc.nodes.items[0] = .{
+                .kind = .document,
+                .parent = InvalidIndex,
+                .subtree_end = 0,
+            };
             try self.pushStack(0, 0, 0);
 
             while (self.i < self.input.len) {
                 if (self.input[self.i] != '<') {
                     const run = scanner.scanTextRun(self.input, self.i);
-                    try self.parseTextRange(self.i, run.lt_index, run.has_non_whitespace);
+                    if (run.lt_index > self.i) {
+                        const raw = self.input[self.i..run.lt_index];
+                        if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
+                            if (decode_entities and strict_mode) {
+                                entities.validateEntities(raw, true) catch |e| switch (e) {
+                                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
+                                    error.UnterminatedEntity => return error.UnterminatedEntity,
+                                };
+                            }
+
+                            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+                            _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index, !decode_entities);
+                        }
+                    }
                     self.i = run.lt_index;
                     continue;
                 }
@@ -70,21 +93,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
         }
 
-        inline fn parseTextRange(noalias self: *Self, start: usize, end: usize, has_non_whitespace: bool) ParseError!void {
-            if (end <= start) return;
-
-            const raw = self.input[start..end];
-            if (drop_whitespace_text_nodes and !has_non_whitespace) return;
-            if (decode_entities and strict_mode) {
-                entities.validateEntities(raw, true) catch |e| switch (e) {
-                    error.InvalidNumericCharacterEntity => return error.InvalidNumericCharacterEntity,
-                    error.UnterminatedEntity => return error.UnterminatedEntity,
-                };
-            }
-
-            _ = try self.appendTextNode(start, end, !decode_entities);
-        }
-
         inline fn parseOpeningTag(noalias self: *Self) ParseError!void {
             self.i += 1; // '<'
 
@@ -103,7 +111,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const tag_len = scan.len;
             const tag_key = scan.key;
 
-            const idx = try self.appendElementNode(name_start, name_end);
+            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+            const idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
             var node = &self.doc.nodes.items[idx];
 
             const attr_start_idx: IndexInt = @intCast(self.doc.attrs.items.len);
@@ -345,7 +354,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
                 if (strict_mode) return error.ExpectedPiTarget;
-                self.i = findPiEnd(self.input, self.i) orelse self.input.len;
+                self.i = blk: {
+                    var j = self.i;
+                    while (true) {
+                        const q = scanner.findByte(self.input, j, '?') orelse break :blk self.input.len;
+                        if (q + 1 < self.input.len and self.input[q + 1] == '>') break :blk q;
+                        j = q + 1;
+                    }
+                };
                 if (self.i < self.input.len) self.i += 2;
                 return;
             }
@@ -358,7 +374,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.skipWhitespace();
             const value_start = self.i;
 
-            const end = findPiEnd(self.input, self.i) orelse {
+            const end = blk: {
+                var j = self.i;
+                while (true) {
+                    const q = scanner.findByte(self.input, j, '?') orelse break :blk null;
+                    if (q + 1 < self.input.len and self.input[q + 1] == '>') break :blk q;
+                    j = q + 1;
+                }
+            } orelse {
                 if (strict_mode) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
@@ -368,7 +391,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (!opts.include_misc_nodes) return;
 
-            const decl = isXmlDeclarationTarget(self.input, target_start, target_end);
+            const decl = target_end - target_start == 3 and
+                ((self.input[target_start] | 0x20) == 'x') and
+                ((self.input[target_start + 1] | 0x20) == 'm') and
+                ((self.input[target_start + 2] | 0x20) == 'l');
             const kind: NodeType = if (decl) .declaration else .pi;
 
             const idx = try self.appendChildNode(kind);
@@ -488,11 +514,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return self.appendChildNodeTo(parent_idx, kind);
         }
 
-        inline fn appendElementNode(noalias self: *Self, name_start: usize, name_end: usize) ParseError!IndexInt {
-            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-            return self.appendElementNodeTo(parent_idx, name_start, name_end);
-        }
-
         inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
@@ -512,11 +533,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             };
             parent.last_child = idx;
             return idx;
-        }
-
-        inline fn appendTextNode(noalias self: *Self, start: usize, end: usize, value_processed: bool) ParseError!IndexInt {
-            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-            return self.appendTextNodeTo(parent_idx, start, end, value_processed);
         }
 
         inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start: usize, end: usize, value_processed: bool) ParseError!IndexInt {
@@ -561,23 +577,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn appendNodeRaw(noalias self: *Self, kind: NodeType, parent_idx: IndexInt) ParseError!IndexInt {
-            const len = self.doc.nodes.items.len;
-            if (len == self.doc.nodes.capacity) {
-                @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
-            }
-
-            const idx: IndexInt = @intCast(len);
-            const out = self.doc.nodes.addOneAssumeCapacity();
-            out.* = .{
-                .kind = kind,
-                .parent = parent_idx,
-                .subtree_end = idx,
-            };
-            return idx;
-        }
-
         inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64, tag_len: u16) ParseError!void {
             const len = self.doc.parse_stack.items.len;
             if (len == self.doc.parse_stack.capacity) {
@@ -601,22 +600,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
             self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
-        }
-
-        inline fn findPiEnd(input: []const u8, start: usize) ?usize {
-            var i = start;
-            while (true) {
-                const q = scanner.findByte(input, i, '?') orelse return null;
-                if (q + 1 < input.len and input[q + 1] == '>') return q;
-                i = q + 1;
-            }
-        }
-
-        inline fn isXmlDeclarationTarget(input: []const u8, start: usize, end: usize) bool {
-            return end - start == 3 and
-                ((input[start] | 0x20) == 'x') and
-                ((input[start + 1] | 0x20) == 'm') and
-                ((input[start + 2] | 0x20) == 'l');
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {

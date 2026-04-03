@@ -18,3 +18,12 @@ pub inline fn lenFits(len: usize) bool {
 }
 
 pub const InvalidIndex: IndexInt = std.math.maxInt(IndexInt);
+
+test "IndexInt-derived bounds are self-consistent" {
+    try std.testing.expect(lenFits(0));
+    try std.testing.expect(lenFits(MaxLen));
+    if (MaxLen < std.math.maxInt(usize)) {
+        try std.testing.expect(!lenFits(MaxLen + 1));
+    }
+    try std.testing.expectEqual(std.math.maxInt(IndexInt), InvalidIndex);
+}
