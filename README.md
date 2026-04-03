@@ -14,6 +14,28 @@ Low-latency in-situ XML DOM parsing for Zig with comptime-specialized parse mode
 - Optional parse-time entity decode and whitespace normalization.
 - In-tree conformance suites and external parser benchmark harness.
 
+## Performance
+
+<!-- README_AUTO_SUMMARY:START -->
+
+Source: `bench/results/latest.json` (`quick` profile).
+
+### Parse Throughput (Average Across Fixtures)
+
+```text
+ours-turbo  │████████████████████│ 2900.07 MB/s (100.00%)
+ours-strict │████████████████████│ 2896.47 MB/s (99.88%)
+pugixml     │█████████░░░░░░░░░░░│ 1320.95 MB/s (45.55%)
+rapidxml    │█████████░░░░░░░░░░░│ 1238.57 MB/s (42.71%)
+```
+
+### Stable Gate Snapshot
+
+| Profile | Passed | Rule |
+|---|---:|---|
+| `quick` | 12/21 | `ours-turbo >= max(pugixml, rapidxml)` |
+<!-- README_AUTO_SUMMARY:END -->
+
 ## Quick Start
 
 ```bash

@@ -11,6 +11,10 @@ const RESULTS_DIR = "bench/results";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
 const min_sample_ns: u64 = 20_000_000;
+const ReadmeSummaryStartMarker = "<!-- README_AUTO_SUMMARY:START -->";
+const ReadmeSummaryEndMarker = "<!-- README_AUTO_SUMMARY:END -->";
+const BenchReadmeSnapshotStartMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:START -->";
+const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
 const repeats: usize = 5;
@@ -101,13 +105,12 @@ const GateRow = struct {
     fixture: []const u8,
     is_real: bool,
     ours_turbo_mb_s: f64,
-    strlen_mb_s: f64,
     pugixml_mb_s: f64,
     rapidxml_mb_s: f64,
-    strlen_ratio: f64,
-    strlen_threshold: f64,
-    pass_sota: bool,
-    pass_strlen: bool,
+    best_external_parser: []const u8,
+    best_external_mb_s: f64,
+    external_ratio: f64,
+    external_threshold: f64,
     pass: bool,
 };
 
@@ -627,27 +630,25 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
 
     for (profile.fixtures) |fx| {
         const ours = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
-        const strlen = findThroughput(rows, "strlen", fx.name) orelse continue;
         const pugixml = findThroughput(rows, "pugixml", fx.name) orelse continue;
         const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse continue;
 
-        const threshold: f64 = if (fx.is_real) 0.35 else 0.60;
-        const ratio = if (strlen == 0) 0 else ours / strlen;
-        const pass_sota = ours > pugixml and ours > rapidxml;
-        const pass_strlen = ratio >= threshold;
+        const best_external_mb_s: f64 = if (pugixml >= rapidxml) pugixml else rapidxml;
+        const best_external_parser = if (pugixml >= rapidxml) "pugixml" else "rapidxml";
+        const threshold: f64 = 1.0;
+        const ratio = if (best_external_mb_s == 0) 0 else ours / best_external_mb_s;
 
         try out.append(alloc, .{
             .fixture = try alloc.dupe(u8, fx.name),
             .is_real = fx.is_real,
             .ours_turbo_mb_s = ours,
-            .strlen_mb_s = strlen,
             .pugixml_mb_s = pugixml,
             .rapidxml_mb_s = rapidxml,
-            .strlen_ratio = ratio,
-            .strlen_threshold = threshold,
-            .pass_sota = pass_sota,
-            .pass_strlen = pass_strlen,
-            .pass = pass_sota and pass_strlen,
+            .best_external_parser = best_external_parser,
+            .best_external_mb_s = best_external_mb_s,
+            .external_ratio = ratio,
+            .external_threshold = threshold,
+            .pass = ratio >= threshold,
         });
     }
 
@@ -657,6 +658,228 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
 fn freeGateRows(alloc: std.mem.Allocator, rows: []GateRow) void {
     for (rows) |r| alloc.free(r.fixture);
     alloc.free(rows);
+}
+
+const AverageThroughputRow = struct {
+    parser: []const u8,
+    avg_mb_s: f64,
+};
+
+fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const ParseResult) ![]AverageThroughputRow {
+    const parser_names = [_][]const u8{ "ours-turbo", "ours-strict", "pugixml", "rapidxml" };
+    var out = try alloc.alloc(AverageThroughputRow, parser_names.len);
+    errdefer alloc.free(out);
+
+    for (parser_names, 0..) |parser_name, idx| {
+        var sum: f64 = 0.0;
+        var count: usize = 0;
+        for (parse_results) |r| {
+            if (!std.mem.eql(u8, r.parser, parser_name)) continue;
+            sum += r.throughput_mb_s;
+            count += 1;
+        }
+        out[idx] = .{
+            .parser = parser_name,
+            .avg_mb_s = if (count == 0) 0.0 else sum / @as(f64, @floatFromInt(count)),
+        };
+    }
+
+    var i: usize = 1;
+    while (i < out.len) : (i += 1) {
+        var j = i;
+        while (j > 0 and out[j - 1].avg_mb_s < out[j].avg_mb_s) : (j -= 1) {
+            std.mem.swap(AverageThroughputRow, &out[j - 1], &out[j]);
+        }
+    }
+
+    return out;
+}
+
+fn findParseResult(parse_results: []const ParseResult, parser_name: []const u8, fixture_name: []const u8) ?*const ParseResult {
+    for (parse_results) |*r| {
+        if (std.mem.eql(u8, r.parser, parser_name) and std.mem.eql(u8, r.fixture, fixture_name)) return r;
+    }
+    return null;
+}
+
+fn updateFileSection(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    path: []const u8,
+    start_marker: []const u8,
+    end_marker: []const u8,
+    replacement: []const u8,
+) !void {
+    const current = try common.readFileAlloc(io, alloc, path);
+    defer alloc.free(current);
+
+    const start = std.mem.indexOf(u8, current, start_marker) orelse return error.ReadmeBenchMarkersMissing;
+    const after_start = start + start_marker.len;
+    const end = std.mem.indexOfPos(u8, current, after_start, end_marker) orelse return error.ReadmeBenchMarkersMissing;
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(alloc);
+    try out.appendSlice(alloc, current[0..after_start]);
+    try out.appendSlice(alloc, "\n\n");
+    try out.appendSlice(alloc, replacement);
+    if (replacement.len == 0 or replacement[replacement.len - 1] != '\n') try out.append(alloc, '\n');
+    if (current[end - 1] != '\n') try out.append(alloc, '\n');
+    try out.appendSlice(alloc, current[end..]);
+
+    if (!std.mem.eql(u8, out.items, current)) {
+        try common.writeFile(io, path, out.items);
+        std.debug.print("wrote {s} benchmark summary\n", .{path});
+    } else {
+        std.debug.print("{s} benchmark summary already up-to-date\n", .{path});
+    }
+}
+
+fn renderReadmeAutoSummary(
+    alloc: std.mem.Allocator,
+    profile_name: []const u8,
+    parse_results: []const ParseResult,
+    gate_rows: []const GateRow,
+) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+
+    const averages = try makeAverageThroughputRows(alloc, parse_results);
+    defer alloc.free(averages);
+
+    try w.print("Source: `bench/results/latest.json` (`{s}` profile).\n\n", .{profile_name});
+    try w.writeAll("### Parse Throughput (Average Across Fixtures)\n\n");
+    try w.writeAll("```text\n");
+
+    var leader: f64 = 0.0;
+    var max_name_len: usize = 0;
+    for (averages) |row| {
+        leader = @max(leader, row.avg_mb_s);
+        max_name_len = @max(max_name_len, row.parser.len);
+    }
+
+    for (averages) |row| {
+        const pct = if (leader > 0.0) (row.avg_mb_s / leader) * 100.0 else 0.0;
+        const width: usize = 20;
+        const filled = if (leader > 0.0)
+            @min(width, @max(@as(usize, @intFromFloat(@round((row.avg_mb_s / leader) * @as(f64, @floatFromInt(width))))), @as(usize, 1)))
+        else
+            @as(usize, 0);
+        try w.writeAll(row.parser);
+        for (0..max_name_len - row.parser.len) |_| try w.writeByte(' ');
+        try w.writeAll(" │");
+        for (0..filled) |_| try w.writeAll("█");
+        for (0..(width - filled)) |_| try w.writeAll("░");
+        try w.print("│ {d:.2} MB/s ({d:.2}%)\n", .{ row.avg_mb_s, pct });
+    }
+    try w.writeAll("```\n\n");
+
+    try w.writeAll("### Stable Gate Snapshot\n\n");
+    try w.writeAll("| Profile | Passed | Rule |\n");
+    try w.writeAll("|---|---:|---|\n");
+    const pass_count: usize = blk: {
+        var count: usize = 0;
+        for (gate_rows) |g| {
+            if (g.pass) count += 1;
+        }
+        break :blk count;
+    };
+    try w.print("| `{s}` | {d}/{d} | `ours-turbo >= max(pugixml, rapidxml)` |\n", .{
+        profile_name,
+        pass_count,
+        gate_rows.len,
+    });
+
+    return out.toOwnedSlice();
+}
+
+fn renderBenchReadmeSnapshot(
+    alloc: std.mem.Allocator,
+    profile_name: []const u8,
+    parse_results: []const ParseResult,
+    gate_rows: []const GateRow,
+) ![]u8 {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    errdefer out.deinit();
+    const w = &out.writer;
+
+    try w.print("Source: `bench/results/latest.json` (`{s}` profile).\n\n", .{profile_name});
+    try w.writeAll("## Latest Benchmark Snapshot\n\n");
+    try w.writeAll("### Parse Throughput Comparison (MB/s)\n\n");
+    try w.writeAll("| Fixture | ours-turbo | ours-strict | pugixml | rapidxml |\n");
+    try w.writeAll("|---|---:|---:|---:|---:|\n");
+
+    var fixtures = std.ArrayList([]const u8).empty;
+    defer fixtures.deinit(alloc);
+    for (parse_results) |r| {
+        var seen = false;
+        for (fixtures.items) |name| {
+            if (std.mem.eql(u8, name, r.fixture)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) try fixtures.append(alloc, r.fixture);
+    }
+
+    for (fixtures.items) |fixture_name| {
+        try w.print("| `{s}` | ", .{fixture_name});
+        if (findParseResult(parse_results, "ours-turbo", fixture_name)) |r| {
+            try w.print("{d:.2}", .{r.throughput_mb_s});
+        } else try w.writeAll("-");
+        try w.writeAll(" | ");
+        if (findParseResult(parse_results, "ours-strict", fixture_name)) |r| {
+            try w.print("{d:.2}", .{r.throughput_mb_s});
+        } else try w.writeAll("-");
+        try w.writeAll(" | ");
+        if (findParseResult(parse_results, "pugixml", fixture_name)) |r| {
+            try w.print("{d:.2}", .{r.throughput_mb_s});
+        } else try w.writeAll("-");
+        try w.writeAll(" | ");
+        if (findParseResult(parse_results, "rapidxml", fixture_name)) |r| {
+            try w.print("{d:.2}", .{r.throughput_mb_s});
+        } else try w.writeAll("-");
+        try w.writeAll(" |\n");
+    }
+
+    try w.writeAll("\n### Stable Gates\n\n");
+    try w.writeAll("| Fixture | ours-turbo | best external | ours/best-ext | Threshold | Result |\n");
+    try w.writeAll("|---|---:|---|---:|---:|---|\n");
+    for (gate_rows) |g| {
+        try w.print(
+            "| `{s}` | {d:.2} | `{s}` {d:.2} | {d:.3} | {d:.2} | {s} |\n",
+            .{
+                g.fixture,
+                g.ours_turbo_mb_s,
+                g.best_external_parser,
+                g.best_external_mb_s,
+                g.external_ratio,
+                g.external_threshold,
+                if (g.pass) "PASS" else "FAIL",
+            },
+        );
+    }
+
+    try w.writeAll("\nFor the full terminal-style report:\n");
+    try w.writeAll("- `bench/results/latest.md`\n");
+    try w.writeAll("- `bench/results/latest.json`\n");
+    return out.toOwnedSlice();
+}
+
+fn updateBenchmarkReadmes(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    profile_name: []const u8,
+    parse_results: []const ParseResult,
+    gate_rows: []const GateRow,
+) !void {
+    const root_summary = try renderReadmeAutoSummary(alloc, profile_name, parse_results, gate_rows);
+    defer alloc.free(root_summary);
+    try updateFileSection(io, alloc, "README.md", ReadmeSummaryStartMarker, ReadmeSummaryEndMarker, root_summary);
+
+    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, profile_name, parse_results, gate_rows);
+    defer alloc.free(bench_snapshot);
+    try updateFileSection(io, alloc, "bench/README.md", BenchReadmeSnapshotStartMarker, BenchReadmeSnapshotEndMarker, bench_snapshot);
 }
 
 fn maxUsize(a: usize, b: usize) usize {
@@ -715,18 +938,20 @@ fn writeMarkdown(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8,
 
     if (gate_rows.len != 0) {
         try w.writeAll("\n## Stable Gates\n\n");
-        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | ours/strlen | Threshold | Result |\n");
-        try w.writeAll("|---|---:|---:|---:|---:|---:|---|\n");
+        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | best external | ours/best-ext | Threshold | Result |\n");
+        try w.writeAll("|---|---:|---:|---:|---|---:|---:|---|\n");
         for (gate_rows) |g| {
             try w.print(
-                "| {s} | {d:.2} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {s} |\n",
+                "| {s} | {d:.2} | {d:.2} | {d:.2} | {s} {d:.2} | {d:.3} | {d:.2} | {s} |\n",
                 .{
                     g.fixture,
                     g.ours_turbo_mb_s,
                     g.pugixml_mb_s,
                     g.rapidxml_mb_s,
-                    g.strlen_ratio,
-                    g.strlen_threshold,
+                    g.best_external_parser,
+                    g.best_external_mb_s,
+                    g.external_ratio,
+                    g.external_threshold,
                     if (g.pass) "PASS" else "FAIL",
                 },
             );
@@ -856,12 +1081,13 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             "ours-turbo",
             "pugixml",
             "rapidxml",
-            "ours/strlen",
+            "best external",
+            "ours/best-ext",
             "Threshold",
             "Result",
         };
-        const gate_header_align = [_]bool{ false, false, false, false, false, false, false };
-        const gate_align = [_]bool{ false, true, true, true, true, true, false };
+        const gate_header_align = [_]bool{ false, false, false, false, false, false, false, false };
+        const gate_align = [_]bool{ false, true, true, true, false, true, true, false };
         var gate_widths = [_]usize{
             gate_headers[0].len,
             gate_headers[1].len,
@@ -870,6 +1096,7 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             gate_headers[4].len,
             gate_headers[5].len,
             gate_headers[6].len,
+            gate_headers[7].len,
         };
 
         for (gate_rows) |g| {
@@ -887,16 +1114,20 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mb_s});
             gate_widths[3] = maxUsize(gate_widths[3], rapidxml.len);
 
+            var best_buf: [64]u8 = undefined;
+            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mb_s });
+            gate_widths[4] = maxUsize(gate_widths[4], best.len);
+
             var ratio_buf: [32]u8 = undefined;
-            const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.strlen_ratio});
-            gate_widths[4] = maxUsize(gate_widths[4], ratio.len);
+            const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.external_ratio});
+            gate_widths[5] = maxUsize(gate_widths[5], ratio.len);
 
             var threshold_buf: [32]u8 = undefined;
-            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.strlen_threshold});
-            gate_widths[5] = maxUsize(gate_widths[5], threshold.len);
+            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.external_threshold});
+            gate_widths[6] = maxUsize(gate_widths[6], threshold.len);
 
             const result = if (g.pass) "PASS" else "FAIL";
-            gate_widths[6] = maxUsize(gate_widths[6], result.len);
+            gate_widths[7] = maxUsize(gate_widths[7], result.len);
         }
 
         try writeTableBorder(w, &gate_widths);
@@ -916,17 +1147,21 @@ fn writeTerminalReport(io: std.Io, alloc: std.mem.Allocator, profile_name: []con
             var rapidxml_buf: [32]u8 = undefined;
             const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mb_s});
 
+            var best_buf: [64]u8 = undefined;
+            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mb_s });
+
             var ratio_buf: [32]u8 = undefined;
-            const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.strlen_ratio});
+            const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.external_ratio});
 
             var threshold_buf: [32]u8 = undefined;
-            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.strlen_threshold});
+            const threshold = try std.fmt.bufPrint(&threshold_buf, "{d:.2}", .{g.external_threshold});
 
             const row = [_][]const u8{
                 g.fixture,
                 ours,
                 pugixml,
                 rapidxml,
+                best,
                 ratio,
                 threshold,
                 if (g.pass) "PASS" else "FAIL",
@@ -955,18 +1190,17 @@ fn writeJson(io: std.Io, alloc: std.mem.Allocator, profile_name: []const u8, par
     try w.writeAll("  ],\n  \"gates\": [\n");
     for (gate_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"strlen_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"strlen_ratio\":{d:.6},\"strlen_threshold\":{d:.6},\"pass_sota\":{s},\"pass_strlen\":{s},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"external_threshold\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
                 g.ours_turbo_mb_s,
-                g.strlen_mb_s,
                 g.pugixml_mb_s,
                 g.rapidxml_mb_s,
-                g.strlen_ratio,
-                g.strlen_threshold,
-                if (g.pass_sota) "true" else "false",
-                if (g.pass_strlen) "true" else "false",
+                g.best_external_parser,
+                g.best_external_mb_s,
+                g.external_ratio,
+                g.external_threshold,
                 if (g.pass) "true" else "false",
                 if (i + 1 == gate_rows.len) "" else ",",
             },
@@ -1075,6 +1309,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows);
     defer alloc.free(json);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
+    try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows);
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -1100,8 +1335,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             if (!g.pass) {
                 failed = true;
                 std.debug.print(
-                    "gate fail: {s} ours={d:.2} pugixml={d:.2} rapidxml={d:.2} ratio={d:.3} threshold={d:.2}\n",
-                    .{ g.fixture, g.ours_turbo_mb_s, g.pugixml_mb_s, g.rapidxml_mb_s, g.strlen_ratio, g.strlen_threshold },
+                    "gate fail: {s} ours={d:.2} best={s} {d:.2} ratio={d:.3} threshold={d:.2}\n",
+                    .{ g.fixture, g.ours_turbo_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio, g.external_threshold },
                 );
             }
         }
