@@ -239,6 +239,8 @@ const CaseSpec = struct {
     expect_first_text: ?[]const u8,
     expect_root_attr_name: ?[]const u8,
     expect_root_attr_value: ?[]const u8,
+    /// Null means the suite does not care; otherwise require duplicate-root
+    /// attribute detection to either pass or fail this case.
     expect_unique_root_attrs: ?bool,
     expect_element_name: ?[]const u8,
     expect_element_min: ?usize,

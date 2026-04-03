@@ -18,22 +18,22 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`stable` profile).
+Source: `bench/results/latest.json` (`quick` profile).
 
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-turbo  │████████████████████│ 2935.36 MB/s (100.00%)
-ours-strict │████████████████████│ 2911.18 MB/s (99.18%)
-pugixml     │█████████░░░░░░░░░░░│ 1371.81 MB/s (46.73%)
-rapidxml    │█████████░░░░░░░░░░░│ 1364.28 MB/s (46.48%)
+ours-turbo  │████████████████████│ 3111.80 MB/s (100.00%)
+ours-strict │████████████░░░░░░░░│ 1894.37 MB/s (60.88%)
+pugixml     │█████████░░░░░░░░░░░│ 1446.87 MB/s (46.50%)
+rapidxml    │█████████░░░░░░░░░░░│ 1329.72 MB/s (42.73%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `quick` | 20/20 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
@@ -58,7 +58,7 @@ pub fn main() !void {
     var doc = Document.init(std.heap.page_allocator);
     defer doc.deinit();
 
-    try doc.parse(&src, .{
+    try doc.parse(src, .{
         .mode = .strict,
         .validate_closing_tags = true,
     });

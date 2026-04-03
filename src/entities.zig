@@ -63,7 +63,7 @@ pub fn appendDecodedWithEntityMap(
             continue;
         }
 
-        const token = parseEntityToken(input, src, strict) catch |err| switch (err) {
+        const token = parseEntityToken(input, src) catch |err| switch (err) {
             error.UnterminatedEntity => {
                 if (strict) return error.UnterminatedEntity;
                 try out.append(alloc, '&');
@@ -136,9 +136,8 @@ fn tryAppendDecodedEntityBody(
     return false;
 }
 
-fn parseEntityToken(noalias buf: []const u8, start: usize, strict: bool) DecodeError!EntityToken {
+fn parseEntityToken(noalias buf: []const u8, start: usize) DecodeError!EntityToken {
     const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
-        if (strict) return error.UnterminatedEntity;
         return error.UnterminatedEntity;
     };
 
@@ -283,4 +282,9 @@ test "decodeAllocWithEntityMap expands mapped named entities" {
     const decoded = try decodeAllocWithEntityMap(alloc, "&safe;&amp;", true, &map);
     defer alloc.free(decoded);
     try std.testing.expectEqualStrings("SAFE&", decoded);
+}
+
+test "strict decode rejects unknown named entities without a DTD map" {
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAlloc(alloc, "&bogus;", true));
 }

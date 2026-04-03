@@ -54,7 +54,10 @@ pub const ParseError = error{
 
 pub const ParseStackEntry = struct {
     idx: IndexInt,
+    /// Low-cost fingerprint of the first up-to-8 bytes of the open tag name.
     tag_key: u64 = 0,
+    /// Full tag-name length so close-tag validation can reject mismatches
+    /// before touching the source bytes again.
     tag_len: u16 = 0,
 };
 
@@ -101,8 +104,13 @@ pub const RawNode = struct {
     attr_len: IndexInt = 0,
 
     parent: IndexInt = InvalidIndex,
+    /// Index of the last direct child, which makes append and reverse-sibling
+    /// traversal O(1) without a separate sibling list allocation.
     last_child: IndexInt = InvalidIndex,
+    /// Previous direct sibling in document order. `nextSibling()` is derived
+    /// from `subtree_end + 1`.
     prev_sibling: IndexInt = InvalidIndex,
+    /// Inclusive end index of this node's flattened subtree in `nodes.items`.
     subtree_end: IndexInt = 0,
 };
 
@@ -246,6 +254,8 @@ pub const Document = struct {
     parse_mode: ParseMode = .turbo,
     expand_dtd_entities: bool = false,
     max_entity_value_len: usize = 4096,
+    /// Largest input size we have reserved arrays for so repeated parses can
+    /// reuse capacity instead of re-growing on every call.
     reserved_input_hint_len: usize = 0,
 
     nodes: std.ArrayList(RawNode) = .empty,
@@ -270,6 +280,10 @@ pub const Document = struct {
 
     pub fn clear(self: *Document) void {
         self.clearEntityMap();
+        self.source = "";
+        self.parse_mode = .turbo;
+        self.expand_dtd_entities = false;
+        self.max_entity_value_len = 4096;
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
@@ -307,6 +321,8 @@ pub const Document = struct {
         return entities.appendDecodedWithEntityMap(out, alloc, raw, self.parse_mode == .strict, &self.entity_map);
     }
 
+    /// Scans the internal subset for simple general-entity declarations and
+    /// stores owned decoded values for later decoded text/attribute access.
     pub fn registerDoctypeEntities(self: *Document, doctype_value: []const u8) ParseError!void {
         const subset_start = std.mem.indexOfScalar(u8, doctype_value, '[') orelse return;
         const subset_end = std.mem.lastIndexOfScalar(u8, doctype_value, ']') orelse return;
@@ -486,6 +502,18 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
 
     doc.clear();
     try std.testing.expect(doc.root() == null);
+    try std.testing.expectEqualStrings("", doc.source);
     try std.testing.expectEqual(@as(usize, 0), doc.nodes.items.len);
     try std.testing.expectEqual(@as(usize, 0), doc.attrs.items.len);
+}
+
+test "registerDoctypeEntities handles double-quoted values and replacements" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    doc.expand_dtd_entities = true;
+    doc.parse_mode = .strict;
+
+    try doc.registerDoctypeEntities("[<!ENTITY a \"one\"><!ENTITY a 'two'>]");
+    try std.testing.expectEqual(@as(usize, 1), doc.entity_map.count());
+    try std.testing.expectEqualStrings("two", doc.entity_map.get("a").?);
 }

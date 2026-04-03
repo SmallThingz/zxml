@@ -396,7 +396,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 ((self.input[target_start + 2] | 0x20) == 'l');
             const kind: NodeType = if (decl) .declaration else .pi;
 
-            const idx = try self.appendChildNode(kind);
+            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+            const idx = try self.appendChildNodeTo(parent_idx, kind);
             var n = &self.doc.nodes.items[idx];
             n.name = .{ .start = @intCast(target_start), .end = @intCast(target_end) };
             n.value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
@@ -414,7 +415,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (!opts.include_misc_nodes) return;
 
-                const idx = try self.appendChildNode(.comment);
+                const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+                const idx = try self.appendChildNodeTo(parent_idx, .comment);
                 var n = &self.doc.nodes.items[idx];
                 n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
                 return;
@@ -439,7 +441,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (!opts.include_misc_nodes) return;
 
-                const idx = try self.appendChildNode(.cdata);
+                const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+                const idx = try self.appendChildNodeTo(parent_idx, .cdata);
                 var n = &self.doc.nodes.items[idx];
                 n.value = .{ .start = @intCast(value_start), .end = @intCast(end) };
                 return;
@@ -501,7 +504,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (!opts.include_misc_nodes) return;
 
-                const idx = try self.appendChildNode(.doctype);
+                const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
+                const idx = try self.appendChildNodeTo(parent_idx, .doctype);
                 var n = &self.doc.nodes.items[idx];
                 n.value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
                 return;
@@ -510,11 +514,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (strict_mode) return error.ExpectedGt;
             self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
             if (self.i < self.input.len) self.i += 1;
-        }
-
-        inline fn appendChildNode(noalias self: *Self, kind: NodeType) ParseError!IndexInt {
-            const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
-            return self.appendChildNodeTo(parent_idx, kind);
         }
 
         inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
@@ -702,6 +701,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const NameScan = struct {
             end: usize,
             len: u16,
+            /// Prefix fingerprint used as a fast reject for close-tag matching.
             key: u64,
         };
 

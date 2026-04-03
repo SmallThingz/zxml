@@ -8,6 +8,8 @@ pub const BenchMode = enum {
 
 pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
     const options: fastxml.ParseOptions = .{};
+    // Bench against the same concrete DOM type across all runs so the parser is
+    // specialized once and the loop measures parse work instead of type setup.
     const Document = fastxml.Types(options).Document;
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);

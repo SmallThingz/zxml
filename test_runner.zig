@@ -190,7 +190,11 @@ const Summary = struct {
 };
 
 const Dashboard = struct {
+    /// One slot per worker thread so the parent process can redraw the live
+    /// "currently running" view without interleaving worker output.
     running: []?[]const u8,
+    /// Number of lines emitted by the last dashboard render so they can be
+    /// cleared before printing result lines or the next dashboard frame.
     rendered_lines: usize = 0,
 };
 
@@ -365,6 +369,8 @@ const WorkerCtx = struct {
     summary: *Summary,
     print_mutex: *std.Io.Mutex,
     count_mutex: *std.Io.Mutex,
+    /// Shared dashboard state updated by each worker while its child process
+    /// is running.
     dashboard: *Dashboard,
 };
 

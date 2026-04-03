@@ -10,6 +10,8 @@ pub fn ensureDir(io: std.Io, path: []const u8) !void {
 }
 
 pub fn joinArgs(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {
+    // Produce shell-like logging for child processes without attempting full
+    // shell escaping; this is for readable diagnostics only.
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
     try out.appendSlice(alloc, "+ ");
@@ -69,6 +71,8 @@ pub fn runCaptureStdout(io: std.Io, alloc: std.mem.Allocator, argv: []const []co
 }
 
 pub fn parseLastInt(text: []const u8) !u64 {
+    // Benchmark runners print a single integer on the last line; scan from the
+    // end so surrounding log noise does not matter.
     var i: usize = text.len;
     while (i > 0) : (i -= 1) {
         const c = text[i - 1];

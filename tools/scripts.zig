@@ -22,7 +22,6 @@ const repeats: usize = 5;
 const parse_parsers = [_][]const u8{
     "ours-strict",
     "ours-turbo",
-    "strlen",
     "pugixml",
     "rapidxml",
 };
@@ -94,6 +93,8 @@ const ParseResult = struct {
     fixture: []const u8,
     is_real: bool,
     iterations: usize,
+    /// Raw timing samples kept so JSON/markdown reports can expose run-to-run
+    /// spread without rerunning the benchmark.
     samples_ns: []u64,
     median_ns: u64,
     throughput_mb_s: f64,
@@ -107,6 +108,7 @@ const GateRow = struct {
     rapidxml_mb_s: f64,
     best_external_parser: []const u8,
     best_external_mb_s: f64,
+    /// Ratio against the faster external DOM parser for this fixture.
     external_ratio: f64,
     pass: bool,
 };
@@ -447,6 +449,8 @@ fn ensureExternalParsersBuilt(io: std.Io, alloc: std.mem.Allocator) !void {
 }
 
 fn runInheritWithBenchTmp(io: std.Io, alloc: std.mem.Allocator, argv: []const []const u8, cwd: ?[]const u8) !void {
+    // Force toolchain temp files under the repo-local scratch dir so large C++
+    // benchmark builds do not fail on small system `/tmp` quotas.
     var with_env = std.ArrayList([]const u8).empty;
     defer with_env.deinit(alloc);
     try with_env.appendSlice(alloc, &.{
@@ -473,16 +477,6 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
         "bench/build/bin/ours_runner",
     };
     try runInheritWithBenchTmp(io, alloc, &copy_ours, REPO_ROOT);
-
-    const strlen_cc = [_][]const u8{
-        "cc",
-        "-O3",
-        "-fno-builtin",
-        "bench/runners/strlen_runner.c",
-        "-o",
-        "bench/build/bin/strlen_runner",
-    };
-    try runInheritWithBenchTmp(io, alloc, &strlen_cc, REPO_ROOT);
 
     const pugixml_cc = [_][]const u8{
         "c++",
@@ -535,11 +529,6 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
         argv[argc + 2] = fixture_path;
         argv[argc + 3] = iters;
         argc += 4;
-    } else if (std.mem.eql(u8, parser_name, "strlen")) {
-        argv[argc + 0] = BIN_DIR ++ "/strlen_runner";
-        argv[argc + 1] = fixture_path;
-        argv[argc + 2] = iters;
-        argc += 3;
     } else if (std.mem.eql(u8, parser_name, "pugixml")) {
         argv[argc + 0] = BIN_DIR ++ "/pugixml_runner";
         argv[argc + 1] = fixture_path;
@@ -595,6 +584,8 @@ fn runParseBench(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, 
 }
 
 fn calibrateIterations(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, base_iterations: usize) !usize {
+    // Keep each sample above a minimum wall-clock duration so median timings are
+    // not dominated by timer granularity on tiny fixtures.
     const base_ns = try runParser(io, alloc, parser_name, fixture_path, base_iterations);
     if (base_ns >= min_sample_ns or base_ns == 0) return base_iterations;
 

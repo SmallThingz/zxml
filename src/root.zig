@@ -128,6 +128,20 @@ test "sibling nextSibling chain traverses in document order" {
     try std.testing.expect(c.nextSibling() == null);
 }
 
+test "nextSibling skips over descendant subtrees" {
+    var parsed = try parseTestDoc("<r><a><x/></a><b/><c/></r>", .{});
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const a = root.firstChild() orelse return error.TestUnexpectedResult;
+    const b = a.nextSibling() orelse return error.TestUnexpectedResult;
+    const c = b.nextSibling() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("a", a.nameSlice());
+    try std.testing.expectEqualStrings("b", b.nameSlice());
+    try std.testing.expectEqualStrings("c", c.nameSlice());
+    try std.testing.expect(c.nextSibling() == null);
+}
+
 test "sibling prevSibling chain traverses backwards" {
     var parsed = try parseTestDoc("<r><a/><b/><c/></r>", .{});
     defer parsed.deinit();
@@ -371,6 +385,17 @@ test "innerText allocates decoded subtree text" {
     const text = try root.innerText(std.testing.allocator);
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings("a&c!", text);
+}
+
+test "innerText helpers return empty content for textless elements" {
+    var parsed = try parseTestDoc("<r><a/></r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("", root.innerTextRaw().?);
+    const text = try root.innerText(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("", text);
 }
 
 test "misc nodes enabled parses declaration nodes" {
@@ -712,6 +737,17 @@ test "strict unterminated entity fails during decode validation" {
 
     var src = "<r>&amp</r>".*;
     try std.testing.expectError(ParseError.UnterminatedEntity, doc.parse(&src, .{ .mode = .strict }));
+}
+
+test "strict decoded access rejects unknown named entities when DTD expansion is disabled" {
+    var parsed = try parseTestDoc("<r>&custom;</r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    try std.testing.expectEqualStrings("&custom;", parsed.doc.nodeAt(1).?.firstChild().?.valueRawSlice());
+    try std.testing.expectError(
+        error.InvalidNumericCharacterEntity,
+        parsed.doc.nodeAt(1).?.firstChild().?.value(std.testing.allocator),
+    );
 }
 
 test "turbo invalid numeric entity stays literal in raw and decoded access" {

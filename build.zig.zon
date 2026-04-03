@@ -28,7 +28,7 @@
 
     // Tracks the earliest Zig version that the package considers to be a
     // supported use case.
-    .minimum_zig_version = "0.14.1",
+    .minimum_zig_version = "0.15.2",
 
     // This field is optional.
     // Each dependency must either provide a `url` and `hash`, or a `path`.
@@ -76,12 +76,13 @@
     // the build root itself.
     // A directory listed here means that all files within, recursively, are included.
     .paths = .{
+        ".gitignore",
+        "README.md",
         "build.zig",
         "build.zig.zon",
         "bench",
         "src",
-        // For example...
-        //"LICENSE",
-        //"README.md",
+        "test_runner.zig",
+        "tools",
     },
 }

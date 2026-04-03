@@ -20,6 +20,8 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    // Mirror htmlparser-style config injection so index-width selection stays a
+    // build-time constant all the way into the parser types.
     mod.addOptions("config", config_options);
 
     const bench_exe = b.addExecutable(.{
