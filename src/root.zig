@@ -11,35 +11,15 @@ pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const InvalidIndex = document_mod.InvalidIndex;
 
-pub fn GetSpan(comptime options: ParseOptions) type {
-    return options.GetSpan();
-}
-
-pub fn GetDocument(comptime options: ParseOptions) type {
-    return options.GetDocument();
-}
-
-pub fn GetNode(comptime options: ParseOptions) type {
-    return options.GetNode();
-}
-
-pub fn GetNodeRaw(comptime options: ParseOptions) type {
-    return options.GetNodeRaw();
-}
-
-pub fn GetAttribute(comptime options: ParseOptions) type {
-    return options.GetAttribute();
-}
-
-pub fn GetAttributeRaw(comptime options: ParseOptions) type {
-    return options.GetAttributeRaw();
+pub fn Types(comptime options: ParseOptions) type {
+    return document_mod.Types(options);
 }
 
 fn ParsedDoc(comptime opts: ParseOptions) type {
-    const Document = opts.GetDocument();
+    const DocumentType = Types(opts).Document;
 
     return struct {
-        doc: Document,
+        doc: DocumentType,
         buf: []u8,
 
         fn deinit(self: *@This()) void {
@@ -50,7 +30,7 @@ fn ParsedDoc(comptime opts: ParseOptions) type {
 }
 
 fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc(opts) {
-    const DocumentType = opts.GetDocument();
+    const DocumentType = Types(opts).Document;
     const buf = try std.testing.allocator.dupe(u8, input);
     errdefer std.testing.allocator.free(buf);
 
@@ -64,9 +44,9 @@ fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc(opts)
     };
 }
 
-fn initDoc(comptime opts: ParseOptions) opts.GetDocument() {
-    const Document = opts.GetDocument();
-    return Document.init(std.testing.allocator);
+fn initDoc(comptime opts: ParseOptions) Types(opts).Document {
+    const DocumentType = Types(opts).Document;
+    return DocumentType.init(std.testing.allocator);
 }
 
 fn countKind(doc: anytype, kind: NodeType) usize {
@@ -84,12 +64,14 @@ fn findFirstKind(doc: anytype, kind: NodeType) ?std.meta.Child(@TypeOf(doc.nodeA
     return null;
 }
 
-test "ParseOptions type factory matches default exports" {
+test "Types(options) matches document module type factory" {
     const opts: ParseOptions = .{};
-    try std.testing.expectEqual(opts.GetDocument(), GetDocument(opts));
-    try std.testing.expectEqual(opts.GetNode(), GetNode(opts));
-    try std.testing.expectEqual(opts.GetAttribute(), GetAttribute(opts));
-    try std.testing.expectEqual(opts.GetSpan(), GetSpan(opts));
+    const root_types = Types(opts);
+    const doc_types = document_mod.Types(opts);
+    try std.testing.expectEqual(doc_types.Document, root_types.Document);
+    try std.testing.expectEqual(doc_types.Node, root_types.Node);
+    try std.testing.expectEqual(doc_types.Attribute, root_types.Attribute);
+    try std.testing.expectEqual(doc_types.Span, root_types.Span);
 }
 
 test "smoke: parse nested nodes and attributes" {
@@ -346,6 +328,15 @@ test "doctype preserves internal subset text" {
 
 test "turbo mismatched close tag without validation is tolerated" {
     var parsed = try parseTestDoc("<a><b></a>", .{ .mode = .turbo });
+    defer parsed.deinit();
+
+    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.items.len);
+    try std.testing.expectEqualStrings("a", parsed.doc.nodeAt(1).?.nameSlice());
+    try std.testing.expectEqualStrings("b", parsed.doc.nodeAt(2).?.nameSlice());
+}
+
+test "strict mismatched close tag without validation is tolerated" {
+    var parsed = try parseTestDoc("<a><b></a>", .{ .mode = .strict });
     defer parsed.deinit();
 
     try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.items.len);

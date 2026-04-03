@@ -15,7 +15,7 @@ pub fn parseInto(noalias doc: anytype, noalias input: []u8, comptime opts: Parse
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
-    const Span = opts.GetSpan();
+    const Span = document.Types(opts).Span;
 
     return struct {
         doc: *DocType,
@@ -25,7 +25,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const Self = @This();
 
         const strict_mode = opts.mode == .strict;
-        const strict_or_validate = strict_mode or opts.validate_closing_tags;
+        const validate_closing_tags = opts.validate_closing_tags;
         const require_closed_elements_on_eof = opts.require_closed_elements_on_eof;
         const decode_entities = opts.decode_entities_on_parse;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
@@ -122,7 +122,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
                         return;
                     }
-                    if (comptime strict_or_validate) {
+                    if (comptime validate_closing_tags) {
                         try self.pushStack(idx, tag_key, tag_len);
                     } else {
                         try self.pushStack(idx, 0, 0);
@@ -152,7 +152,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (try self.tryFinishSimpleTextElement(idx, name_start, tag_len, tag_key)) {
                         return;
                     }
-                    if (comptime strict_or_validate) {
+                    if (comptime validate_closing_tags) {
                         try self.pushStack(idx, tag_key, tag_len);
                     } else {
                         try self.pushStack(idx, 0, 0);
@@ -236,7 +236,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn parseClosingTag(noalias self: *Self) ParseError!void {
-            if (!strict_mode and !opts.validate_closing_tags) {
+            if (!validate_closing_tags) {
                 self.i += 2; // </
                 const gt = scanner.findByte(self.input, self.i, '>') orelse {
                     self.i = self.input.len;
@@ -258,14 +258,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             if (!tables.isNameStart(self.input[self.i])) {
-                if (strict_or_validate) return error.InvalidClosingTagName;
+                if (validate_closing_tags) return error.InvalidClosingTagName;
                 self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
                 if (self.i < self.input.len) self.i += 1;
                 return;
             }
 
             if (self.doc.parse_stack.items.len <= 1) {
-                if (strict_or_validate) return error.InvalidClosingTagName;
+                if (validate_closing_tags) return error.InvalidClosingTagName;
                 return;
             }
 
@@ -654,7 +654,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
 test "parseInto builds a minimal DOM and enforces strict closing tags" {
     const options: ParseOptions = .{};
-    const Document = options.GetDocument();
+    const Document = document.Types(options).Document;
     var ok = "<root><child>v</child></root>".*;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();

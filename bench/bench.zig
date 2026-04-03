@@ -9,7 +9,7 @@ const BenchMode = enum {
 
 pub fn runParseFile(io: Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
     const options: fastxml.ParseOptions = .{};
-    const Document = options.GetDocument();
+    const Document = fastxml.Types(options).Document;
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
     var doc = Document.init(alloc);

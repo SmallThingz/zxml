@@ -16,31 +16,19 @@ pub const ParseOptions = struct {
     decode_entities_on_parse: bool = false,
     drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
-
-    pub fn GetSpan(_: @This()) type {
-        return Span;
-    }
-
-    pub fn GetAttributeRaw(_: @This()) type {
-        return RawAttribute;
-    }
-
-    pub fn GetAttribute(_: @This()) type {
-        return Attribute;
-    }
-
-    pub fn GetNodeRaw(_: @This()) type {
-        return RawNode;
-    }
-
-    pub fn GetNode(_: @This()) type {
-        return Node;
-    }
-
-    pub fn GetDocument(_: @This()) type {
-        return Document;
-    }
 };
+
+pub fn Types(comptime options: ParseOptions) type {
+    _ = options;
+    return struct {
+        pub const Span = @import("document.zig").Span;
+        pub const RawAttribute = @import("document.zig").RawAttribute;
+        pub const Attribute = @import("document.zig").Attribute;
+        pub const RawNode = @import("document.zig").RawNode;
+        pub const Node = @import("document.zig").Node;
+        pub const Document = @import("document.zig").Document;
+    };
+}
 
 pub const ParseError = error{
     OutOfMemory,
@@ -309,19 +297,20 @@ pub const Document = struct {
     }
 };
 
-test "ParseOptions type getters expose concrete DOM types" {
+test "Types(options) exposes concrete DOM types" {
     const opts: ParseOptions = .{};
-    try std.testing.expectEqual(Span, opts.GetSpan());
-    try std.testing.expectEqual(RawNode, opts.GetNodeRaw());
-    try std.testing.expectEqual(Node, opts.GetNode());
-    try std.testing.expectEqual(RawAttribute, opts.GetAttributeRaw());
-    try std.testing.expectEqual(Attribute, opts.GetAttribute());
-    try std.testing.expectEqual(Document, opts.GetDocument());
+    const types = Types(opts);
+    try std.testing.expectEqual(Span, types.Span);
+    try std.testing.expectEqual(RawNode, types.RawNode);
+    try std.testing.expectEqual(Node, types.Node);
+    try std.testing.expectEqual(RawAttribute, types.RawAttribute);
+    try std.testing.expectEqual(Attribute, types.Attribute);
+    try std.testing.expectEqual(Document, types.Document);
 }
 
 test "Span helpers expose slices and lengths" {
     const opts: ParseOptions = .{};
-    const SpanType = opts.GetSpan();
+    const SpanType = Types(opts).Span;
     var buf = "abcdef".*;
     const span: SpanType = .{ .start = 1, .end = 4 };
     try std.testing.expectEqual(@as(u32, 3), span.len());
@@ -338,7 +327,7 @@ test "Span helpers expose slices and lengths" {
 
 test "Document reserve and lookup helpers behave on empty and populated state" {
     const opts: ParseOptions = .{};
-    const DocumentType = opts.GetDocument();
+    const DocumentType = Types(opts).Document;
     var doc = DocumentType.init(std.testing.allocator);
     defer doc.deinit();
 
