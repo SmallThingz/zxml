@@ -1,5 +1,5 @@
-const examples = @import("examples");
+const basic_parse = @import("../../examples/basic_parse.zig");
 
 test "example parity: basic parse" {
-    try examples.basic_parse.run();
+    try basic_parse.run();
 }

@@ -679,9 +679,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.doc.nodes.items[idx].subtree_end = text_idx;
             return true;
         }
-
-        };
-    }
+    };
+}
 
 test "parseInto builds a minimal DOM and enforces strict closing tags" {
     const options: ParseOptions = .{};

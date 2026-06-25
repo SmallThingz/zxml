@@ -64,15 +64,6 @@ pub inline fn isAttrUnquotedValueChar(c: u8) bool {
     return AttrUnquotedValueCharTable[c];
 }
 
-fn eqlAsciiCaseInsensitive(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    var i: usize = 0;
-    while (i < a.len) : (i += 1) {
-        if (std.ascii.toLower(a[i]) != std.ascii.toLower(b[i])) return false;
-    }
-    return true;
-}
-
 test "character classifiers match XML expectations" {
     try std.testing.expect(isWhitespace(' '));
     try std.testing.expect(isWhitespace('\n'));
@@ -96,7 +87,4 @@ test "character classifiers match XML expectations" {
     try std.testing.expect(!isAttrUnquotedValueChar(' '));
     try std.testing.expect(!isAttrUnquotedValueChar('>'));
     try std.testing.expectEqual(AttrUnquotedValueCharTable['x'], isAttrUnquotedValueChar('x'));
-
-    try std.testing.expect(eqlAsciiCaseInsensitive("DoCtYpE", "doctype"));
-    try std.testing.expect(!eqlAsciiCaseInsensitive("xml", "html"));
 }

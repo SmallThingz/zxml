@@ -26,9 +26,9 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
     defer alloc.free(input);
     var doc = Document.init(alloc);
     defer doc.deinit();
-    var strict_stream = StreamStrict.StreamParser.init(alloc);
+    var strict_stream = StreamStrict.StreamingParser.init(alloc);
     defer strict_stream.deinit();
-    var turbo_stream = StreamTurbo.StreamParser.init(alloc);
+    var turbo_stream = StreamTurbo.StreamingParser.init(alloc);
     defer turbo_stream.deinit();
 
     const start = std.Io.Clock.Timestamp.now(io, .awake);
@@ -55,9 +55,9 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
             }
         },
         .stream_strict => {
-            const StreamNode = StreamStrict.StreamNode;
+            const StreamingEventType = StreamStrict.StreamingEvent;
             const Callback = struct {
-                fn onNode(_: *const StreamNode) bool {
+                fn onNode(_: *const StreamingEventType) bool {
                     return true;
                 }
             };
@@ -67,9 +67,9 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
             }
         },
         .stream_turbo => {
-            const StreamNode = StreamTurbo.StreamNode;
+            const StreamingEventType = StreamTurbo.StreamingEvent;
             const Callback = struct {
-                fn onNode(_: *const StreamNode) bool {
+                fn onNode(_: *const StreamingEventType) bool {
                     return true;
                 }
             };

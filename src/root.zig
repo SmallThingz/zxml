@@ -16,7 +16,6 @@ pub const ParseError = document_mod.ParseError;
 pub const InvalidIndex = document_mod.InvalidIndex;
 pub const StreamingParser = Types(.{}).StreamingParser;
 pub const StreamingEvent = Types(.{}).StreamingEvent;
-pub const StreamingEventKind = Types(.{}).StreamingEventKind;
 pub const StreamingAttribute = Types(.{}).StreamingAttribute;
 pub const StreamingAttributeIterator = Types(.{}).StreamingAttributeIterator;
 
@@ -34,12 +33,7 @@ pub fn Types(comptime options: ParseOptions) type {
         pub const StreamingAttribute = stream_types.Attribute;
         pub const StreamingAttributeIterator = stream_types.AttributeIterator;
         pub const StreamingEvent = stream_types.Node;
-        pub const StreamingEventKind = NodeType;
         pub const StreamingParser = stream_types.Parser;
-        pub const StreamAttribute = stream_types.Attribute;
-        pub const StreamAttributeIterator = stream_types.AttributeIterator;
-        pub const StreamNode = stream_types.Node;
-        pub const StreamParser = stream_types.Parser;
     };
 }
 
@@ -102,9 +96,6 @@ test "Types(options) matches document module type factory" {
     try std.testing.expectEqual(doc_types.Attribute, root_types.Attribute);
     try std.testing.expectEqual(doc_types.Span, root_types.Span);
     try std.testing.expectEqual(ParseInt, root_types.IndexInt);
-    try std.testing.expectEqual(stream_types.Node, root_types.StreamNode);
-    try std.testing.expectEqual(stream_types.Attribute, root_types.StreamAttribute);
-    try std.testing.expectEqual(stream_types.Parser, root_types.StreamParser);
     try std.testing.expectEqual(stream_types.Node, root_types.StreamingEvent);
     try std.testing.expectEqual(stream_types.Attribute, root_types.StreamingAttribute);
     try std.testing.expectEqual(stream_types.Parser, root_types.StreamingParser);
@@ -897,8 +888,8 @@ test "strict deep balanced close tags" {
 
 test "streaming parser visits nodes in document order and exposes attributes" {
     const opts: ParseOptions = .{};
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
         names: std.ArrayList([]const u8),
@@ -907,7 +898,7 @@ test "streaming parser visits nodes in document order and exposes attributes" {
         saw_root_attr: bool = false,
         saw_child_attr: bool = false,
 
-        fn onNode(self: *@This(), node: StreamNode) bool {
+        fn onNode(self: *@This(), node: StreamingEventType) bool {
             self.names.append(std.testing.allocator, node.nameSlice()) catch unreachable;
             self.kinds.append(std.testing.allocator, node.kind) catch unreachable;
             self.depths.append(std.testing.allocator, node.depth) catch unreachable;
@@ -921,7 +912,7 @@ test "streaming parser visits nodes in document order and exposes attributes" {
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{
@@ -948,15 +939,15 @@ test "streaming parser visits nodes in document order and exposes attributes" {
 
 test "streaming parser can skip a subtree and expose adjacent text" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
         names: std.ArrayList([]const u8),
         saw_skip_following_text: bool = false,
         saw_keep_leading_text: bool = false,
 
-        fn onNode(self: *@This(), node: StreamNode) bool {
+        fn onNode(self: *@This(), node: StreamingEventType) bool {
             self.names.append(std.testing.allocator, node.nameSlice()) catch unreachable;
             if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip")) {
                 const following = node.followingTextRaw() catch unreachable;
@@ -970,7 +961,7 @@ test "streaming parser can skip a subtree and expose adjacent text" {
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{ .names = .empty };
@@ -990,16 +981,16 @@ test "streaming parser can skip a subtree and expose adjacent text" {
 
 test "streaming parser strict validation fails on mismatched close tags" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
-        fn onNode(_: *@This(), _: StreamNode) bool {
+        fn onNode(_: *@This(), _: StreamingEventType) bool {
             return true;
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{};
@@ -1008,19 +999,19 @@ test "streaming parser strict validation fails on mismatched close tags" {
 
 test "streaming parser strict validation handles long close names" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
         count: usize = 0,
 
-        fn onNode(self: *@This(), _: StreamNode) bool {
+        fn onNode(self: *@This(), _: StreamingEventType) bool {
             self.count += 1;
             return true;
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{};
@@ -1030,19 +1021,19 @@ test "streaming parser strict validation handles long close names" {
 
 test "streaming parser accepts pointer callbacks" {
     const opts: ParseOptions = .{ .mode = .turbo };
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
         count: usize = 0,
 
-        fn onNode(self: *@This(), node: *const StreamNode) bool {
+        fn onNode(self: *@This(), node: *const StreamingEventType) bool {
             if (node.kind == .element) self.count += 1;
             return true;
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{};
@@ -1052,13 +1043,13 @@ test "streaming parser accepts pointer callbacks" {
 
 test "streaming parser turbo mode accepts unquoted attributes" {
     const opts: ParseOptions = .{ .mode = .turbo };
-    const StreamParser = Types(opts).StreamParser;
-    const StreamNode = Types(opts).StreamNode;
+    const StreamingParserType = Types(opts).StreamingParser;
+    const StreamingEventType = Types(opts).StreamingEvent;
 
     const Ctx = struct {
         saw_attr: bool = false,
 
-        fn onNode(self: *@This(), node: StreamNode) bool {
+        fn onNode(self: *@This(), node: StreamingEventType) bool {
             if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "r")) {
                 self.saw_attr = std.mem.eql(u8, node.getAttributeValueRaw("a").?, "1");
             }
@@ -1066,7 +1057,7 @@ test "streaming parser turbo mode accepts unquoted attributes" {
         }
     };
 
-    var parser = StreamParser.init(std.testing.allocator);
+    var parser = StreamingParserType.init(std.testing.allocator);
     defer parser.deinit();
 
     var ctx: Ctx = .{};
