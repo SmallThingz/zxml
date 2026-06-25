@@ -52,19 +52,12 @@ Minimal parse:
 ```zig
 const std = @import("std");
 const fastxml = @import("fastxml");
-const options: fastxml.ParseOptions = .{};
-const Document = fastxml.Types(options).Document;
 
 pub fn main() !void {
     const src = "<root id='r'><child>text</child></root>";
-
-    var doc = Document.init(std.heap.page_allocator);
+    const options: fastxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = try options.parse(std.heap.page_allocator, src);
     defer doc.deinit();
-
-    try doc.parse(src, .{
-        .mode = .strict,
-        .validate_closing_tags = true,
-    });
 
     const root = doc.nodeAt(1).?;
     std.debug.print("{s} {s}\n", .{ root.nameSlice(), root.getAttributeValueRaw("id").? });
@@ -78,16 +71,16 @@ pub fn main() !void {
 - `fastxml.ParseError`
 - `fastxml.ParseInt`
 - `fastxml.MaxParseLen`
-- `fastxml.Types(options).Document`
-- `fastxml.Types(options).Node`
-- `fastxml.Types(options).Attribute`
+- `options.parse(allocator, input)`
+- `options.Document()` / `options.Node()` / `options.Attribute()`
+- `fastxml.Types(options).Document` / `.Node` / `.Attribute`
+- `fastxml.StreamingParser` and `fastxml.Types(options).StreamingParser`
 
 ```zig
 const options: fastxml.ParseOptions = .{};
-const types = fastxml.Types(options);
-const Document = types.Document;
-const Node = types.Node;
-const Attribute = types.Attribute;
+const Document = options.Document();
+const Node = options.Node();
+const Attribute = options.Attribute();
 ```
 
 Index width is configurable at build time, following the same config-module pattern as `htmlparser`:
@@ -98,17 +91,18 @@ zig build test -Dintlen=u64
 
 Supported widths are `u16`, `u32`, `u64`, and `usize`. The default is `u32`.
 
-`Document.parse` is comptime-specialized:
+`ParseOptions.parse` returns an initialized document; `Document.parse` remains available for document reuse:
 
 ```zig
-try doc.parse(input, .{
+const options: fastxml.ParseOptions = .{
     .mode = .turbo,
     .validate_closing_tags = false,
     .expand_dtd_entities = false,
     .max_entity_value_len = 4096,
     .drop_whitespace_text_nodes = true,
     .include_misc_nodes = true,
-});
+};
+var doc = try options.parse(allocator, input);
 ```
 
 Parsing is always non-destructive and the original input is always `[]const u8`.

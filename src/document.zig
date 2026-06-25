@@ -20,6 +20,45 @@ pub const ParseOptions = struct {
     max_entity_value_len: usize = 4096,
     drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
+
+    /// Returns the accepted parse input slice type for this option set.
+    /// fastxml never mutates caller bytes, so this is always `[]const u8`.
+    pub fn Input(_: @This()) type {
+        return []const u8;
+    }
+
+    /// Parses `input` and returns an owned document for this option set.
+    pub fn parse(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) ParseError!options.Document() {
+        var doc = options.Document().init(allocator);
+        errdefer doc.deinit();
+        try doc.parse(input, options);
+        return doc;
+    }
+
+    /// Returns the document type for this option set.
+    pub fn Document(comptime options: @This()) type {
+        return Types(options).Document;
+    }
+
+    /// Returns the node wrapper type for this option set.
+    pub fn Node(comptime options: @This()) type {
+        return Types(options).Node;
+    }
+
+    /// Returns the attribute wrapper type for this option set.
+    pub fn Attribute(comptime options: @This()) type {
+        return Types(options).Attribute;
+    }
+
+    /// Returns raw node storage for this option set.
+    pub fn RawNode(comptime options: @This()) type {
+        return Types(options).RawNode;
+    }
+
+    /// Returns raw attribute storage for this option set.
+    pub fn RawAttribute(comptime options: @This()) type {
+        return Types(options).RawAttribute;
+    }
 };
 
 pub fn Types(comptime options: ParseOptions) type {

@@ -14,6 +14,11 @@ pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const InvalidIndex = document_mod.InvalidIndex;
+pub const StreamingParser = Types(.{}).StreamingParser;
+pub const StreamingEvent = Types(.{}).StreamingEvent;
+pub const StreamingEventKind = Types(.{}).StreamingEventKind;
+pub const StreamingAttribute = Types(.{}).StreamingAttribute;
+pub const StreamingAttributeIterator = Types(.{}).StreamingAttributeIterator;
 
 pub fn Types(comptime options: ParseOptions) type {
     const doc_types = document_mod.Types(options);
@@ -26,6 +31,11 @@ pub fn Types(comptime options: ParseOptions) type {
         pub const RawNode = doc_types.RawNode;
         pub const Node = doc_types.Node;
         pub const Document = doc_types.Document;
+        pub const StreamingAttribute = stream_types.Attribute;
+        pub const StreamingAttributeIterator = stream_types.AttributeIterator;
+        pub const StreamingEvent = stream_types.Node;
+        pub const StreamingEventKind = NodeType;
+        pub const StreamingParser = stream_types.Parser;
         pub const StreamAttribute = stream_types.Attribute;
         pub const StreamAttributeIterator = stream_types.AttributeIterator;
         pub const StreamNode = stream_types.Node;
@@ -95,6 +105,24 @@ test "Types(options) matches document module type factory" {
     try std.testing.expectEqual(stream_types.Node, root_types.StreamNode);
     try std.testing.expectEqual(stream_types.Attribute, root_types.StreamAttribute);
     try std.testing.expectEqual(stream_types.Parser, root_types.StreamParser);
+    try std.testing.expectEqual(stream_types.Node, root_types.StreamingEvent);
+    try std.testing.expectEqual(stream_types.Attribute, root_types.StreamingAttribute);
+    try std.testing.expectEqual(stream_types.Parser, root_types.StreamingParser);
+}
+
+test "ParseOptions exposes htmlparser-style type helpers and parse" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    try std.testing.expectEqual([]const u8, opts.Input());
+    try std.testing.expectEqual(Types(opts).Document, opts.Document());
+    try std.testing.expectEqual(Types(opts).Node, opts.Node());
+    try std.testing.expectEqual(Types(opts).Attribute, opts.Attribute());
+
+    var doc = try opts.parse(std.testing.allocator, "<root id='r'><child>text</child></root>");
+    defer doc.deinit();
+
+    const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("root", root.nameSlice());
+    try std.testing.expectEqualStrings("r", root.getAttributeValueRaw("id").?);
 }
 
 test "smoke: parse nested nodes and attributes" {

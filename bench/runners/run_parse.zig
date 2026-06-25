@@ -1,5 +1,5 @@
 const std = @import("std");
-const fastxml = @import("zxml");
+const fastxml = @import("fastxml");
 
 pub const BenchMode = enum {
     strict,

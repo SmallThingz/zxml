@@ -1,8 +1,8 @@
 .{
-    .name = .zxml,
-    .version = "0.0.0",
-    .fingerprint = 0xeb739e95adbc53ea,
-    .minimum_zig_version = "0.15.2",
+    .name = .fastxml,
+    .version = "0.1.0",
+    .fingerprint = 0x2238d6fb76fd461e,
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         ".gitignore",
         "README.md",

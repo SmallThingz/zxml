@@ -26,6 +26,10 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn valueRawSlice(self: @This()) []const u8 {
                 return self.value.slice(self.source);
             }
+
+            pub fn valueRaw(self: @This()) []const u8 {
+                return self.valueRawSlice();
+            }
         };
 
         pub const AttributeIterator = struct {
@@ -92,6 +96,10 @@ pub fn Types(comptime options: ParseOptions) type {
 
             pub fn valueRawSlice(self: @This()) []const u8 {
                 return self.value.slice(self.source);
+            }
+
+            pub fn valueSlice(self: @This()) []const u8 {
+                return self.valueRawSlice();
             }
 
             pub fn attributes(self: @This()) AttributeIterator {
@@ -586,7 +594,6 @@ pub fn Types(comptime options: ParseOptions) type {
             key: u64,
             len: u16,
         };
-
     };
 }
 
