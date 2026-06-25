@@ -133,16 +133,12 @@ fn getProfile(name: []const u8) !Profile {
     return error.InvalidProfile;
 }
 
-fn pathExists(io: std.Io, path: []const u8) bool {
-    return common.fileExists(io, path);
-}
-
 fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
     try common.ensureDir(io, PARSERS_DIR);
     try common.ensureDir(io, BUILD_DIR);
 
     const pugixml_git = PARSERS_DIR ++ "/pugixml/.git";
-    if (!pathExists(io, pugixml_git)) {
+    if (!common.fileExists(io, pugixml_git)) {
         const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", PARSERS_DIR ++ "/pugixml" };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
     } else {
@@ -150,7 +146,7 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
     }
 
     try common.ensureDir(io, PARSERS_DIR ++ "/rapidxml");
-    if (!pathExists(io, "rapidxml-1.13/rapidxml.hpp") and !pathExists(io, PARSERS_DIR ++ "/rapidxml/rapidxml.hpp")) {
+    if (!common.fileExists(io, "rapidxml-1.13/rapidxml.hpp") and !common.fileExists(io, PARSERS_DIR ++ "/rapidxml/rapidxml.hpp")) {
         const zip_path = BUILD_DIR ++ "/rapidxml-1.13.zip";
         const rapid_tmp = BUILD_DIR ++ "/rapidxml-src";
         try common.ensureDir(io, rapid_tmp);
@@ -173,14 +169,14 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
         "license.txt",
     };
     for (rapid_files) |f| {
-        const src = if (pathExists(io, "rapidxml-1.13/rapidxml.hpp"))
+        const src = if (common.fileExists(io, "rapidxml-1.13/rapidxml.hpp"))
             try std.fmt.allocPrint(alloc, "rapidxml-1.13/{s}", .{f})
         else
             try std.fmt.allocPrint(alloc, BUILD_DIR ++ "/rapidxml-src/rapidxml-1.13/{s}", .{f});
         defer alloc.free(src);
         const dst = try std.fmt.allocPrint(alloc, PARSERS_DIR ++ "/rapidxml/{s}", .{f});
         defer alloc.free(dst);
-        if (pathExists(io, dst)) continue;
+        if (common.fileExists(io, dst)) continue;
         const cp = [_][]const u8{ "cp", src, dst };
         try common.runInherit(io, alloc, &cp, REPO_ROOT);
     }
@@ -476,7 +472,7 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
 }
 
 fn ensureExternalParsersBuilt(io: std.Io, alloc: std.mem.Allocator) !void {
-    if (!pathExists(io, PARSERS_DIR ++ "/pugixml/CMakeLists.txt")) {
+    if (!common.fileExists(io, PARSERS_DIR ++ "/pugixml/CMakeLists.txt")) {
         try setupParsers(io, alloc);
     }
 }
@@ -1599,7 +1595,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         }
     }
 
-    if (pathExists(io, baseline)) {
+    if (common.fileExists(io, baseline)) {
         const baseline_bytes = try common.readFileAlloc(io, alloc, baseline);
         defer alloc.free(baseline_bytes);
 

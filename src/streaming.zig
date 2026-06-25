@@ -4,13 +4,11 @@ const document = @import("document.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
 
-pub const ParseOptions = document.ParseOptions;
-pub const ParseError = document.ParseError;
-pub const ParseMode = document.ParseMode;
-pub const NodeType = document.NodeType;
-pub const Span = document.Span;
-pub const IndexInt = common.IndexInt;
-pub const InvalidIndex = common.InvalidIndex;
+const ParseOptions = document.ParseOptions;
+const ParseError = document.ParseError;
+const NodeType = document.NodeType;
+const Span = document.Span;
+const IndexInt = common.IndexInt;
 
 pub fn Types(comptime options: ParseOptions) type {
     return struct {
@@ -465,14 +463,14 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (i + 1 >= input.len) return if (strict_mode) error.UnexpectedEndOfData else input.len;
                         switch (input[i + 1]) {
                             '/' => {
-                                i = try skipClosingTag(input, i);
+                                i = (try scanClosingTag(input, i)).next;
                                 depth -= 1;
                                 if (depth == 0) return i;
                             },
                             '?' => i = try skipPi(input, i),
                             '!' => i = try skipBang(input, i),
                             else => {
-                                const open = try skipOpeningTagToken(input, i);
+                                const open = try scanOpeningTagToken(input, i);
                                 i = open.next;
                                 if (!open.self_closing) depth += 1;
                             },
@@ -659,14 +657,14 @@ fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
         if (i + 1 >= input.len) return error.UnexpectedEndOfData;
         switch (input[i + 1]) {
             '/' => {
-                i = try skipClosingTag(input, i);
+                i = (try scanClosingTag(input, i)).next;
                 depth -= 1;
                 if (depth == 0) return i;
             },
             '?' => i = try skipPi(input, i),
             '!' => i = try skipBang(input, i),
             else => {
-                const open = try skipOpeningTagToken(input, i);
+                const open = try scanOpeningTagToken(input, i);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
@@ -674,11 +672,6 @@ fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
     }
     return error.UnexpectedEndOfData;
 }
-
-const SkipOpen = struct {
-    next: usize,
-    self_closing: bool,
-};
 
 const OpenToken = struct {
     next: usize,
@@ -692,11 +685,6 @@ const CloseToken = struct {
     name_start: usize,
     scan: scanner.NameScan,
 };
-
-fn skipOpeningTagToken(input: []const u8, start: usize) ParseError!SkipOpen {
-    const open = try scanOpeningTagToken(input, start);
-    return .{ .next = open.next, .self_closing = open.self_closing };
-}
 
 fn scanOpeningTagToken(input: []const u8, start: usize) ParseError!OpenToken {
     var i = start + 1;
@@ -734,10 +722,6 @@ fn scanClosingTag(input: []const u8, start: usize) ParseError!CloseToken {
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
     if (i >= input.len or input[i] != '>') return error.InvalidClosingTagName;
     return .{ .next = i + 1, .name_start = name_start, .scan = scan };
-}
-
-fn skipClosingTag(input: []const u8, start: usize) ParseError!usize {
-    return (try scanClosingTag(input, start)).next;
 }
 
 fn skipPi(input: []const u8, start: usize) ParseError!usize {

@@ -16,10 +16,6 @@ const EntityToken = struct {
     body: []const u8,
 };
 
-pub fn decodeAlloc(alloc: std.mem.Allocator, input: []const u8, strict: bool) (std.mem.Allocator.Error || DecodeError)![]u8 {
-    return decodeAllocWithEntityMap(alloc, input, strict, null);
-}
-
 pub fn decodeAllocWithEntityMap(
     alloc: std.mem.Allocator,
     input: []const u8,
@@ -30,15 +26,6 @@ pub fn decodeAllocWithEntityMap(
     errdefer out.deinit(alloc);
     try appendDecodedWithEntityMap(&out, alloc, input, strict, entity_map);
     return out.toOwnedSlice(alloc);
-}
-
-pub fn appendDecoded(
-    out: *std.ArrayList(u8),
-    alloc: std.mem.Allocator,
-    input: []const u8,
-    strict: bool,
-) (std.mem.Allocator.Error || DecodeError)!void {
-    return appendDecodedWithEntityMap(out, alloc, input, strict, null);
 }
 
 pub fn appendDecodedWithEntityMap(
@@ -86,31 +73,6 @@ pub fn appendDecodedWithEntityMap(
         if (strict) return error.InvalidNumericCharacterEntity;
         try out.append(alloc, '&');
         src += 1;
-    }
-}
-
-pub fn validateStructuralEntities(noalias buf: []const u8) DecodeError!void {
-    var src = std.mem.indexOfScalar(u8, buf, '&') orelse return;
-    while (src < buf.len) {
-        if (buf[src] != '&') {
-            src += 1;
-            continue;
-        }
-
-        const semi = std.mem.indexOfScalarPos(u8, buf, src + 1, ';') orelse return error.UnterminatedEntity;
-        const body = buf[src + 1 .. semi];
-        if (body.len == 0) return error.InvalidNumericCharacterEntity;
-
-        if (body[0] == '#') {
-            _ = try decodeEntityBody(body, true) orelse return error.InvalidNumericCharacterEntity;
-        } else {
-            if (!tables.isNameStart(body[0])) return error.InvalidNumericCharacterEntity;
-            for (body[1..]) |c| {
-                if (!tables.isNameChar(c)) return error.InvalidNumericCharacterEntity;
-            }
-        }
-
-        src = semi + 1;
     }
 }
 
@@ -237,7 +199,7 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
 test "decodeAlloc decodes without mutating the source slice" {
     const alloc = std.testing.allocator;
     const input = "&amp;&#65;&#x42;";
-    const decoded = try decodeAlloc(alloc, input, true);
+    const decoded = try decodeAllocWithEntityMap(alloc, input, true, null);
     defer alloc.free(decoded);
 
     try std.testing.expectEqualStrings("&AB", decoded);
@@ -247,20 +209,13 @@ test "decodeAlloc decodes without mutating the source slice" {
 test "non-strict decode leaves malformed and unknown entities literal" {
     const alloc = std.testing.allocator;
 
-    const unknown = try decodeAlloc(alloc, "&bogus; &amp", false);
+    const unknown = try decodeAllocWithEntityMap(alloc, "&bogus; &amp", false, null);
     defer alloc.free(unknown);
     try std.testing.expectEqualStrings("&bogus; &amp", unknown);
 
-    const apost_quot = try decodeAlloc(alloc, "&apos;&quot;", true);
+    const apost_quot = try decodeAllocWithEntityMap(alloc, "&apos;&quot;", true, null);
     defer alloc.free(apost_quot);
     try std.testing.expectEqualStrings("'\"", apost_quot);
-}
-
-test "validateStructuralEntities allows custom named entities but rejects malformed refs" {
-    try validateStructuralEntities("&safe;");
-    try std.testing.expectError(error.UnterminatedEntity, validateStructuralEntities("&amp"));
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateStructuralEntities("&#x110000;"));
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, validateStructuralEntities("&1bad;"));
 }
 
 test "decodeAllocWithEntityMap expands mapped named entities" {
@@ -286,5 +241,5 @@ test "decodeAllocWithEntityMap expands mapped named entities" {
 
 test "strict decode rejects unknown named entities without a DTD map" {
     const alloc = std.testing.allocator;
-    try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAlloc(alloc, "&bogus;", true));
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAllocWithEntityMap(alloc, "&bogus;", true, null));
 }

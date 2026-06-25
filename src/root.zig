@@ -7,7 +7,6 @@ const tables_mod = @import("tables.zig");
 const entities_mod = @import("entities.zig");
 const streaming_mod = @import("streaming.zig");
 
-pub const ParseInt = common.IndexInt;
 pub const MaxParseLen = common.MaxLen;
 pub const NodeType = document_mod.NodeType;
 pub const ParseMode = document_mod.ParseMode;
@@ -15,10 +14,6 @@ pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const ParseDiagnostic = document_mod.ParseDiagnostic;
 pub const InvalidIndex = document_mod.InvalidIndex;
-pub const StreamingParser = Types(.{}).StreamingParser;
-pub const StreamingEvent = Types(.{}).StreamingEvent;
-pub const StreamingAttribute = Types(.{}).StreamingAttribute;
-pub const StreamingAttributeIterator = Types(.{}).StreamingAttributeIterator;
 
 pub fn Types(comptime options: ParseOptions) type {
     const doc_types = document_mod.Types(options);
@@ -96,7 +91,7 @@ test "Types(options) matches document module type factory" {
     try std.testing.expectEqual(doc_types.Node, root_types.Node);
     try std.testing.expectEqual(doc_types.Attribute, root_types.Attribute);
     try std.testing.expectEqual(doc_types.Span, root_types.Span);
-    try std.testing.expectEqual(ParseInt, root_types.IndexInt);
+    try std.testing.expectEqual(common.IndexInt, root_types.IndexInt);
     try std.testing.expectEqual(stream_types.Node, root_types.StreamingEvent);
     try std.testing.expectEqual(stream_types.Attribute, root_types.StreamingAttribute);
     try std.testing.expectEqual(stream_types.Parser, root_types.StreamingParser);
@@ -104,10 +99,7 @@ test "Types(options) matches document module type factory" {
 
 test "ParseOptions exposes htmlparser-style type helpers and parse" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
-    try std.testing.expectEqual([]const u8, opts.Input());
     try std.testing.expectEqual(Types(opts).Document, opts.Document());
-    try std.testing.expectEqual(Types(opts).Node, opts.Node());
-    try std.testing.expectEqual(Types(opts).Attribute, opts.Attribute());
 
     var doc = try opts.parse(std.testing.allocator, "<root id='r'><child>text</child></root>");
     defer doc.deinit();
@@ -634,7 +626,7 @@ test "attribute-heavy element parses and preserves lookups" {
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("v0", root.getAttributeValueRaw("a0").?);
     try std.testing.expectEqualStrings("v63", root.getAttributeValueRaw("a63").?);
-    try std.testing.expectEqual(@as(ParseInt, 64), root.attr_len);
+    try std.testing.expectEqual(@as(common.IndexInt, 64), root.attr_len);
 }
 
 test "firstAttribute returns the first parsed attribute" {
@@ -842,8 +834,8 @@ test "document can be reused across parses" {
     try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueRawSlice());
 }
 
-test "u16 parse rejects input larger than ParseInt range" {
-    if (ParseInt != u16) return error.SkipZigTest;
+test "u16 parse rejects input larger than index range" {
+    if (common.IndexInt != u16) return error.SkipZigTest;
 
     const alloc = std.testing.allocator;
     const opts: ParseOptions = .{};
@@ -895,7 +887,7 @@ test "streaming parser visits nodes in document order and exposes attributes" {
     const Ctx = struct {
         names: std.ArrayList([]const u8),
         kinds: std.ArrayList(NodeType),
-        depths: std.ArrayList(ParseInt),
+        depths: std.ArrayList(common.IndexInt),
         saw_root_attr: bool = false,
         saw_child_attr: bool = false,
 
@@ -933,7 +925,7 @@ test "streaming parser visits nodes in document order and exposes attributes" {
     try std.testing.expectEqualStrings("a", ctx.names.items[1]);
     try std.testing.expectEqualStrings("", ctx.names.items[2]);
     try std.testing.expectEqualStrings("b", ctx.names.items[3]);
-    try std.testing.expectEqualSlices(ParseInt, &.{ 0, 1, 2, 1 }, ctx.depths.items);
+    try std.testing.expectEqualSlices(common.IndexInt, &.{ 0, 1, 2, 1 }, ctx.depths.items);
     try std.testing.expect(ctx.saw_root_attr);
     try std.testing.expect(ctx.saw_child_attr);
 }

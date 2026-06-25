@@ -21,67 +21,31 @@ pub const ParseOptions = struct {
     drop_whitespace_text_nodes: bool = true,
     include_misc_nodes: bool = true,
 
-    /// Returns the accepted parse input slice type for this option set.
-    /// zxml never mutates caller bytes, so this is always `[]const u8`.
-    pub fn Input(_: @This()) type {
-        return []const u8;
-    }
-
     /// Parses `input` and returns an owned document for this option set.
-    pub fn parse(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) ParseError!options.Document() {
+    pub fn parse(comptime options: @This(), allocator: std.mem.Allocator, input: []const u8) ParseError!options.Document() {
         var doc = options.Document().init(allocator);
         errdefer doc.deinit();
         try doc.parse(input, options);
         return doc;
     }
 
-    /// Parses `input`; returns null on success or a lazy diagnostic on failure.
-    pub fn parseDiagnostic(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) !ParseDiagnosticResult(options.Document()) {
-        var doc = options.Document().init(allocator);
-        errdefer doc.deinit();
-        if (doc.parseDiagnostic(input, options)) |diag| {
-            doc.deinit();
-            return .{ .diagnostic = diag };
-        }
-        return .{ .document = doc };
-    }
-
     /// Returns the document type for this option set.
     pub fn Document(comptime options: @This()) type {
         return Types(options).Document;
-    }
-
-    /// Returns the node wrapper type for this option set.
-    pub fn Node(comptime options: @This()) type {
-        return Types(options).Node;
-    }
-
-    /// Returns the attribute wrapper type for this option set.
-    pub fn Attribute(comptime options: @This()) type {
-        return Types(options).Attribute;
-    }
-
-    /// Returns raw node storage for this option set.
-    pub fn RawNode(comptime options: @This()) type {
-        return Types(options).RawNode;
-    }
-
-    /// Returns raw attribute storage for this option set.
-    pub fn RawAttribute(comptime options: @This()) type {
-        return Types(options).RawAttribute;
     }
 };
 
 pub fn Types(comptime options: ParseOptions) type {
     _ = options;
+    const Self = @This();
     return struct {
-        pub const IndexInt = @import("document.zig").IndexInt;
-        pub const Span = @import("document.zig").Span;
-        pub const RawAttribute = @import("document.zig").RawAttribute;
-        pub const Attribute = @import("document.zig").Attribute;
-        pub const RawNode = @import("document.zig").RawNode;
-        pub const Node = @import("document.zig").Node;
-        pub const Document = @import("document.zig").Document;
+        pub const IndexInt = Self.IndexInt;
+        pub const Span = Self.Span;
+        pub const RawAttribute = Self.RawAttribute;
+        pub const Attribute = Self.Attribute;
+        pub const RawNode = Self.RawNode;
+        pub const Node = Self.Node;
+        pub const Document = Self.Document;
     };
 }
 
@@ -135,13 +99,6 @@ pub const ParseDiagnostic = struct {
         return self.source[start..end];
     }
 };
-
-pub fn ParseDiagnosticResult(comptime DocumentType: type) type {
-    return union(enum) {
-        document: DocumentType,
-        diagnostic: ParseDiagnostic,
-    };
-}
 
 pub const ParseStackEntry = struct {
     idx: IndexInt,
@@ -380,16 +337,12 @@ pub const Node = struct {
         return out.toOwnedSlice(alloc);
     }
 
-    pub fn matchesSelector(self: @This(), selector: []const u8) bool {
-        return selectorMatches(self, selector);
-    }
-
     pub fn querySelector(self: @This(), selector: []const u8) ?Node {
         var idx = self.index + 1;
         const end = self.raw().subtree_end;
         while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodeAt(idx).?;
-            if (child.kind == .element and child.matchesSelector(selector)) return child;
+            if (child.kind == .element and selectorMatches(child, selector)) return child;
         }
         return null;
     }
@@ -402,7 +355,7 @@ pub const Node = struct {
         const end = self.raw().subtree_end;
         while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodeAt(idx).?;
-            if (child.kind == .element and child.matchesSelector(selector)) try out.append(alloc, child);
+            if (child.kind == .element and selectorMatches(child, selector)) try out.append(alloc, child);
         }
         return out.toOwnedSlice(alloc);
     }
@@ -478,14 +431,14 @@ pub const Document = struct {
 
     fn decodeValueAlloc(self: *const Document, alloc: std.mem.Allocator, raw: []const u8) ValueError![]u8 {
         if (!self.expand_dtd_entities) {
-            return entities.decodeAlloc(alloc, raw, self.parse_mode == .strict);
+            return entities.decodeAllocWithEntityMap(alloc, raw, self.parse_mode == .strict, null);
         }
         return entities.decodeAllocWithEntityMap(alloc, raw, self.parse_mode == .strict, &self.entity_map);
     }
 
     fn appendDecodedValue(self: *const Document, out: *std.ArrayList(u8), alloc: std.mem.Allocator, raw: []const u8) ValueError!void {
         if (!self.expand_dtd_entities) {
-            return entities.appendDecoded(out, alloc, raw, self.parse_mode == .strict);
+            return entities.appendDecodedWithEntityMap(out, alloc, raw, self.parse_mode == .strict, null);
         }
         return entities.appendDecodedWithEntityMap(out, alloc, raw, self.parse_mode == .strict, &self.entity_map);
     }
@@ -790,7 +743,7 @@ test "selector query helpers match tag id class and attributes" {
     const items = try r.querySelectorAll(std.testing.allocator, "item");
     defer std.testing.allocator.free(items);
     try std.testing.expectEqual(@as(usize, 2), items.len);
-    try std.testing.expect(items[1].matchesSelector("item.cold"));
+    try std.testing.expect(selectorMatches(items[1], "item.cold"));
 }
 
 test "parse diagnostics report offset location and context lazily" {
