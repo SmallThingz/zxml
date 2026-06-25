@@ -13,6 +13,7 @@ pub const NodeType = document_mod.NodeType;
 pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
+pub const ParseDiagnostic = document_mod.ParseDiagnostic;
 pub const InvalidIndex = document_mod.InvalidIndex;
 pub const StreamingParser = Types(.{}).StreamingParser;
 pub const StreamingEvent = Types(.{}).StreamingEvent;

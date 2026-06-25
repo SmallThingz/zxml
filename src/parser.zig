@@ -10,10 +10,20 @@ const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 
+threadlocal var last_error_offset: usize = 0;
+
+pub fn lastErrorOffset() usize {
+    return last_error_offset;
+}
+
 pub fn parseInto(noalias doc: anytype, noalias input: []const u8, comptime opts: ParseOptions) ParseError!void {
+    last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
-    try p.parse();
+    p.parse() catch |err| {
+        last_error_offset = @min(p.i, input.len);
+        return err;
+    };
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {

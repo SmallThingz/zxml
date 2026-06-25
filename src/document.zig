@@ -35,6 +35,17 @@ pub const ParseOptions = struct {
         return doc;
     }
 
+    /// Parses `input`; returns null on success or a lazy diagnostic on failure.
+    pub fn parseDiagnostic(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) !ParseDiagnosticResult(options.Document()) {
+        var doc = options.Document().init(allocator);
+        errdefer doc.deinit();
+        if (doc.parseDiagnostic(input, options)) |diag| {
+            doc.deinit();
+            return .{ .diagnostic = diag };
+        }
+        return .{ .document = doc };
+    }
+
     /// Returns the document type for this option set.
     pub fn Document(comptime options: @This()) type {
         return Types(options).Document;
@@ -90,6 +101,47 @@ pub const ParseError = error{
     UnterminatedEntity,
     EntityValueTooLarge,
 };
+
+pub const ParseDiagnostic = struct {
+    err: ParseError,
+    offset: usize,
+    source: []const u8,
+
+    pub const Location = struct {
+        line: usize,
+        column: usize,
+    };
+
+    pub fn location(self: @This()) Location {
+        var line: usize = 1;
+        var column: usize = 1;
+        var i: usize = 0;
+        const end = @min(self.offset, self.source.len);
+        while (i < end) : (i += 1) {
+            if (self.source[i] == '\n') {
+                line += 1;
+                column = 1;
+            } else {
+                column += 1;
+            }
+        }
+        return .{ .line = line, .column = column };
+    }
+
+    pub fn context(self: @This(), radius: usize) []const u8 {
+        const center = @min(self.offset, self.source.len);
+        const start = center - @min(center, radius);
+        const end = @min(self.source.len, center + radius);
+        return self.source[start..end];
+    }
+};
+
+pub fn ParseDiagnosticResult(comptime DocumentType: type) type {
+    return union(enum) {
+        document: DocumentType,
+        diagnostic: ParseDiagnostic,
+    };
+}
 
 pub const ParseStackEntry = struct {
     idx: IndexInt,
@@ -171,6 +223,18 @@ pub const Attribute = struct {
         return self.raw().value.slice(self.doc.source);
     }
 
+    pub fn namespacePrefix(self: @This()) ?[]const u8 {
+        const name = self.nameSlice();
+        const split = std.mem.indexOfScalar(u8, name, ':') orelse return null;
+        return name[0..split];
+    }
+
+    pub fn localName(self: @This()) []const u8 {
+        const name = self.nameSlice();
+        const split = std.mem.indexOfScalar(u8, name, ':') orelse return name;
+        return name[split + 1 ..];
+    }
+
     pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
         return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
     }
@@ -201,6 +265,36 @@ pub const Node = struct {
 
     pub fn nameSlice(self: @This()) []const u8 {
         return self.raw().name.slice(self.doc.source);
+    }
+
+    pub fn namespacePrefix(self: @This()) ?[]const u8 {
+        const name = self.nameSlice();
+        const split = std.mem.indexOfScalar(u8, name, ':') orelse return null;
+        return name[0..split];
+    }
+
+    pub fn localName(self: @This()) []const u8 {
+        const name = self.nameSlice();
+        const split = std.mem.indexOfScalar(u8, name, ':') orelse return name;
+        return name[split + 1 ..];
+    }
+
+    pub fn namespaceUri(self: @This()) ?[]const u8 {
+        const prefix = self.namespacePrefix();
+        var cur: ?Node = self;
+        while (cur) |node| : (cur = node.parentNode()) {
+            const node_raw = node.raw();
+            var i = node_raw.attr_start;
+            const end = node_raw.attr_start + node_raw.attr_len;
+            while (i < end) : (i += 1) {
+                const attr = node.doc.attrs.items[i];
+                const name = attr.name.slice(node.doc.source);
+                if (prefix) |p| {
+                    if (std.mem.startsWith(u8, name, "xmlns:") and std.mem.eql(u8, name["xmlns:".len..], p)) return attr.value.slice(node.doc.source);
+                } else if (std.mem.eql(u8, name, "xmlns")) return attr.value.slice(node.doc.source);
+            }
+        }
+        return null;
     }
 
     pub fn valueRawSlice(self: @This()) []const u8 {
@@ -285,6 +379,33 @@ pub const Node = struct {
         }
         return out.toOwnedSlice(alloc);
     }
+
+    pub fn matchesSelector(self: @This(), selector: []const u8) bool {
+        return selectorMatches(self, selector);
+    }
+
+    pub fn querySelector(self: @This(), selector: []const u8) ?Node {
+        var idx = self.index + 1;
+        const end = self.raw().subtree_end;
+        while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
+            const child = self.doc.nodeAt(idx).?;
+            if (child.kind == .element and child.matchesSelector(selector)) return child;
+        }
+        return null;
+    }
+
+    pub fn querySelectorAll(self: @This(), alloc: std.mem.Allocator, selector: []const u8) std.mem.Allocator.Error![]Node {
+        var out = std.ArrayList(Node).empty;
+        errdefer out.deinit(alloc);
+
+        var idx = self.index + 1;
+        const end = self.raw().subtree_end;
+        while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
+            const child = self.doc.nodeAt(idx).?;
+            if (child.kind == .element and child.matchesSelector(selector)) try out.append(alloc, child);
+        }
+        return out.toOwnedSlice(alloc);
+    }
 };
 
 pub const Document = struct {
@@ -335,6 +456,15 @@ pub const Document = struct {
         self.expand_dtd_entities = opts.expand_dtd_entities;
         self.max_entity_value_len = opts.max_entity_value_len;
         try parser.parseInto(self, input, opts);
+    }
+
+    pub fn parseDiagnostic(noalias self: *Document, noalias input: []const u8, comptime opts: ParseOptions) ?ParseDiagnostic {
+        self.parse(input, opts) catch |err| return .{
+            .err = err,
+            .offset = parser.lastErrorOffset(),
+            .source = input,
+        };
+        return null;
     }
 
     fn clearEntityMap(self: *Document) void {
@@ -481,6 +611,88 @@ fn findMarkupDeclEnd(input: []const u8, start: usize) ?usize {
     return null;
 }
 
+fn selectorMatches(node: Node, selector: []const u8) bool {
+    if (selector.len == 0 or node.kind != .element) return false;
+
+    var rest = selector;
+    if (rest[0] != '*' and rest[0] != '#' and rest[0] != '.' and rest[0] != '[') {
+        var end: usize = 0;
+        while (end < rest.len and rest[end] != '#' and rest[end] != '.' and rest[end] != '[') : (end += 1) {}
+        if (!std.mem.eql(u8, node.nameSlice(), rest[0..end])) return false;
+        rest = rest[end..];
+    } else if (rest[0] == '*') {
+        rest = rest[1..];
+    }
+
+    while (rest.len != 0) {
+        switch (rest[0]) {
+            '#' => {
+                const part = selectorPart(rest[1..]);
+                const id = node.getAttributeValueRaw("id") orelse return false;
+                if (!std.mem.eql(u8, id, part.value)) return false;
+                rest = part.rest;
+            },
+            '.' => {
+                const part = selectorPart(rest[1..]);
+                const class = node.getAttributeValueRaw("class") orelse return false;
+                if (!hasClassToken(class, part.value)) return false;
+                rest = part.rest;
+            },
+            '[' => {
+                const close = std.mem.indexOfScalar(u8, rest, ']') orelse return false;
+                const expr = rest[1..close];
+                if (std.mem.indexOfScalar(u8, expr, '=')) |eq| {
+                    const name = trimAscii(expr[0..eq]);
+                    const want = trimQuotes(trimAscii(expr[eq + 1 ..]));
+                    const got = node.getAttributeValueRaw(name) orelse return false;
+                    if (!std.mem.eql(u8, got, want)) return false;
+                } else if (node.getAttributeValueRaw(trimAscii(expr)) == null) return false;
+                rest = rest[close + 1 ..];
+            },
+            else => return false,
+        }
+    }
+    return true;
+}
+
+const SelectorPart = struct {
+    value: []const u8,
+    rest: []const u8,
+};
+
+fn selectorPart(input: []const u8) SelectorPart {
+    var end: usize = 0;
+    while (end < input.len and input[end] != '#' and input[end] != '.' and input[end] != '[') : (end += 1) {}
+    return .{ .value = input[0..end], .rest = input[end..] };
+}
+
+fn hasClassToken(class: []const u8, token: []const u8) bool {
+    if (token.len == 0) return false;
+    var i: usize = 0;
+    while (i < class.len) {
+        while (i < class.len and tables.isWhitespace(class[i])) : (i += 1) {}
+        const start = i;
+        while (i < class.len and !tables.isWhitespace(class[i])) : (i += 1) {}
+        if (std.mem.eql(u8, class[start..i], token)) return true;
+    }
+    return false;
+}
+
+fn trimAscii(input: []const u8) []const u8 {
+    var start: usize = 0;
+    var end = input.len;
+    while (start < end and tables.isWhitespace(input[start])) : (start += 1) {}
+    while (end > start and tables.isWhitespace(input[end - 1])) : (end -= 1) {}
+    return input[start..end];
+}
+
+fn trimQuotes(input: []const u8) []const u8 {
+    if (input.len >= 2 and ((input[0] == '\'' and input[input.len - 1] == '\'') or (input[0] == '"' and input[input.len - 1] == '"'))) {
+        return input[1 .. input.len - 1];
+    }
+    return input;
+}
+
 test "Types(options) exposes concrete DOM types" {
     const opts: ParseOptions = .{};
     const types = Types(opts);
@@ -544,6 +756,53 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     try std.testing.expectEqualStrings("", doc.source);
     try std.testing.expectEqual(@as(usize, 0), doc.nodes.items.len);
     try std.testing.expectEqual(@as(usize, 0), doc.attrs.items.len);
+}
+
+test "lazy namespace helpers split names and resolve inherited xmlns" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<r xmlns='urn:default' xmlns:x='urn:x'><x:item x:id='1'/></r>", .{ .mode = .strict });
+
+    const root_node = doc.nodeAt(1).?;
+    const item = root_node.firstChild().?;
+    const attr = item.firstAttribute().?;
+
+    try std.testing.expect(root_node.namespacePrefix() == null);
+    try std.testing.expectEqualStrings("r", root_node.localName());
+    try std.testing.expectEqualStrings("urn:default", root_node.namespaceUri().?);
+    try std.testing.expectEqualStrings("x", item.namespacePrefix().?);
+    try std.testing.expectEqualStrings("item", item.localName());
+    try std.testing.expectEqualStrings("urn:x", item.namespaceUri().?);
+    try std.testing.expectEqualStrings("x", attr.namespacePrefix().?);
+    try std.testing.expectEqualStrings("id", attr.localName());
+}
+
+test "selector query helpers match tag id class and attributes" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<r><item id='a' class='hot new' data-x='1'/><item class='cold'/></r>", .{ .mode = .strict });
+
+    const r = doc.nodeAt(1).?;
+    try std.testing.expect(r.querySelector("item.hot") != null);
+    try std.testing.expectEqualStrings("a", r.querySelector("#a").?.getAttributeValueRaw("id").?);
+    try std.testing.expect(r.querySelector("item[data-x=1]") != null);
+
+    const items = try r.querySelectorAll(std.testing.allocator, "item");
+    defer std.testing.allocator.free(items);
+    try std.testing.expectEqual(@as(usize, 2), items.len);
+    try std.testing.expect(items[1].matchesSelector("item.cold"));
+}
+
+test "parse diagnostics report offset location and context lazily" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    const diag = doc.parseDiagnostic("<r>\n  <1/>", .{ .mode = .strict }) orelse return error.TestUnexpectedResult;
+    const loc = diag.location();
+
+    try std.testing.expectEqual(ParseError.ExpectedElementName, diag.err);
+    try std.testing.expectEqual(@as(usize, 2), loc.line);
+    try std.testing.expectEqual(@as(usize, 4), loc.column);
+    try std.testing.expect(std.mem.indexOf(u8, diag.context(8), "<1") != null);
 }
 
 test "registerDoctypeEntities handles double-quoted values and replacements" {

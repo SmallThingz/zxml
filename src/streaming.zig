@@ -800,3 +800,69 @@ fn findDoctypeEnd(input: []const u8, start: usize) ?usize {
     }
     return null;
 }
+
+test "streaming parser self-test: order attributes and depths" {
+    const opts: ParseOptions = .{};
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        names: std.ArrayList([]const u8) = .empty,
+        depths: std.ArrayList(IndexInt) = .empty,
+        saw_attr: bool = false,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            self.names.append(std.testing.allocator, node.nameSlice()) catch unreachable;
+            self.depths.append(std.testing.allocator, node.depth) catch unreachable;
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "a")) {
+                self.saw_attr = std.mem.eql(u8, node.getAttributeValueRaw("x").?, "y");
+            }
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    defer ctx.names.deinit(std.testing.allocator);
+    defer ctx.depths.deinit(std.testing.allocator);
+
+    try parser.parse("<r><a x='y'>t</a><b/></r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 4), ctx.names.items.len);
+    try std.testing.expectEqualStrings("r", ctx.names.items[0]);
+    try std.testing.expectEqualStrings("a", ctx.names.items[1]);
+    try std.testing.expectEqualStrings("", ctx.names.items[2]);
+    try std.testing.expectEqualStrings("b", ctx.names.items[3]);
+    try std.testing.expectEqualSlices(IndexInt, &.{ 0, 1, 2, 1 }, ctx.depths.items);
+    try std.testing.expect(ctx.saw_attr);
+}
+
+test "streaming parser self-test: skip validation and pointer callback" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        saw_tail: bool = false,
+
+        fn onNode(self: *@This(), node: *const Event) bool {
+            if (node.kind == .element) self.elements += 1;
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip")) {
+                self.saw_tail = std.mem.eql(u8, node.followingTextRaw() catch unreachable, "tail");
+                return false;
+            }
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try parser.parse("<r><skip><x/></skip>tail<keep>ok</keep></r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 3), ctx.elements);
+    try std.testing.expect(ctx.saw_tail);
+
+    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<r><longername></r>", &ctx, Ctx.onNode));
+}
