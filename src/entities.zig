@@ -22,6 +22,7 @@ pub fn decodeAllocWithEntityMap(
     strict: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) (std.mem.Allocator.Error || DecodeError)![]u8 {
+    if (std.mem.indexOfScalar(u8, input, '&') == null) return alloc.dupe(u8, input);
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
     try appendDecodedWithEntityMap(&out, alloc, input, strict, entity_map);

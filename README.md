@@ -69,18 +69,16 @@ pub fn main() !void {
 - `zxml.ParseOptions`
 - `zxml.ParseMode`
 - `zxml.ParseError`
-- `zxml.ParseInt`
-- `zxml.MaxParseLen`
+- `zxml.IndexInt`
+- `zxml.MaxInputLen`
 - `options.parse(allocator, input)`
-- `options.Document()` / `options.Node()` / `options.Attribute()`
-- `zxml.Types(options).Document` / `.Node` / `.Attribute`
-- `zxml.StreamingParser` and `zxml.Types(options).StreamingParser`
+- `options.Document()`
+- `zxml.Types(options).Document` / `.Node` / `.Attribute` / `.StreamingParser`
 
 ```zig
 const options: zxml.ParseOptions = .{};
 const Document = options.Document();
-const Node = options.Node();
-const Attribute = options.Attribute();
+const StreamingParser = zxml.Types(options).StreamingParser;
 ```
 
 Index width is configurable at build time, following the same config-module pattern as `htmlparser`:
@@ -106,6 +104,23 @@ var doc = try options.parse(allocator, input);
 ```
 
 Parsing is always non-destructive and the original input is always `[]const u8`.
+
+Serialize without reparsing:
+
+```zig
+var out: std.Io.Writer.Allocating = .init(allocator);
+defer out.deinit();
+try doc.write(&out.writer);
+```
+
+Incremental streaming keeps parser state and resumes from saved offsets:
+
+```zig
+var stream = zxml.Types(options).StreamingParser.init(allocator);
+defer stream.deinit();
+_ = try stream.parseAvailable(buffer_so_far, &ctx, onNode);
+try stream.finish();
+```
 
 Use raw accessors when you want borrowed source slices:
 

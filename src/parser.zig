@@ -10,18 +10,12 @@ const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 
-threadlocal var last_error_offset: usize = 0;
-
-pub fn lastErrorOffset() usize {
-    return last_error_offset;
-}
-
-pub fn parseInto(noalias doc: anytype, noalias input: []const u8, comptime opts: ParseOptions) ParseError!void {
-    last_error_offset = 0;
+pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions) ParseError!void {
+    doc.last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     p.parse() catch |err| {
-        last_error_offset = @min(p.i, input.len);
+        doc.last_error_offset = @min(p.i, input.len);
         return err;
     };
 }
@@ -43,6 +37,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         fn parse(noalias self: *Self) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
             const root_len = self.doc.nodes.items.len;
+            if (!common.lenFits(root_len)) return error.InputTooLarge;
             if (root_len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, root_len + root_len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
@@ -201,6 +196,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             var value_end = self.i;
 
             parse_value: {
+                if (self.i < input_len and tables.isWhitespace(input[self.i])) self.skipWhitespace();
                 if (self.i + 1 < input_len and input[self.i] == '=') {
                     const quote = input[self.i + 1];
                     if (quote == '\'' or quote == '"') {
@@ -216,8 +212,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         break :parse_value;
                     }
                 }
-
-                self.skipWhitespace();
 
                 if (self.i < input_len and input[self.i] == '=') {
                     self.i += 1;
@@ -254,6 +248,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const len = self.doc.attrs.items.len;
+            if (!common.lenFits(len)) return error.InputTooLarge;
             if (len == self.doc.attrs.capacity) {
                 @branchHint(.unlikely);
                 self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
@@ -517,6 +512,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
+            if (!common.lenFits(len)) return error.InputTooLarge;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
@@ -538,6 +534,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start: usize, end: usize) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
+            if (!common.lenFits(len)) return error.InputTooLarge;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
@@ -559,6 +556,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn appendChildNodeTo(noalias self: *Self, parent_idx: IndexInt, kind: NodeType) ParseError!IndexInt {
             const len = self.doc.nodes.items.len;
+            if (!common.lenFits(len)) return error.InputTooLarge;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
                 self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;

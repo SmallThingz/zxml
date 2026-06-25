@@ -130,6 +130,7 @@ pub fn Types(comptime options: ParseOptions) type {
             allocator: std.mem.Allocator,
             stack: std.ArrayList(StackEntry) = .empty,
             skip_stack: std.ArrayList(StackEntry) = .empty,
+            offset: usize = 0,
 
             const Self = @This();
             const strict_mode = options.mode == .strict;
@@ -137,6 +138,12 @@ pub fn Types(comptime options: ParseOptions) type {
             const require_closed_elements_on_eof = options.require_closed_elements_on_eof;
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
             const include_misc_nodes = options.include_misc_nodes;
+
+            pub const State = struct {
+                offset: usize,
+                stack_len: usize,
+                skip_stack_len: usize,
+            };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
                 return .{ .allocator = allocator };
@@ -151,9 +158,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
                 self.stack.items.len = 0;
                 self.skip_stack.items.len = 0;
+                self.offset = 0;
                 try self.reserveForInput(input.len);
 
-                var i: usize = 0;
+                var i: usize = self.offset;
                 while (i < input.len) {
                     if (input[i] != '<') {
                         if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
@@ -197,7 +205,77 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 if (require_closed_elements_on_eof and self.stack.items.len != 0) return error.UnexpectedEndOfData;
-                if (validate_closing_tags and self.stack.items.len != 0) return error.UnexpectedEndOfData;
+                self.offset = i;
+            }
+
+            pub fn clear(self: *Self) void {
+                self.stack.items.len = 0;
+                self.skip_stack.items.len = 0;
+                self.offset = 0;
+            }
+
+            pub fn save(self: *const Self) State {
+                return .{ .offset = self.offset, .stack_len = self.stack.items.len, .skip_stack_len = self.skip_stack.items.len };
+            }
+
+            pub fn restore(self: *Self, state: State) void {
+                self.offset = state.offset;
+                self.stack.items.len = @min(state.stack_len, self.stack.items.len);
+                self.skip_stack.items.len = @min(state.skip_stack_len, self.skip_stack.items.len);
+            }
+
+            pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
+                if (!common.lenFits(input.len)) return error.InputTooLarge;
+                try self.reserveForInput(input.len);
+                if (self.offset > input.len) return error.UnexpectedEndOfData;
+
+                while (self.offset < input.len) {
+                    const checkpoint = self.save();
+                    const next = self.parseOne(input, self.offset, ctx, callback) catch |err| switch (err) {
+                        error.UnexpectedEndOfData => {
+                            self.restore(checkpoint);
+                            return false;
+                        },
+                        else => |e| return e,
+                    };
+                    self.offset = next;
+                }
+                return true;
+            }
+
+            pub fn finish(self: *Self) ParseError!void {
+                if (require_closed_elements_on_eof and self.stack.items.len != 0) return error.UnexpectedEndOfData;
+            }
+
+            fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype) ParseError!usize {
+                const i = start;
+                if (input[i] != '<') {
+                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
+                        const next = scanner.skipWhitespace(input, i);
+                        if (next >= input.len) return next;
+                        if (input[next] == '<') return next;
+                    }
+                    const run = scanner.scanTextRun(input, i);
+                    if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                        const node: Node = .{
+                            .source = input,
+                            .kind = .text,
+                            .depth = @intCast(self.stack.items.len),
+                            .value = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
+                            .token_start = @intCast(i),
+                            .token_end = @intCast(run.lt_index),
+                        };
+                        _ = callCallback(ctx, callback, &node);
+                    }
+                    return run.lt_index;
+                }
+                if (i + 1 >= input.len) return error.UnexpectedEndOfData;
+                return switch (input[i + 1]) {
+                    '/' => try self.parseClosingTag(input, i),
+                    '?' => try self.parsePiOrDeclaration(input, i, ctx, callback),
+                    '!' => try self.parseBangNode(input, i, ctx, callback),
+                    else => try self.parseOpeningTag(input, i, ctx, callback),
+                };
             }
 
             fn reserveForInput(self: *Self, input_len: usize) !void {
@@ -221,6 +299,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const attr_start = i;
                 var attr_end = i;
                 var self_closing = false;
+                var closed = false;
 
                 while (i < input.len) {
                     i = skipWs(input, i);
@@ -229,12 +308,14 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (c == '>') {
                         attr_end = i;
                         i += 1;
+                        closed = true;
                         break;
                     }
                     if (c == '/' and i + 1 < input.len and input[i + 1] == '>') {
                         attr_end = i;
                         i += 2;
                         self_closing = true;
+                        closed = true;
                         break;
                     }
                     if (!tables.isNameStart(c)) {
@@ -280,7 +361,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         i = raw_end;
                     }
                 }
-                if (i > input.len) return error.UnexpectedEndOfData;
+                if (!closed) return error.UnexpectedEndOfData;
 
                 const node: Node = .{
                     .source = input,
@@ -706,8 +787,16 @@ fn scanOpeningTagToken(input: []const u8, start: usize) ParseError!OpenToken {
         i = skipWs(input, i);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const quote = input[i];
-        if (quote != '\'' and quote != '"') return error.ExpectedQuote;
-        i = (scanner.findByte(input, i + 1, quote) orelse return error.ExpectedQuote) + 1;
+        if (quote == '\'' or quote == '"') {
+            i = (scanner.findByte(input, i + 1, quote) orelse return error.ExpectedQuote) + 1;
+        } else {
+            const raw_end = scanner.findAttrUnquotedEnd(input, i);
+            if (raw_end > i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
+                i = raw_end - 1;
+            } else {
+                i = raw_end;
+            }
+        }
     }
     return error.UnexpectedEndOfData;
 }
@@ -849,4 +938,35 @@ test "streaming parser self-test: skip validation and pointer callback" {
     try std.testing.expect(ctx.saw_tail);
 
     try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<r><longername></r>", &ctx, Ctx.onNode));
+}
+
+test "streaming parser parseAvailable resumes from saved state" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        text: usize = 0,
+
+        fn onNode(self: *@This(), node: *const Event) bool {
+            if (node.kind == .element) self.elements += 1;
+            if (node.kind == .text) self.text += 1;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(!try parser.parseAvailable("<r><item", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    const state = parser.save();
+
+    parser.restore(state);
+    try std.testing.expect(try parser.parseAvailable("<r><item>ok</item></r>", &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqual(@as(usize, 2), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.text);
 }

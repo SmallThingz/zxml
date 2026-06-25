@@ -7,12 +7,13 @@ const tables_mod = @import("tables.zig");
 const entities_mod = @import("entities.zig");
 const streaming_mod = @import("streaming.zig");
 
-pub const MaxParseLen = common.MaxLen;
+pub const MaxInputLen = common.MaxLen;
 pub const NodeType = document_mod.NodeType;
 pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const ParseDiagnostic = document_mod.ParseDiagnostic;
+pub const SerializeOptions = document_mod.SerializeOptions;
 pub const InvalidIndex = document_mod.InvalidIndex;
 
 pub fn Types(comptime options: ParseOptions) type {
@@ -843,7 +844,7 @@ test "u16 parse rejects input larger than index range" {
     var doc = Document.init(alloc);
     defer doc.deinit();
 
-    const src = try alloc.alloc(u8, MaxParseLen + 1);
+    const src = try alloc.alloc(u8, MaxInputLen + 1);
     defer alloc.free(src);
     @memset(src, 'a');
     src[0] = '<';

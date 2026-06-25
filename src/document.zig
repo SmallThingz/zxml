@@ -100,6 +100,8 @@ pub const ParseDiagnostic = struct {
     }
 };
 
+pub const SerializeOptions = struct {};
+
 pub const ParseStackEntry = struct {
     idx: IndexInt,
     /// Low-cost fingerprint of the first up-to-8 bytes of the open tag name.
@@ -194,6 +196,13 @@ pub const Attribute = struct {
 
     pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
         return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
+    }
+
+    pub fn write(self: @This(), writer: anytype) !void {
+        try writer.writeAll(self.nameSlice());
+        try writer.writeAll("=\"");
+        try writer.writeAll(self.valueRawSlice());
+        try writer.writeAll("\"");
     }
 };
 
@@ -359,6 +368,10 @@ pub const Node = struct {
         }
         return out.toOwnedSlice(alloc);
     }
+
+    pub fn write(self: @This(), writer: anytype) !void {
+        try self.doc.writeNode(writer, self);
+    }
 };
 
 pub const Document = struct {
@@ -370,6 +383,7 @@ pub const Document = struct {
     /// Largest input size we have reserved arrays for so repeated parses can
     /// reuse capacity instead of re-growing on every call.
     reserved_input_hint_len: usize = 0,
+    last_error_offset: usize = 0,
 
     nodes: std.ArrayList(RawNode) = .empty,
     attrs: std.ArrayList(RawAttribute) = .empty,
@@ -397,12 +411,13 @@ pub const Document = struct {
         self.parse_mode = .turbo;
         self.expand_dtd_entities = false;
         self.max_entity_value_len = 4096;
+        self.last_error_offset = 0;
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
     }
 
-    pub fn parse(noalias self: *Document, noalias input: []const u8, comptime opts: ParseOptions) ParseError!void {
+    pub fn parse(noalias self: *Document, input: []const u8, comptime opts: ParseOptions) ParseError!void {
         self.clear();
         self.source = input;
         self.parse_mode = opts.mode;
@@ -411,10 +426,10 @@ pub const Document = struct {
         try parser.parseInto(self, input, opts);
     }
 
-    pub fn parseDiagnostic(noalias self: *Document, noalias input: []const u8, comptime opts: ParseOptions) ?ParseDiagnostic {
+    pub fn parseDiagnostic(noalias self: *Document, input: []const u8, comptime opts: ParseOptions) ?ParseDiagnostic {
         self.parse(input, opts) catch |err| return .{
             .err = err,
-            .offset = parser.lastErrorOffset(),
+            .offset = self.last_error_offset,
             .source = input,
         };
         return null;
@@ -530,6 +545,100 @@ pub const Document = struct {
             .attr_start = doc.nodes.items[idx].attr_start,
             .attr_len = doc.nodes.items[idx].attr_len,
         };
+    }
+
+    pub fn write(self: *const Document, writer: anytype) !void {
+        const root_node = self.root() orelse return;
+        try self.writeNode(writer, root_node);
+    }
+
+    fn writeNode(self: *const Document, writer: anytype, node: Node) !void {
+        if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.items.len) return;
+
+        const start = node.index;
+        const end = self.nodes.items[start].subtree_end;
+        var open_stack = std.ArrayList(IndexInt).empty;
+        defer open_stack.deinit(self.allocator);
+
+        var idx = start;
+        while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.items.len) : (idx += 1) {
+            while (open_stack.items.len != 0) {
+                const top = open_stack.items[open_stack.items.len - 1];
+                if (self.nodes.items[top].subtree_end >= idx) break;
+                open_stack.items.len -= 1;
+                try self.writeCloseElement(writer, top);
+            }
+
+            const raw = self.nodes.items[idx];
+            switch (raw.kind) {
+                .document => {},
+                .element => {
+                    try self.writeOpenElement(writer, idx);
+                    if (raw.subtree_end == idx) {
+                        try writer.writeAll("/>");
+                    } else {
+                        try writer.writeAll(">");
+                        try open_stack.append(self.allocator, idx);
+                    }
+                },
+                .text => try writer.writeAll(raw.value.slice(self.source)),
+                .comment => {
+                    try writer.writeAll("<!--");
+                    try writer.writeAll(raw.value.slice(self.source));
+                    try writer.writeAll("-->");
+                },
+                .cdata => {
+                    try writer.writeAll("<![CDATA[");
+                    try writer.writeAll(raw.value.slice(self.source));
+                    try writer.writeAll("]]>");
+                },
+                .pi, .declaration => {
+                    try writer.writeAll("<?");
+                    try writer.writeAll(raw.name.slice(self.source));
+                    if (!raw.value.isEmpty()) {
+                        try writer.writeAll(" ");
+                        try writer.writeAll(raw.value.slice(self.source));
+                    }
+                    try writer.writeAll("?>");
+                },
+                .doctype => {
+                    try writer.writeAll("<!DOCTYPE");
+                    if (!raw.value.isEmpty()) {
+                        const value = raw.value.slice(self.source);
+                        if (!tables.isWhitespace(value[0])) try writer.writeAll(" ");
+                        try writer.writeAll(value);
+                    }
+                    try writer.writeAll(">");
+                },
+            }
+        }
+
+        while (open_stack.items.len != 0) {
+            const top = open_stack.items[open_stack.items.len - 1];
+            open_stack.items.len -= 1;
+            try self.writeCloseElement(writer, top);
+        }
+    }
+
+    fn writeOpenElement(self: *const Document, writer: anytype, idx: IndexInt) !void {
+        const raw = self.nodes.items[idx];
+        try writer.writeAll("<");
+        try writer.writeAll(raw.name.slice(self.source));
+        var attr_i = raw.attr_start;
+        const attr_end = raw.attr_start + raw.attr_len;
+        while (attr_i < attr_end) : (attr_i += 1) {
+            try writer.writeAll(" ");
+            try writer.writeAll(self.attrs.items[attr_i].name.slice(self.source));
+            try writer.writeAll("=\"");
+            try writer.writeAll(self.attrs.items[attr_i].value.slice(self.source));
+            try writer.writeAll("\"");
+        }
+    }
+
+    fn writeCloseElement(self: *const Document, writer: anytype, idx: IndexInt) !void {
+        try writer.writeAll("</");
+        try writer.writeAll(self.nodes.items[idx].name.slice(self.source));
+        try writer.writeAll(">");
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {
@@ -767,4 +876,17 @@ test "registerDoctypeEntities handles double-quoted values and replacements" {
     try doc.registerDoctypeEntities("[<!ENTITY a \"one\"><!ENTITY a 'two'>]");
     try std.testing.expectEqual(@as(usize, 1), doc.entity_map.count());
     try std.testing.expectEqualStrings("two", doc.entity_map.get("a").?);
+}
+
+test "Document.write serializes parsed tree without reparsing" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    const xml = "<?xml version='1.0'?><!DOCTYPE r [<!ENTITY x 'y'>]><r a='1'><c>t&amp;x</c><!--ok--><![CDATA[raw<]]></r>";
+    try doc.parse(xml, .{ .mode = .strict });
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try doc.write(&out.writer);
+
+    try std.testing.expectEqualStrings("<?xml version='1.0'?><!DOCTYPE r [<!ENTITY x 'y'>]><r a=\"1\"><c>t&amp;x</c><!--ok--><![CDATA[raw<]]></r>", out.written());
 }
