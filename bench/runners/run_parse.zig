@@ -1,5 +1,5 @@
 const std = @import("std");
-const fastxml = @import("fastxml");
+const zxml = @import("zxml");
 
 pub const BenchMode = enum {
     strict,
@@ -9,16 +9,16 @@ pub const BenchMode = enum {
 };
 
 pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
-    const options: fastxml.ParseOptions = .{};
+    const options: zxml.ParseOptions = .{};
     // Bench against the same concrete DOM type across all runs so the parser is
     // specialized once and the loop measures parse work instead of type setup.
-    const Document = fastxml.Types(options).Document;
-    const StreamStrict = fastxml.Types(.{
+    const Document = zxml.Types(options).Document;
+    const StreamStrict = zxml.Types(.{
         .mode = .strict,
         .validate_closing_tags = true,
         .include_misc_nodes = true,
     });
-    const StreamTurbo = fastxml.Types(.{
+    const StreamTurbo = zxml.Types(.{
         .mode = .turbo,
         .include_misc_nodes = true,
     });

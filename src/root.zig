@@ -1110,7 +1110,7 @@ fn refAllDeclsRecursiveSeen(comptime T: type, comptime seen: []const type) void 
     }
 }
 
-test "refAllDeclsRecursive: every fastxml module compiles all declarations" {
+test "refAllDeclsRecursive: every zxml module compiles all declarations" {
     refAllDeclsRecursive(@This());
     refAllDeclsRecursive(document_mod);
     refAllDeclsRecursive(parser_mod);

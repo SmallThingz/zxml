@@ -1,7 +1,7 @@
 .{
-    .name = .fastxml,
+    .name = .zxml,
     .version = "0.1.0",
-    .fingerprint = 0x2238d6fb76fd461e,
+    .fingerprint = 0xeb739e953d363ad3,
     .minimum_zig_version = "0.16.0",
     .paths = .{
         ".gitignore",

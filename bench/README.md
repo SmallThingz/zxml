@@ -1,6 +1,6 @@
-# FastXML Benchmark Suite
+# ZXML Benchmark Suite
 
-This suite compares `fastxml` against:
+This suite compares `zxml` against:
 
 - `pugixml`
 - `rapidxml`
@@ -157,6 +157,6 @@ zig build tools -- run-benchmarks --profile quick
 Optional strict/turbo spot checks:
 
 ```bash
-zig-out/bin/fastxml-bench parse strict bench/fixtures/sitemaps.xml 400
-zig-out/bin/fastxml-bench parse turbo bench/fixtures/sitemaps.xml 2000
+zig-out/bin/zxml-bench parse strict bench/fixtures/sitemaps.xml 400
+zig-out/bin/zxml-bench parse turbo bench/fixtures/sitemaps.xml 2000
 ```

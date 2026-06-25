@@ -450,7 +450,7 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
             "--retry-delay",
             "1",
             "-A",
-            "fastxml-bench/1.0",
+            "zxml-bench/1.0",
             item.url,
             "-o",
             target,
@@ -1059,7 +1059,7 @@ fn writeMarkdown(
     errdefer out.deinit();
     const w = &out.writer;
 
-    try w.print("# FastXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
+    try w.print("# ZXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
 
     try w.writeAll("## Parse Throughput\n\n");
     try w.writeAll("| Fixture | Parser | Throughput (MB/s) | Median Time (ms) | Iterations |\n");
@@ -1126,7 +1126,7 @@ fn writeTerminalReport(
     errdefer out.deinit();
     const w = &out.writer;
 
-    try w.print("FastXML Benchmark Results\nGenerated (unix): {d}\nProfile: {s}\n\n", .{ common.nowUnix(io), profile_name });
+    try w.print("ZXML Benchmark Results\nGenerated (unix): {d}\nProfile: {s}\n\n", .{ common.nowUnix(io), profile_name });
 
     // Group by fixture first so terminal output stays easy to compare in-place.
     try w.writeAll("Parse Throughput (Per Fixture, sorted by speed)\n");
@@ -1629,10 +1629,10 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
 fn usage() void {
     std.debug.print(
         \\usage:
-        \\  fastxml-tools setup-parsers
-        \\  fastxml-tools setup-fixtures [--refresh]
-        \\  fastxml-tools run-benchmarks [--profile quick|stable] [--baseline path] [--write-baseline]
-        \\  fastxml-tools run-conformance [--suite path]...
+        \\  zxml-tools setup-parsers
+        \\  zxml-tools setup-fixtures [--refresh]
+        \\  zxml-tools run-benchmarks [--profile quick|stable] [--baseline path] [--write-baseline]
+        \\  zxml-tools run-conformance [--suite path]...
         \\
     , .{});
 }

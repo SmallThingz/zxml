@@ -1,4 +1,4 @@
-# fastxml
+# zxml
 
 Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an in-tree benchmark/conformance harness.
 
@@ -51,11 +51,11 @@ Minimal parse:
 
 ```zig
 const std = @import("std");
-const fastxml = @import("fastxml");
+const zxml = @import("zxml");
 
 pub fn main() !void {
     const src = "<root id='r'><child>text</child></root>";
-    const options: fastxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const options: zxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
     var doc = try options.parse(std.heap.page_allocator, src);
     defer doc.deinit();
 
@@ -66,18 +66,18 @@ pub fn main() !void {
 
 ## Library API
 
-- `fastxml.ParseOptions`
-- `fastxml.ParseMode`
-- `fastxml.ParseError`
-- `fastxml.ParseInt`
-- `fastxml.MaxParseLen`
+- `zxml.ParseOptions`
+- `zxml.ParseMode`
+- `zxml.ParseError`
+- `zxml.ParseInt`
+- `zxml.MaxParseLen`
 - `options.parse(allocator, input)`
 - `options.Document()` / `options.Node()` / `options.Attribute()`
-- `fastxml.Types(options).Document` / `.Node` / `.Attribute`
-- `fastxml.StreamingParser` and `fastxml.Types(options).StreamingParser`
+- `zxml.Types(options).Document` / `.Node` / `.Attribute`
+- `zxml.StreamingParser` and `zxml.Types(options).StreamingParser`
 
 ```zig
-const options: fastxml.ParseOptions = .{};
+const options: zxml.ParseOptions = .{};
 const Document = options.Document();
 const Node = options.Node();
 const Attribute = options.Attribute();
@@ -94,7 +94,7 @@ Supported widths are `u16`, `u32`, `u64`, and `usize`. The default is `u32`.
 `ParseOptions.parse` returns an initialized document; `Document.parse` remains available for document reuse:
 
 ```zig
-const options: fastxml.ParseOptions = .{
+const options: zxml.ParseOptions = .{
     .mode = .turbo,
     .validate_closing_tags = false,
     .expand_dtd_entities = false,
@@ -124,7 +124,7 @@ const inner = try root.innerText(std.heap.page_allocator);
 defer std.heap.page_allocator.free(inner);
 ```
 
-DTD/entity expansion is disabled by default. When `expand_dtd_entities = true`, fastxml parses internal `<!ENTITY ...>` declarations from the document doctype into a document-owned hash map and uses that map during decoded value access. `max_entity_value_len` caps each stored expanded entity value.
+DTD/entity expansion is disabled by default. When `expand_dtd_entities = true`, zxml parses internal `<!ENTITY ...>` declarations from the document doctype into a document-owned hash map and uses that map during decoded value access. `max_entity_value_len` caps each stored expanded entity value.
 
 `turbo` keeps DOM construction but drops expensive validation work by default. `strict` enforces stronger well-formedness checks and is the correctness-first profile.
 

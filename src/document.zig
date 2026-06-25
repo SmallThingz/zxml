@@ -22,7 +22,7 @@ pub const ParseOptions = struct {
     include_misc_nodes: bool = true,
 
     /// Returns the accepted parse input slice type for this option set.
-    /// fastxml never mutates caller bytes, so this is always `[]const u8`.
+    /// zxml never mutates caller bytes, so this is always `[]const u8`.
     pub fn Input(_: @This()) type {
         return []const u8;
     }

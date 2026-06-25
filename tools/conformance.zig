@@ -1,6 +1,6 @@
 const std = @import("std");
 const common = @import("common.zig");
-const fastxml = @import("fastxml");
+const zxml = @import("zxml");
 
 pub const ConformanceError = error{
     InvalidArguments,
@@ -273,15 +273,15 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     defer arena.deinit();
     const case_alloc = arena.allocator();
 
-    const options: fastxml.ParseOptions = .{};
-    const Document = fastxml.Types(options).Document;
+    const options: zxml.ParseOptions = .{};
+    const Document = zxml.Types(options).Document;
     var doc = Document.init(case_alloc);
     defer doc.deinit();
 
     const xml_buf = try case_alloc.dupe(u8, spec.xml);
     defer case_alloc.free(xml_buf);
 
-    var parse_err: ?fastxml.ParseError = null;
+    var parse_err: ?zxml.ParseError = null;
     const ok = blk: {
         parseWithProfile(&doc, xml_buf, profile) catch |err| {
             if (err == ConformanceError.InvalidProfile) {
@@ -566,7 +566,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     return .{ .case_name = case_name, .pass = true, .reason = null };
 }
 
-fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (fastxml.ParseError || ConformanceError)!void {
+fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.ParseError || ConformanceError)!void {
     if (std.mem.eql(u8, profile, "turbo_default")) {
         try doc.parse(input, .{});
         return;
@@ -675,7 +675,7 @@ fn profileWantsDecodedValues(profile: []const u8) bool {
         std.mem.eql(u8, profile, "turbo_dtd_entities");
 }
 
-fn mapDecodeError(err: anyerror) fastxml.ParseError {
+fn mapDecodeError(err: anyerror) zxml.ParseError {
     return switch (err) {
         error.InvalidNumericCharacterEntity => error.InvalidNumericCharacterEntity,
         error.UnterminatedEntity => error.UnterminatedEntity,
@@ -683,7 +683,7 @@ fn mapDecodeError(err: anyerror) fastxml.ParseError {
     };
 }
 
-fn countByKind(doc: anytype, kind: fastxml.NodeType) usize {
+fn countByKind(doc: anytype, kind: zxml.NodeType) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         if (node.kind == kind) n += 1;
@@ -718,7 +718,7 @@ fn firstElement(doc: anytype) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
     return null;
 }
 
-fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
+fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
     if (profileWantsDecodedValues(profile)) {
         return root.getAttributeValue(alloc, name) catch |err| switch (err) {
             error.OutOfMemory => error.OutOfMemory,
@@ -728,7 +728,7 @@ fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, profile: []const 
     return root.getAttributeValueRaw(name);
 }
 
-fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
+fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .text) continue;
         const text = doc.nodeAt(@intCast(i)).?;
@@ -743,7 +743,7 @@ fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.m
     return null;
 }
 
-fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || fastxml.ParseError)!?[]const u8 {
+fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .element) continue;
         if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
@@ -764,9 +764,9 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
     return null;
 }
 
-fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) fastxml.ParseError!void {
+fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
     for (doc.attrs.items, 0..) |_, i| {
-        const attr: fastxml.Types(.{}).Attribute = .{
+        const attr: zxml.Types(.{}).Attribute = .{
             .doc = doc,
             .index = @intCast(i),
         };

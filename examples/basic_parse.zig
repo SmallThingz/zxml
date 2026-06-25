@@ -1,9 +1,9 @@
 const std = @import("std");
-const fastxml = @import("fastxml");
+const zxml = @import("zxml");
 
 pub fn run() !void {
     const src = "<root id='r'><child>text</child></root>";
-    const options: fastxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const options: zxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
     var doc = try options.parse(std.testing.allocator, src);
     defer doc.deinit();
 

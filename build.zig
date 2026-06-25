@@ -15,7 +15,7 @@ pub fn build(b: *std.Build) void {
     const config_options = b.addOptions();
     config_options.addOption(IntLen, "intlen", intlen);
 
-    const mod = b.addModule("fastxml", .{
+    const mod = b.addModule("zxml", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
@@ -25,13 +25,13 @@ pub fn build(b: *std.Build) void {
     mod.addOptions("config", config_options);
 
     const bench_exe = b.addExecutable(.{
-        .name = "fastxml-bench",
+        .name = "zxml-bench",
         .root_module = b.createModule(.{
             .root_source_file = b.path("bench/bench.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "fastxml", .module = mod },
+                .{ .name = "zxml", .module = mod },
             },
         }),
     });
@@ -43,19 +43,19 @@ pub fn build(b: *std.Build) void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "fastxml", .module = mod },
+                .{ .name = "zxml", .module = mod },
             },
         }),
     });
 
     const tools_exe = b.addExecutable(.{
-        .name = "fastxml-tools",
+        .name = "zxml-tools",
         .root_module = b.createModule(.{
             .root_source_file = b.path("tools/scripts.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "fastxml", .module = mod },
+                .{ .name = "zxml", .module = mod },
             },
         }),
     });
@@ -64,8 +64,8 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(ours_runner_exe);
     b.installArtifact(tools_exe);
 
-    const bench_step = b.step("bench", "Run local fastxml benchmark");
-    const tools_step = b.step("tools", "Run fastxml-tools utility");
+    const bench_step = b.step("bench", "Run local zxml benchmark");
+    const tools_step = b.step("tools", "Run zxml-tools utility");
     const bench_compare_step = b.step("bench-compare", "Run parser comparison benchmarks");
     const conformance_step = b.step("conformance", "Run XML conformance suites");
 
