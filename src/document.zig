@@ -100,16 +100,7 @@ pub const ParseDiagnostic = struct {
     }
 };
 
-pub const SerializeOptions = struct {};
-
-pub const ParseStackEntry = struct {
-    idx: IndexInt,
-    /// Low-cost fingerprint of the first up-to-8 bytes of the open tag name.
-    tag_key: u64 = 0,
-    /// Full tag-name length so close-tag validation can reject mismatches
-    /// before touching the source bytes again.
-    tag_len: IndexInt = 0,
-};
+const ParseStackEntry = IndexInt;
 
 pub const NodeType = enum(u4) {
     document,
@@ -146,12 +137,9 @@ pub const RawAttribute = struct {
 
 pub const RawNode = struct {
     kind: NodeType,
-
     name: Span = .{},
-    value: Span = .{},
-
-    attr_start: IndexInt = 0,
-    attr_len: IndexInt = 0,
+    /// Text/value span for non-elements; half-open attribute-index span for elements.
+    data: Span = .{},
 
     parent: IndexInt = InvalidIndex,
     /// Index of the last direct child, which makes append and reverse-sibling
@@ -162,6 +150,14 @@ pub const RawNode = struct {
     prev_sibling: IndexInt = InvalidIndex,
     /// Inclusive end index of this node's flattened subtree in `nodes.items`.
     subtree_end: IndexInt = 0,
+
+    pub inline fn valueSpan(self: @This()) Span {
+        return self.data;
+    }
+
+    pub inline fn attributeSpan(self: @This()) Span {
+        return self.data;
+    }
 };
 
 const ValueError = std.mem.Allocator.Error || entities.DecodeError;
@@ -210,8 +206,6 @@ pub const Node = struct {
     doc: *Document,
     index: IndexInt,
     kind: NodeType,
-    attr_start: IndexInt = 0,
-    attr_len: IndexInt = 0,
 
     inline fn raw(self: @This()) *const RawNode {
         return &self.doc.nodes.items[self.index];
@@ -219,8 +213,9 @@ pub const Node = struct {
 
     inline fn findAttributeIndex(self: @This(), name: []const u8) ?IndexInt {
         const node_raw = self.raw();
-        var i = node_raw.attr_start;
-        const end = node_raw.attr_start + node_raw.attr_len;
+        const range = node_raw.attributeSpan();
+        var i = range.start;
+        const end = range.end;
         while (i < end) : (i += 1) {
             if (std.mem.eql(u8, self.doc.attrs.items[i].name.slice(self.doc.source), name)) {
                 return i;
@@ -250,8 +245,9 @@ pub const Node = struct {
         var cur: ?Node = self;
         while (cur) |node| : (cur = node.parentNode()) {
             const node_raw = node.raw();
-            var i = node_raw.attr_start;
-            const end = node_raw.attr_start + node_raw.attr_len;
+            const range = node_raw.attributeSpan();
+            var i = range.start;
+            const end = range.end;
             while (i < end) : (i += 1) {
                 const attr = node.doc.attrs.items[i];
                 const name = attr.name.slice(node.doc.source);
@@ -264,7 +260,7 @@ pub const Node = struct {
     }
 
     pub fn valueRawSlice(self: @This()) []const u8 {
-        return self.raw().value.slice(self.doc.source);
+        return self.raw().valueSpan().slice(self.doc.source);
     }
 
     pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
@@ -308,8 +304,9 @@ pub const Node = struct {
 
     pub fn firstAttribute(self: @This()) ?Attribute {
         const node_raw = self.raw();
-        if (node_raw.attr_len == 0) return null;
-        return .{ .doc = self.doc, .index = node_raw.attr_start };
+        const range = node_raw.attributeSpan();
+        if (range.start == range.end) return null;
+        return .{ .doc = self.doc, .index = range.start };
     }
 
     /// Returns a borrowed raw text slice when the subtree's text content is
@@ -324,7 +321,7 @@ pub const Node = struct {
             const child = self.doc.nodes.items[idx];
             if (child.kind != .text) continue;
             if (first != null) return null;
-            first = child.value.slice(self.doc.source);
+            first = child.valueSpan().slice(self.doc.source);
         }
         return first orelse "";
     }
@@ -341,7 +338,7 @@ pub const Node = struct {
         while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodes.items[idx];
             if (child.kind != .text) continue;
-            try self.doc.appendDecodedValue(&out, alloc, child.value.slice(self.doc.source));
+            try self.doc.appendDecodedValue(&out, alloc, child.valueSpan().slice(self.doc.source));
         }
         return out.toOwnedSlice(alloc);
     }
@@ -405,20 +402,24 @@ pub const Document = struct {
         self.parse_stack.deinit(self.allocator);
     }
 
-    pub fn clear(self: *Document) void {
+    inline fn resetParsedData(self: *Document) void {
         self.clearEntityMap();
-        self.source = "";
-        self.parse_mode = .turbo;
-        self.expand_dtd_entities = false;
-        self.max_entity_value_len = 4096;
-        self.last_error_offset = 0;
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
     }
 
+    pub fn clear(self: *Document) void {
+        self.resetParsedData();
+        self.last_error_offset = 0;
+        self.source = "";
+        self.parse_mode = .turbo;
+        self.expand_dtd_entities = false;
+        self.max_entity_value_len = 4096;
+    }
+
     pub fn parse(noalias self: *Document, input: []const u8, comptime opts: ParseOptions) ParseError!void {
-        self.clear();
+        self.resetParsedData();
         self.source = input;
         self.parse_mode = opts.mode;
         self.expand_dtd_entities = opts.expand_dtd_entities;
@@ -435,7 +436,8 @@ pub const Document = struct {
         return null;
     }
 
-    fn clearEntityMap(self: *Document) void {
+    inline fn clearEntityMap(self: *Document) void {
+        if (self.entity_map.count() == 0) return;
         var it = self.entity_map.iterator();
         while (it.next()) |entry| {
             self.allocator.free(entry.key_ptr.*);
@@ -542,8 +544,6 @@ pub const Document = struct {
             .doc = doc,
             .index = idx,
             .kind = doc.nodes.items[idx].kind,
-            .attr_start = doc.nodes.items[idx].attr_start,
-            .attr_len = doc.nodes.items[idx].attr_len,
         };
     }
 
@@ -581,30 +581,30 @@ pub const Document = struct {
                         try open_stack.append(self.allocator, idx);
                     }
                 },
-                .text => try writer.writeAll(raw.value.slice(self.source)),
+                .text => try writer.writeAll(raw.valueSpan().slice(self.source)),
                 .comment => {
                     try writer.writeAll("<!--");
-                    try writer.writeAll(raw.value.slice(self.source));
+                    try writer.writeAll(raw.valueSpan().slice(self.source));
                     try writer.writeAll("-->");
                 },
                 .cdata => {
                     try writer.writeAll("<![CDATA[");
-                    try writer.writeAll(raw.value.slice(self.source));
+                    try writer.writeAll(raw.valueSpan().slice(self.source));
                     try writer.writeAll("]]>");
                 },
                 .pi, .declaration => {
                     try writer.writeAll("<?");
                     try writer.writeAll(raw.name.slice(self.source));
-                    if (!raw.value.isEmpty()) {
+                    if (!raw.valueSpan().isEmpty()) {
                         try writer.writeAll(" ");
-                        try writer.writeAll(raw.value.slice(self.source));
+                        try writer.writeAll(raw.valueSpan().slice(self.source));
                     }
                     try writer.writeAll("?>");
                 },
                 .doctype => {
                     try writer.writeAll("<!DOCTYPE");
-                    if (!raw.value.isEmpty()) {
-                        const value = raw.value.slice(self.source);
+                    if (!raw.valueSpan().isEmpty()) {
+                        const value = raw.valueSpan().slice(self.source);
                         if (!tables.isWhitespace(value[0])) try writer.writeAll(" ");
                         try writer.writeAll(value);
                     }
@@ -624,8 +624,9 @@ pub const Document = struct {
         const raw = self.nodes.items[idx];
         try writer.writeAll("<");
         try writer.writeAll(raw.name.slice(self.source));
-        var attr_i = raw.attr_start;
-        const attr_end = raw.attr_start + raw.attr_len;
+        const range = raw.attributeSpan();
+        var attr_i = range.start;
+        const attr_end = range.end;
         while (attr_i < attr_end) : (attr_i += 1) {
             try writer.writeAll(" ");
             try writer.writeAll(self.attrs.items[attr_i].name.slice(self.source));

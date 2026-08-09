@@ -782,8 +782,9 @@ fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseErro
 
 fn hasUniqueAttributes(root: anytype) bool {
     const attrs = root.doc.attrs.items;
-    const start = root.attr_start;
-    const end = root.attr_start + root.attr_len;
+    const range = root.doc.nodes.items[root.index].attributeSpan();
+    const start = range.start;
+    const end = range.end;
 
     var i = start;
     while (i < end) : (i += 1) {

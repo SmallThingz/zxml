@@ -13,7 +13,6 @@ pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const ParseDiagnostic = document_mod.ParseDiagnostic;
-pub const SerializeOptions = document_mod.SerializeOptions;
 pub const InvalidIndex = document_mod.InvalidIndex;
 
 pub fn Types(comptime options: ParseOptions) type {
@@ -627,7 +626,7 @@ test "attribute-heavy element parses and preserves lookups" {
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("v0", root.getAttributeValueRaw("a0").?);
     try std.testing.expectEqualStrings("v63", root.getAttributeValueRaw("a63").?);
-    try std.testing.expectEqual(@as(common.IndexInt, 64), root.attr_len);
+    try std.testing.expectEqual(@as(common.IndexInt, 64), doc.nodes.items[root.index].attributeSpan().len());
 }
 
 test "firstAttribute returns the first parsed attribute" {

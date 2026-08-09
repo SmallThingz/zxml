@@ -76,11 +76,9 @@ pub fn Types(comptime options: ParseOptions) type {
             kind: NodeType,
             depth: IndexInt,
             name: Span = .{},
-            value: Span = .{},
-            attr_source: Span = .{},
-            token_start: IndexInt = 0,
+            /// Value span for non-elements; raw attribute-source span for elements.
+            data: Span = .{},
             token_end: IndexInt = 0,
-            content_start: IndexInt = 0,
             self_closing: bool = false,
 
             pub fn nameSlice(self: @This()) []const u8 {
@@ -88,12 +86,12 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             pub fn valueRawSlice(self: @This()) []const u8 {
-                return self.value.slice(self.source);
+                return self.data.slice(self.source);
             }
 
             pub fn attributes(self: @This()) AttributeIterator {
                 return .{
-                    .input = self.attr_source.slice(self.source),
+                    .input = self.data.slice(self.source),
                     .i = 0,
                 };
             }
@@ -110,7 +108,7 @@ pub fn Types(comptime options: ParseOptions) type {
             /// For elements that start with another tag, this is empty.
             pub fn leadingTextRaw(self: @This()) []const u8 {
                 if (self.kind != .element or self.self_closing) return "";
-                const start: usize = self.content_start;
+                const start: usize = self.token_end;
                 if (start >= self.source.len or self.source[start] == '<') return "";
                 const lt = scanner.findByte(self.source, start, '<') orelse self.source.len;
                 return self.source[start..lt];
@@ -119,19 +117,25 @@ pub fn Types(comptime options: ParseOptions) type {
             /// Computes the raw text directly following this node's subtree.
             /// This scans ahead from the current node, so call it only when needed.
             pub fn followingTextRaw(self: @This()) ParseError![]const u8 {
-                const end = try subtreeEndOffset(self.source, self.kind, self.token_start, self.token_end, self.name, self.self_closing);
+                const end = try subtreeEndOffset(self.source, self.kind, self.token_end, self.self_closing);
                 if (end >= self.source.len or self.source[end] == '<') return "";
                 const lt = scanner.findByte(self.source, end, '<') orelse self.source.len;
                 return self.source[end..lt];
             }
         };
 
+        const StackEntry = struct {
+            name: Span,
+            key: u64,
+        };
+        const Stack = if (options.validate_closing_tags) std.ArrayList(StackEntry) else usize;
+        const Allocator = if (options.validate_closing_tags) std.mem.Allocator else void;
+
         pub const Parser = struct {
-            allocator: std.mem.Allocator,
-            stack: std.ArrayList(StackEntry) = .empty,
-            skip_stack: std.ArrayList(StackEntry) = .empty,
+            allocator: Allocator,
+            stack: Stack = if (options.validate_closing_tags) .empty else 0,
+            skip_stack: Stack = if (options.validate_closing_tags) .empty else 0,
             offset: usize = 0,
-            skipping: bool = false,
             needs_more: bool = false,
 
             const Self = @This();
@@ -145,25 +149,24 @@ pub fn Types(comptime options: ParseOptions) type {
                 offset: usize,
                 stack_len: usize,
                 skip_stack_len: usize,
-                skipping: bool,
                 needs_more: bool,
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
-                return .{ .allocator = allocator };
+                return .{ .allocator = if (comptime validate_closing_tags) allocator else {} };
             }
 
             pub fn deinit(self: *Self) void {
-                self.stack.deinit(self.allocator);
-                self.skip_stack.deinit(self.allocator);
+                if (comptime validate_closing_tags) {
+                    self.stack.deinit(self.allocator);
+                    self.skip_stack.deinit(self.allocator);
+                }
             }
 
             pub fn parse(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!void {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
-                self.stack.items.len = 0;
-                self.skip_stack.items.len = 0;
+                self.clearStacks();
                 self.offset = 0;
-                self.skipping = false;
                 self.needs_more = false;
                 try self.reserveForInput(input.len);
 
@@ -186,9 +189,8 @@ pub fn Types(comptime options: ParseOptions) type {
                             const node: Node = .{
                                 .source = input,
                                 .kind = .text,
-                                .depth = @intCast(self.stack.items.len),
-                                .value = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
-                                .token_start = @intCast(i),
+                                .depth = @intCast(self.stackLen()),
+                                .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
                                 .token_end = @intCast(run.lt_index),
                             };
                             _ = callCallback(ctx, callback, &node);
@@ -210,33 +212,29 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
 
-                if (require_closed_elements_on_eof and self.stack.items.len != 0) return error.UnexpectedEndOfData;
+                if (require_closed_elements_on_eof and self.stackLen() != 0) return error.UnexpectedEndOfData;
                 self.offset = i;
             }
 
             pub fn clear(self: *Self) void {
-                self.stack.items.len = 0;
-                self.skip_stack.items.len = 0;
+                self.clearStacks();
                 self.offset = 0;
-                self.skipping = false;
                 self.needs_more = false;
             }
 
             pub fn save(self: *const Self) State {
                 return .{
                     .offset = self.offset,
-                    .stack_len = self.stack.items.len,
-                    .skip_stack_len = self.skip_stack.items.len,
-                    .skipping = self.skipping,
+                    .stack_len = self.stackLen(),
+                    .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
                 };
             }
 
             pub fn restore(self: *Self, state: State) void {
                 self.offset = state.offset;
-                self.stack.items.len = @min(state.stack_len, self.stack.items.len);
-                self.skip_stack.items.len = @min(state.skip_stack_len, self.skip_stack.items.len);
-                self.skipping = state.skipping;
+                self.restoreStackLen(state.stack_len);
+                self.restoreSkipStackLen(state.skip_stack_len);
                 self.needs_more = state.needs_more;
             }
 
@@ -247,8 +245,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
 
                 while (self.offset < input.len) {
-                    if (self.skipping) {
-                        if (!try self.skipAvailable(input)) {
+                    if (self.skipStackLen() != 0) {
+                        const progress = try self.walkSkipped(input, self.offset, true);
+                        self.offset = progress.next;
+                        if (progress.needs_more) {
                             self.needs_more = true;
                             return false;
                         }
@@ -284,7 +284,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
             pub fn finish(self: *Self) ParseError!void {
                 if (self.needs_more) return error.UnexpectedEndOfData;
-                if (require_closed_elements_on_eof and (self.stack.items.len != 0 or self.skipping)) return error.UnexpectedEndOfData;
+                if (require_closed_elements_on_eof and (self.stackLen() != 0 or self.skipStackLen() != 0)) return error.UnexpectedEndOfData;
             }
 
             inline fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
@@ -300,9 +300,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         const node: Node = .{
                             .source = input,
                             .kind = .text,
-                            .depth = @intCast(self.stack.items.len),
-                            .value = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
-                            .token_start = @intCast(i),
+                            .depth = @intCast(self.stackLen()),
+                            .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
                             .token_end = @intCast(run.lt_index),
                         };
                         _ = callCallback(ctx, callback, &node);
@@ -321,10 +320,11 @@ pub fn Types(comptime options: ParseOptions) type {
                 };
             }
 
-            fn reserveForInput(self: *Self, input_len: usize) !void {
-                const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
-                if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
-                if (est_stack > self.skip_stack.capacity) try self.skip_stack.ensureTotalCapacity(self.allocator, est_stack);
+            inline fn reserveForInput(self: *Self, input_len: usize) !void {
+                if (comptime validate_closing_tags) {
+                    const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
+                    if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
+                }
             }
 
             fn parseOpeningTag(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
@@ -340,8 +340,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const name_start = i;
-                const scan = scanner.scanNameAndKey(input, i);
-                i = scan.end;
+                const name_scan = scanner.scanNameAndKey(input, i);
+                const name_end = name_scan.end;
+                i = name_end;
+                const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
                 const attr_start = i;
                 var attr_end = i;
                 var self_closing = false;
@@ -424,12 +426,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 const node: Node = .{
                     .source = input,
                     .kind = .element,
-                    .depth = @intCast(self.stack.items.len),
-                    .name = .{ .start = @intCast(name_start), .end = @intCast(scan.end) },
-                    .attr_source = .{ .start = @intCast(attr_start), .end = @intCast(attr_end) },
-                    .token_start = @intCast(start),
+                    .depth = @intCast(self.stackLen()),
+                    .name = name,
+                    .data = .{ .start = @intCast(attr_start), .end = @intCast(attr_end) },
                     .token_end = @intCast(i),
-                    .content_start = @intCast(i),
                     .self_closing = self_closing,
                 };
 
@@ -437,29 +437,16 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (self_closing) return i;
                 if (!descend) {
                     if (incremental) {
-                        try self.beginSkip(scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
-                        self.skipping = true;
+                        try self.beginSkip(name, name_scan.key);
                         return i;
                     }
-                    return try self.skipSubtree(input, i, scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
+                    return try self.skipSubtree(input, i, name, name_scan.key);
                 }
                 if (!incremental) {
-                    if (try self.tryFinishSimpleTextElement(input, i, name_start, scan, ctx, callback)) |next| return next;
+                    if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
                 }
 
-                if (comptime validate_closing_tags) {
-                    try self.pushStack(.{
-                        .name_start = @intCast(name_start),
-                        .key = scan.key,
-                        .len = @intCast(scan.end - name_start),
-                    });
-                } else {
-                    try self.pushStack(.{
-                        .name_start = 0,
-                        .key = 0,
-                        .len = 0,
-                    });
-                }
+                try self.pushStack(name, name_scan.key);
                 return i;
             }
 
@@ -469,7 +456,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (self.stack.items.len != 0) self.stack.items.len -= 1;
+                    if (self.stackLen() != 0) self.popStack();
                     return gt + 1;
                 }
 
@@ -488,8 +475,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     return if (gt < input.len) gt + 1 else gt;
                 }
                 const name_start = i;
-                const scan = scanner.scanNameAndKey(input, i);
-                i = scan.end;
+                const name_scan = scanner.scanNameAndKey(input, i);
+                const name_end = name_scan.end;
+                i = name_end;
                 if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
                 if (i >= input.len) {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
@@ -498,21 +486,18 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (input[i] != '>') return error.InvalidClosingTagName;
                 i += 1;
 
-                if (self.stack.items.len == 0) {
+                if (self.stackLen() == 0) {
                     if (validate_closing_tags) return error.InvalidClosingTagName;
                     return i;
                 }
 
                 if (validate_closing_tags) {
-                    const top = self.stack.items[self.stack.items.len - 1];
-                    const close_len = scan.end - name_start;
-                    if (@as(usize, top.len) != close_len or top.key != scan.key) return error.InvalidClosingTagName;
-                    const open_start: usize = @intCast(top.name_start);
-                    if (close_len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close_len], input[name_start + 8 .. scan.end])) {
-                        return error.InvalidClosingTagName;
-                    }
+                    const top = self.topStack();
+                    const close_len = name_end - name_start;
+                    if (top.name.len() != close_len or top.key != name_scan.key) return error.InvalidClosingTagName;
+                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[name_start + 8 .. name_end])) return error.InvalidClosingTagName;
                 }
-                self.stack.items.len -= 1;
+                self.popStack();
                 return i;
             }
 
@@ -549,10 +534,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     const node: Node = .{
                         .source = input,
                         .kind = if (decl) .declaration else .pi,
-                        .depth = @intCast(self.stack.items.len),
+                        .depth = @intCast(self.stackLen()),
                         .name = .{ .start = @intCast(target_start), .end = @intCast(target_end) },
-                        .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
-                        .token_start = @intCast(start),
+                        .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
                         .token_end = @intCast(end + 2),
                     };
                     _ = callCallback(ctx, callback, &node);
@@ -571,9 +555,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         const node: Node = .{
                             .source = input,
                             .kind = .comment,
-                            .depth = @intCast(self.stack.items.len),
-                            .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
-                            .token_start = @intCast(start),
+                            .depth = @intCast(self.stackLen()),
+                            .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
                             .token_end = @intCast(end + 3),
                         };
                         _ = callCallback(ctx, callback, &node);
@@ -590,9 +573,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         const node: Node = .{
                             .source = input,
                             .kind = .cdata,
-                            .depth = @intCast(self.stack.items.len),
-                            .value = .{ .start = @intCast(value_start), .end = @intCast(end) },
-                            .token_start = @intCast(start),
+                            .depth = @intCast(self.stackLen()),
+                            .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
                             .token_end = @intCast(end + 3),
                         };
                         _ = callCallback(ctx, callback, &node);
@@ -608,9 +590,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         const node: Node = .{
                             .source = input,
                             .kind = .doctype,
-                            .depth = @intCast(self.stack.items.len),
-                            .value = .{ .start = @intCast(start + 9), .end = @intCast(end) },
-                            .token_start = @intCast(start),
+                            .depth = @intCast(self.stackLen()),
+                            .data = .{ .start = @intCast(start + 9), .end = @intCast(end) },
                             .token_end = @intCast(end + 1),
                         };
                         _ = callCallback(ctx, callback, &node);
@@ -628,17 +609,12 @@ pub fn Types(comptime options: ParseOptions) type {
 
             const SkipProgress = struct {
                 next: usize,
-                complete: bool = false,
                 needs_more: bool = false,
             };
 
-            fn beginSkip(noalias self: *Self, root_scan: scanner.NameScan, root_name: Span) ParseError!void {
-                self.skip_stack.items.len = 0;
-                try self.skip_stack.append(self.allocator, .{
-                    .name_start = root_name.start,
-                    .key = root_scan.key,
-                    .len = root_name.len(),
-                });
+            inline fn beginSkip(noalias self: *Self, root_name: Span, root_key: u64) ParseError!void {
+                self.clearSkipStack();
+                try self.pushSkip(root_name, root_key);
             }
 
             /// Walks a subtree without callbacks. The same token walker serves
@@ -668,13 +644,10 @@ pub fn Types(comptime options: ParseOptions) type {
                                     },
                                     else => return err,
                                 };
-                                const top = self.skip_stack.items[self.skip_stack.items.len - 1];
-                                const close_len = close.scan.end - close.name_start;
-                                if (@as(usize, top.len) != close_len or top.key != close.scan.key) return error.InvalidClosingTagName;
-                                const open_start: usize = @intCast(top.name_start);
-                                if (close_len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close_len], input[close.name_start + 8 .. close.scan.end])) {
-                                    return error.InvalidClosingTagName;
-                                }
+                                const top = self.topSkip();
+                                const close_len = close.name.len();
+                                if (top.name.len() != close_len or top.key != close.key) return error.InvalidClosingTagName;
+                                if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], close.name.slice(input)[8..])) return error.InvalidClosingTagName;
                                 i = close.next;
                             } else {
                                 const gt = scanner.findByte(input, lt + 2, '>') orelse {
@@ -685,8 +658,8 @@ pub fn Types(comptime options: ParseOptions) type {
                                 i = gt + 1;
                             }
 
-                            self.skip_stack.items.len -= 1;
-                            if (self.skip_stack.items.len == 0) return .{ .next = i, .complete = true };
+                            self.popSkip();
+                            if (self.skipStackLen() == 0) return .{ .next = i };
                         },
                         '?' => {
                             i = skipPi(input, lt, strict_mode, incremental) catch |err| switch (err) {
@@ -725,11 +698,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 else => return err,
                             };
                             i = open.next;
-                            if (!open.self_closing) try self.skip_stack.append(self.allocator, .{
-                                .name_start = @intCast(open.name_start),
-                                .key = open.scan.key,
-                                .len = @intCast(open.scan.end - open.name_start),
-                            });
+                            if (!open.self_closing) try self.pushSkip(open.name, open.key);
                         },
                     }
                 }
@@ -738,16 +707,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 return .{ .next = input.len };
             }
 
-            fn skipAvailable(noalias self: *Self, input: []const u8) ParseError!bool {
-                const progress = try self.walkSkipped(input, self.offset, true);
-                self.offset = progress.next;
-                if (progress.complete) self.skipping = false;
-                return !progress.needs_more;
-            }
-
-            fn skipSubtree(noalias self: *Self, input: []const u8, start: usize, root_scan: scanner.NameScan, root_name: Span) ParseError!usize {
-                try self.beginSkip(root_scan, root_name);
-                defer self.skip_stack.items.len = 0;
+            inline fn skipSubtree(noalias self: *Self, input: []const u8, start: usize, root_name: Span, root_key: u64) ParseError!usize {
+                try self.beginSkip(root_name, root_key);
+                defer self.clearSkipStack();
                 const progress = try self.walkSkipped(input, start, false);
                 return progress.next;
             }
@@ -756,8 +718,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 noalias self: *Self,
                 input: []const u8,
                 content_start: usize,
-                name_start: usize,
-                open_scan: scanner.NameScan,
+                name: Span,
+                name_key: u64,
                 ctx: anytype,
                 comptime callback: anytype,
             ) ParseError!?usize {
@@ -766,12 +728,12 @@ pub fn Types(comptime options: ParseOptions) type {
                 const lt = scanner.findByte(input, content_start, '<') orelse return null;
                 if (lt == content_start or lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
-                const open_len = open_scan.end - name_start;
+                const open_len: usize = name.len();
                 const close_start = lt + 2;
                 const close_end = close_start + open_len;
                 if (close_end > input.len) return null;
-                if (scanner.prefixKey(input[close_start..close_end]) != open_scan.key) return null;
-                if (open_len > 8 and !std.mem.eql(u8, input[name_start + 8 .. name_start + open_len], input[close_start + 8 .. close_end])) return null;
+                if (scanner.prefixKey(input[close_start..close_end]) != name_key) return null;
+                if (open_len > 8 and !std.mem.eql(u8, name.slice(input)[8..], input[close_start + 8 .. close_end])) return null;
 
                 var j = close_end;
                 if (j >= input.len) {
@@ -793,31 +755,84 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const raw = input[content_start..lt];
-                if (drop_whitespace_text_nodes and isWhitespaceOnly(raw)) return j;
+                if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
 
                 const node: Node = .{
                     .source = input,
                     .kind = .text,
-                    .depth = @intCast(self.stack.items.len + 1),
-                    .value = .{ .start = @intCast(content_start), .end = @intCast(lt) },
-                    .token_start = @intCast(content_start),
+                    .depth = @intCast(self.stackLen() + 1),
+                    .data = .{ .start = @intCast(content_start), .end = @intCast(lt) },
                     .token_end = @intCast(lt),
                 };
                 _ = callCallback(ctx, callback, &node);
                 return j;
             }
 
-            fn pushStack(noalias self: *Self, entry: StackEntry) ParseError!void {
-                const len = self.stack.items.len;
-                if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
-                self.stack.appendAssumeCapacity(entry);
+            inline fn stackLen(self: *const Self) usize {
+                return if (comptime validate_closing_tags) self.stack.items.len else self.stack;
             }
-        };
 
-        const StackEntry = struct {
-            name_start: IndexInt,
-            key: u64,
-            len: IndexInt,
+            inline fn skipStackLen(self: *const Self) usize {
+                return if (comptime validate_closing_tags) self.skip_stack.items.len else self.skip_stack;
+            }
+
+            inline fn clearStacks(self: *Self) void {
+                if (comptime validate_closing_tags) {
+                    self.stack.items.len = 0;
+                    self.skip_stack.items.len = 0;
+                } else {
+                    self.stack = 0;
+                    self.skip_stack = 0;
+                }
+            }
+
+            inline fn clearSkipStack(self: *Self) void {
+                if (comptime validate_closing_tags) self.skip_stack.items.len = 0 else self.skip_stack = 0;
+            }
+
+            inline fn restoreStackLen(self: *Self, len: usize) void {
+                if (comptime validate_closing_tags) self.stack.items.len = @min(len, self.stack.items.len) else self.stack = len;
+            }
+
+            inline fn restoreSkipStackLen(self: *Self, len: usize) void {
+                if (comptime validate_closing_tags) self.skip_stack.items.len = @min(len, self.skip_stack.items.len) else self.skip_stack = len;
+            }
+
+            inline fn pushStack(noalias self: *Self, name: Span, key: u64) ParseError!void {
+                if (comptime validate_closing_tags) {
+                    const len = self.stack.items.len;
+                    if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                    self.stack.appendAssumeCapacity(.{ .name = name, .key = key });
+                } else {
+                    self.stack += 1;
+                }
+            }
+
+            inline fn popStack(self: *Self) void {
+                if (comptime validate_closing_tags) self.stack.items.len -= 1 else self.stack -= 1;
+            }
+
+            inline fn topStack(self: *const Self) StackEntry {
+                if (comptime !validate_closing_tags) unreachable;
+                return self.stack.items[self.stack.items.len - 1];
+            }
+
+            inline fn pushSkip(noalias self: *Self, name: Span, key: u64) ParseError!void {
+                if (comptime validate_closing_tags) {
+                    try self.skip_stack.append(self.allocator, .{ .name = name, .key = key });
+                } else {
+                    self.skip_stack += 1;
+                }
+            }
+
+            inline fn popSkip(self: *Self) void {
+                if (comptime validate_closing_tags) self.skip_stack.items.len -= 1 else self.skip_stack -= 1;
+            }
+
+            inline fn topSkip(self: *const Self) StackEntry {
+                if (comptime !validate_closing_tags) unreachable;
+                return self.skip_stack.items[self.skip_stack.items.len - 1];
+            }
         };
     };
 }
@@ -846,7 +861,7 @@ fn callbackKind(comptime callback: anytype, comptime Node: type) CallbackKind {
     };
 }
 
-fn callCallback(ctx: anytype, comptime callback: anytype, node_ptr: anytype) bool {
+inline fn callCallback(ctx: anytype, comptime callback: anytype, node_ptr: anytype) bool {
     const Node = std.meta.Child(@TypeOf(node_ptr));
     return switch (comptime callbackKind(callback, Node)) {
         .node => callback(node_ptr.*),
@@ -856,33 +871,24 @@ fn callCallback(ctx: anytype, comptime callback: anytype, node_ptr: anytype) boo
     };
 }
 
-fn skipWs(input: []const u8, start: usize) usize {
+inline fn skipWs(input: []const u8, start: usize) usize {
     if (start >= input.len) return start;
     const c = input[start];
-    if (!tables.isWhitespace(c)) return start;
+    if (c == ' ') {
+        const next = start + 1;
+        if (next >= input.len or input[next] != ' ') return next;
+    } else if (!tables.isWhitespace(c)) {
+        return start;
+    }
     return scanner.skipWhitespace(input, start);
 }
 
-fn isWhitespaceOnly(raw: []const u8) bool {
-    if (raw.len == 0) return true;
-    for (raw) |c| {
-        if (!tables.isWhitespace(c)) return false;
-    }
-    return true;
-}
-
-fn subtreeEndOffset(input: []const u8, kind: NodeType, token_start: IndexInt, token_end: IndexInt, name: Span, self_closing: bool) ParseError!usize {
-    const start: usize = token_start;
+fn subtreeEndOffset(input: []const u8, kind: NodeType, token_end: IndexInt, self_closing: bool) ParseError!usize {
     const end: usize = token_end;
-    switch (kind) {
-        .text, .comment, .cdata, .pi, .declaration, .doctype => return end,
-        .element => {
-            if (self_closing) return end;
-            _ = name;
-            return skipSubtreeStateless(input, end);
-        },
-        .document => return start,
-    }
+    return switch (kind) {
+        .text, .comment, .cdata, .pi, .declaration, .doctype, .document => end,
+        .element => if (self_closing) end else skipSubtreeStateless(input, end),
+    };
 }
 
 fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
@@ -912,32 +918,34 @@ fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
 
 const OpenToken = struct {
     next: usize,
+    name: Span,
+    key: u64,
     self_closing: bool,
-    name_start: usize,
-    scan: scanner.NameScan,
 };
 
 const CloseToken = struct {
     next: usize,
-    name_start: usize,
-    scan: scanner.NameScan,
+    name: Span,
+    key: u64,
 };
 
 fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) ParseError!OpenToken {
     var i = start + 1;
     if (i >= input.len or !tables.isNameStart(input[i])) return error.ExpectedElementName;
     const name_start = i;
-    const scan = scanner.scanNameAndKey(input, i);
-    i = scan.end;
+    const name_scan = scanner.scanNameAndKey(input, i);
+    const name_end = name_scan.end;
+    i = name_end;
+    const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
     while (i < input.len) {
         const boundary = i;
         i = skipWs(input, i);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
-        if (c == '>') return .{ .next = i + 1, .self_closing = false, .name_start = name_start, .scan = scan };
+        if (c == '>') return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
         if (c == '/') {
             if (i + 1 >= input.len) return error.UnexpectedEndOfData;
-            if (input[i + 1] == '>') return .{ .next = i + 2, .self_closing = true, .name_start = name_start, .scan = scan };
+            if (input[i + 1] == '>') return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
         }
         if (strict and i == boundary) {
             @branchHint(.unlikely);
@@ -986,12 +994,13 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseE
     if (i >= input.len) return error.UnexpectedEndOfData;
     if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
     const name_start = i;
-    const scan = scanner.scanNameAndKey(input, i);
-    i = scan.end;
+    const name_scan = scanner.scanNameAndKey(input, i);
+    const name_end = name_scan.end;
+    i = name_end;
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
     if (i >= input.len) return error.UnexpectedEndOfData;
     if (input[i] != '>') return error.InvalidClosingTagName;
-    return .{ .next = i + 1, .name_start = name_start, .scan = scan };
+    return .{ .next = i + 1, .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) }, .key = name_scan.key };
 }
 
 fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {

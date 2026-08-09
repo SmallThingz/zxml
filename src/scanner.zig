@@ -23,7 +23,6 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
 
 pub const NameScan = struct {
     end: usize,
-    /// Prefix fingerprint used as a fast reject for tag matching.
     key: u64,
 };
 
@@ -54,20 +53,11 @@ pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
     var i = start;
     var key: u64 = 0;
     inline for (0..8) |n| {
-        if (i >= input.len or !tables.isNameChar(input[i])) {
-            return .{
-                .end = i,
-                .key = key,
-            };
-        }
-        key |= @as(u64, input[i]) << @as(std.math.Log2Int(u64), n * 8);
+        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{ .end = i, .key = key };
+        key |= @as(u64, input[i]) << @intCast(n * 8);
         i += 1;
     }
-    while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
-    return .{
-        .end = i,
-        .key = key,
-    };
+    return .{ .end = findNameEnd(input, i), .key = key };
 }
 
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
