@@ -131,6 +131,8 @@ pub fn Types(comptime options: ParseOptions) type {
             stack: std.ArrayList(StackEntry) = .empty,
             skip_stack: std.ArrayList(StackEntry) = .empty,
             offset: usize = 0,
+            skipping: bool = false,
+            needs_more: bool = false,
 
             const Self = @This();
             const strict_mode = options.mode == .strict;
@@ -143,6 +145,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 offset: usize,
                 stack_len: usize,
                 skip_stack_len: usize,
+                skipping: bool,
+                needs_more: bool,
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
@@ -159,6 +163,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.stack.items.len = 0;
                 self.skip_stack.items.len = 0;
                 self.offset = 0;
+                self.skipping = false;
+                self.needs_more = false;
                 try self.reserveForInput(input.len);
 
                 var i: usize = self.offset;
@@ -197,10 +203,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
 
                     switch (input[i + 1]) {
-                        '/' => i = try self.parseClosingTag(input, i),
-                        '?' => i = try self.parsePiOrDeclaration(input, i, ctx, callback),
-                        '!' => i = try self.parseBangNode(input, i, ctx, callback),
-                        else => i = try self.parseOpeningTag(input, i, ctx, callback),
+                        '/' => i = try self.parseClosingTag(input, i, false),
+                        '?' => i = try self.parsePiOrDeclaration(input, i, ctx, callback, false),
+                        '!' => i = try self.parseBangNode(input, i, ctx, callback, false),
+                        else => i = try self.parseOpeningTag(input, i, ctx, callback, false),
                     }
                 }
 
@@ -212,28 +218,61 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.stack.items.len = 0;
                 self.skip_stack.items.len = 0;
                 self.offset = 0;
+                self.skipping = false;
+                self.needs_more = false;
             }
 
             pub fn save(self: *const Self) State {
-                return .{ .offset = self.offset, .stack_len = self.stack.items.len, .skip_stack_len = self.skip_stack.items.len };
+                return .{
+                    .offset = self.offset,
+                    .stack_len = self.stack.items.len,
+                    .skip_stack_len = self.skip_stack.items.len,
+                    .skipping = self.skipping,
+                    .needs_more = self.needs_more,
+                };
             }
 
             pub fn restore(self: *Self, state: State) void {
                 self.offset = state.offset;
                 self.stack.items.len = @min(state.stack_len, self.stack.items.len);
                 self.skip_stack.items.len = @min(state.skip_stack_len, self.skip_stack.items.len);
+                self.skipping = state.skipping;
+                self.needs_more = state.needs_more;
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
                 try self.reserveForInput(input.len);
                 if (self.offset > input.len) return error.UnexpectedEndOfData;
+                self.needs_more = false;
 
                 while (self.offset < input.len) {
+                    if (self.skipping) {
+                        if (!try self.skipAvailable(input)) {
+                            self.needs_more = true;
+                            return false;
+                        }
+                        continue;
+                    }
+                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[self.offset]]) {
+                        const next = scanner.skipWhitespace(input, self.offset);
+                        if (next >= input.len) {
+                            // Keep a trailing whitespace run pending: a later
+                            // cumulative chunk may extend this same text node
+                            // with non-whitespace bytes. `finish` may safely
+                            // discard it when it really is the final run.
+                            return true;
+                        }
+                        if (input[next] == '<') {
+                            self.offset = next;
+                            continue;
+                        }
+                    }
                     const checkpoint = self.save();
-                    const next = self.parseOne(input, self.offset, ctx, callback) catch |err| switch (err) {
+                    const next = self.parseOne(input, self.offset, ctx, callback, true) catch |err| switch (err) {
                         error.UnexpectedEndOfData => {
                             self.restore(checkpoint);
+                            self.needs_more = true;
                             return false;
                         },
                         else => |e| return e,
@@ -244,10 +283,11 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             pub fn finish(self: *Self) ParseError!void {
-                if (require_closed_elements_on_eof and self.stack.items.len != 0) return error.UnexpectedEndOfData;
+                if (self.needs_more) return error.UnexpectedEndOfData;
+                if (require_closed_elements_on_eof and (self.stack.items.len != 0 or self.skipping)) return error.UnexpectedEndOfData;
             }
 
-            fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype) ParseError!usize {
+            inline fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 const i = start;
                 if (input[i] != '<') {
                     if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
@@ -269,12 +309,15 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     return run.lt_index;
                 }
-                if (i + 1 >= input.len) return error.UnexpectedEndOfData;
+                if (i + 1 >= input.len) {
+                    if (!incremental and !strict_mode) return input.len;
+                    return error.UnexpectedEndOfData;
+                }
                 return switch (input[i + 1]) {
-                    '/' => try self.parseClosingTag(input, i),
-                    '?' => try self.parsePiOrDeclaration(input, i, ctx, callback),
-                    '!' => try self.parseBangNode(input, i, ctx, callback),
-                    else => try self.parseOpeningTag(input, i, ctx, callback),
+                    '/' => try self.parseClosingTag(input, i, incremental),
+                    '?' => try self.parsePiOrDeclaration(input, i, ctx, callback, incremental),
+                    '!' => try self.parseBangNode(input, i, ctx, callback, incremental),
+                    else => try self.parseOpeningTag(input, i, ctx, callback, incremental),
                 };
             }
 
@@ -284,13 +327,16 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (est_stack > self.skip_stack.capacity) try self.skip_stack.ensureTotalCapacity(self.allocator, est_stack);
             }
 
-            fn parseOpeningTag(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype) ParseError!usize {
+            fn parseOpeningTag(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 var i = start + 1;
                 if (i >= input.len) return error.UnexpectedEndOfData;
                 if (!tables.isNameStart(input[i])) {
                     if (strict_mode) return error.ExpectedElementName;
-                    const gt = scanner.findByte(input, i, '>') orelse input.len;
-                    return if (gt < input.len) gt + 1 else gt;
+                    const gt = scanner.findByte(input, i, '>') orelse {
+                        if (incremental) return error.UnexpectedEndOfData;
+                        return input.len;
+                    };
+                    return gt + 1;
                 }
 
                 const name_start = i;
@@ -302,6 +348,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 var closed = false;
 
                 while (i < input.len) {
+                    const boundary = i;
                     i = skipWs(input, i);
                     if (i >= input.len) return error.UnexpectedEndOfData;
                     const c = input[i];
@@ -318,6 +365,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         closed = true;
                         break;
                     }
+                    if (incremental and c == '/' and i + 1 >= input.len) return error.UnexpectedEndOfData;
+                    if (strict_mode and i == boundary) {
+                        @branchHint(.unlikely);
+                        return error.ExpectedAttributeName;
+                    }
                     if (!tables.isNameStart(c)) {
                         if (strict_mode) return error.ExpectedAttributeName;
                         i += 1;
@@ -329,6 +381,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         const quote = input[attr_i + 1];
                         if (quote == '\'' or quote == '"') {
                             i = (scanner.findByte(input, attr_i + 2, quote) orelse {
+                                if (incremental) return error.UnexpectedEndOfData;
                                 if (strict_mode) return error.ExpectedQuote;
                                 return input.len;
                             }) + 1;
@@ -337,8 +390,12 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
 
                     attr_i = skipWs(input, attr_i);
-                    if (attr_i >= input.len or input[attr_i] != '=') {
-                        if (strict_mode) return error.ExpectedEq;
+                    if (attr_i >= input.len) return error.UnexpectedEndOfData;
+                    if (input[attr_i] != '=') {
+                        if (strict_mode) {
+                            @branchHint(.unlikely);
+                            return error.ExpectedEq;
+                        }
                         i = attr_i;
                         continue;
                     }
@@ -348,6 +405,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     const quote = input[attr_i];
                     if (quote == '\'' or quote == '"') {
                         i = (scanner.findByte(input, attr_i + 1, quote) orelse {
+                            if (incremental) return error.UnexpectedEndOfData;
                             if (strict_mode) return error.ExpectedQuote;
                             return input.len;
                         }) + 1;
@@ -377,14 +435,23 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 const descend = callCallback(ctx, callback, &node);
                 if (self_closing) return i;
-                if (!descend) return try self.skipSubtree(input, i, scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
-                if (try self.tryFinishSimpleTextElement(input, i, name_start, scan, ctx, callback)) |next| return next;
+                if (!descend) {
+                    if (incremental) {
+                        try self.beginSkip(scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
+                        self.skipping = true;
+                        return i;
+                    }
+                    return try self.skipSubtree(input, i, scan, .{ .start = @intCast(name_start), .end = @intCast(scan.end) });
+                }
+                if (!incremental) {
+                    if (try self.tryFinishSimpleTextElement(input, i, name_start, scan, ctx, callback)) |next| return next;
+                }
 
                 if (comptime validate_closing_tags) {
                     try self.pushStack(.{
                         .name_start = @intCast(name_start),
                         .key = scan.key,
-                        .len = scan.len,
+                        .len = @intCast(scan.end - name_start),
                     });
                 } else {
                     try self.pushStack(.{
@@ -396,17 +463,23 @@ pub fn Types(comptime options: ParseOptions) type {
                 return i;
             }
 
-            fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize) ParseError!usize {
+            fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!usize {
                 if (!validate_closing_tags) {
-                    const gt = scanner.findByte(input, start + 2, '>') orelse input.len;
+                    const gt = scanner.findByte(input, start + 2, '>') orelse {
+                        if (incremental) return error.UnexpectedEndOfData;
+                        return input.len;
+                    };
                     if (self.stack.items.len != 0) self.stack.items.len -= 1;
-                    return if (gt < input.len) gt + 1 else gt;
+                    return gt + 1;
                 }
 
                 var i = start + 2;
-                if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
+                if (i < input.len and tables.isWhitespace(input[i])) {
+                    if (strict_mode) return error.InvalidClosingTagName;
+                    i = skipWs(input, i);
+                }
                 if (i >= input.len) {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 }
                 if (!tables.isNameStart(input[i])) {
@@ -419,7 +492,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 i = scan.end;
                 if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
                 if (i >= input.len) {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 }
                 if (input[i] != '>') return error.InvalidClosingTagName;
@@ -432,9 +505,10 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 if (validate_closing_tags) {
                     const top = self.stack.items[self.stack.items.len - 1];
-                    if (top.len != scan.len or top.key != scan.key) return error.InvalidClosingTagName;
+                    const close_len = scan.end - name_start;
+                    if (@as(usize, top.len) != close_len or top.key != scan.key) return error.InvalidClosingTagName;
                     const open_start: usize = @intCast(top.name_start);
-                    if (scan.len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + scan.len], input[name_start + 8 .. scan.end])) {
+                    if (close_len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close_len], input[name_start + 8 .. scan.end])) {
                         return error.InvalidClosingTagName;
                     }
                 }
@@ -442,12 +516,20 @@ pub fn Types(comptime options: ParseOptions) type {
                 return i;
             }
 
-            fn parsePiOrDeclaration(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype) ParseError!usize {
+            fn parsePiOrDeclaration(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 var i = start + 2;
-                if (i >= input.len or !tables.isNameStart(input[i])) {
+                if (i >= input.len) {
+                    if (incremental) return error.UnexpectedEndOfData;
                     if (strict_mode) return error.ExpectedPiTarget;
-                    const end0 = scanner.findSequence(input, i, "?>") orelse input.len;
-                    return if (end0 < input.len) end0 + 2 else end0;
+                    return input.len;
+                }
+                if (!tables.isNameStart(input[i])) {
+                    if (strict_mode) return error.ExpectedPiTarget;
+                    const end0 = scanner.findSequence(input, i, "?>") orelse {
+                        if (incremental) return error.UnexpectedEndOfData;
+                        return input.len;
+                    };
+                    return end0 + 2;
                 }
 
                 const target_start = i;
@@ -456,7 +538,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 i = skipWs(input, i);
                 const value_start = i;
                 const end = scanner.findSequence(input, i, "?>") orelse {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 };
                 if (include_misc_nodes) {
@@ -478,11 +560,11 @@ pub fn Types(comptime options: ParseOptions) type {
                 return end + 2;
             }
 
-            fn parseBangNode(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype) ParseError!usize {
+            fn parseBangNode(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 if (start + 3 < input.len and input[start + 2] == '-' and input[start + 3] == '-') {
                     const value_start = start + 4;
                     const end = scanner.findSequence(input, value_start, "-->") orelse {
-                        if (strict_mode) return error.UnexpectedEndOfData;
+                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
                     if (include_misc_nodes) {
@@ -501,7 +583,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (start + 8 < input.len and input[start + 2] == '[' and input[start + 3] == 'C' and input[start + 4] == 'D' and input[start + 5] == 'A' and input[start + 6] == 'T' and input[start + 7] == 'A' and input[start + 8] == '[') {
                     const value_start = start + 9;
                     const end = scanner.findSequence(input, value_start, "]]>") orelse {
-                        if (strict_mode) return error.UnexpectedEndOfData;
+                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
                     if (include_misc_nodes) {
@@ -517,9 +599,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     return end + 3;
                 }
-                if (isDoctype(input, start)) {
-                    const end = findDoctypeEnd(input, start + 9) orelse {
-                        if (strict_mode) return error.UnexpectedEndOfData;
+                if (scanner.isDoctype(input, start)) {
+                    const end = scanner.findDoctypeEnd(input, start + 9) orelse {
+                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
                     if (include_misc_nodes) {
@@ -535,72 +617,139 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     return end + 1;
                 }
+                if (incremental and bangPrefixNeedsMore(input, start)) return error.UnexpectedEndOfData;
                 if (strict_mode) return error.ExpectedGt;
-                const gt = scanner.findByte(input, start, '>') orelse input.len;
-                return if (gt < input.len) gt + 1 else gt;
+                const gt = scanner.findByte(input, start, '>') orelse {
+                    if (incremental) return error.UnexpectedEndOfData;
+                    return input.len;
+                };
+                return gt + 1;
             }
 
-            fn skipSubtree(noalias self: *Self, input: []const u8, start: usize, root_scan: scanner.NameScan, root_name: Span) ParseError!usize {
-                var i = start;
-                if (!validate_closing_tags) {
-                    var depth: usize = 1;
-                    while (i < input.len) {
-                        const lt = scanner.findByte(input, i, '<') orelse return if (strict_mode) error.UnexpectedEndOfData else input.len;
-                        i = lt;
-                        if (i + 1 >= input.len) return if (strict_mode) error.UnexpectedEndOfData else input.len;
-                        switch (input[i + 1]) {
-                            '/' => {
-                                i = (try scanClosingTag(input, i)).next;
-                                depth -= 1;
-                                if (depth == 0) return i;
-                            },
-                            '?' => i = try skipPi(input, i),
-                            '!' => i = try skipBang(input, i),
-                            else => {
-                                const open = try scanOpeningTagToken(input, i);
-                                i = open.next;
-                                if (!open.self_closing) depth += 1;
-                            },
-                        }
-                    }
-                    return if (strict_mode) error.UnexpectedEndOfData else input.len;
-                }
+            const SkipProgress = struct {
+                next: usize,
+                complete: bool = false,
+                needs_more: bool = false,
+            };
 
+            fn beginSkip(noalias self: *Self, root_scan: scanner.NameScan, root_name: Span) ParseError!void {
                 self.skip_stack.items.len = 0;
                 try self.skip_stack.append(self.allocator, .{
                     .name_start = root_name.start,
                     .key = root_scan.key,
-                    .len = root_scan.len,
+                    .len = root_name.len(),
                 });
+            }
+
+            /// Walks a subtree without callbacks. The same token walker serves
+            /// full parsing and cumulative-buffer incremental parsing; only EOF
+            /// handling differs at comptime.
+            fn walkSkipped(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!SkipProgress {
+                var i = start;
                 while (i < input.len) {
-                    const lt = scanner.findByte(input, i, '<') orelse return error.UnexpectedEndOfData;
-                    i = lt;
-                    if (i + 1 >= input.len) return error.UnexpectedEndOfData;
-                    switch (input[i + 1]) {
+                    const lt = scanner.findByte(input, i, '<') orelse {
+                        if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                        return .{ .next = input.len };
+                    };
+                    if (lt + 1 >= input.len) {
+                        if (incremental) return .{ .next = lt, .needs_more = true };
+                        if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                        return .{ .next = input.len };
+                    }
+
+                    switch (input[lt + 1]) {
                         '/' => {
-                            const close = try scanClosingTag(input, i);
-                            const top = self.skip_stack.items[self.skip_stack.items.len - 1];
-                            if (top.len != close.scan.len or top.key != close.scan.key) return error.InvalidClosingTagName;
-                            const open_start: usize = @intCast(top.name_start);
-                            if (close.scan.len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close.scan.len], input[close.name_start + 8 .. close.scan.end])) return error.InvalidClosingTagName;
+                            if (validate_closing_tags) {
+                                const close = scanClosingTag(input, lt, strict_mode) catch |err| switch (err) {
+                                    error.UnexpectedEndOfData => {
+                                        if (incremental) return .{ .next = lt, .needs_more = true };
+                                        if (strict_mode or require_closed_elements_on_eof) return err;
+                                        return .{ .next = input.len };
+                                    },
+                                    else => return err,
+                                };
+                                const top = self.skip_stack.items[self.skip_stack.items.len - 1];
+                                const close_len = close.scan.end - close.name_start;
+                                if (@as(usize, top.len) != close_len or top.key != close.scan.key) return error.InvalidClosingTagName;
+                                const open_start: usize = @intCast(top.name_start);
+                                if (close_len > 8 and !std.mem.eql(u8, input[open_start + 8 .. open_start + close_len], input[close.name_start + 8 .. close.scan.end])) {
+                                    return error.InvalidClosingTagName;
+                                }
+                                i = close.next;
+                            } else {
+                                const gt = scanner.findByte(input, lt + 2, '>') orelse {
+                                    if (incremental) return .{ .next = lt, .needs_more = true };
+                                    if (require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                                    return .{ .next = input.len };
+                                };
+                                i = gt + 1;
+                            }
+
                             self.skip_stack.items.len -= 1;
-                            i = close.next;
-                            if (self.skip_stack.items.len == 0) return i;
+                            if (self.skip_stack.items.len == 0) return .{ .next = i, .complete = true };
                         },
-                        '?' => i = try skipPi(input, i),
-                        '!' => i = try skipBang(input, i),
+                        '?' => {
+                            i = skipPi(input, lt, strict_mode, incremental) catch |err| switch (err) {
+                                error.UnexpectedEndOfData => if (incremental)
+                                    return .{ .next = lt, .needs_more = true }
+                                else
+                                    return err,
+                                else => return err,
+                            };
+                        },
+                        '!' => {
+                            i = skipBang(input, lt, strict_mode, incremental) catch |err| switch (err) {
+                                error.UnexpectedEndOfData => if (incremental)
+                                    return .{ .next = lt, .needs_more = true }
+                                else
+                                    return err,
+                                else => return err,
+                            };
+                        },
                         else => {
-                            const open = try scanOpeningTagToken(input, i);
+                            if (!tables.isNameStart(input[lt + 1])) {
+                                if (strict_mode) return error.ExpectedElementName;
+                                const gt = scanner.findByte(input, lt + 1, '>') orelse {
+                                    if (incremental) return .{ .next = lt, .needs_more = true };
+                                    return .{ .next = input.len };
+                                };
+                                i = gt + 1;
+                                continue;
+                            }
+
+                            const open = scanOpeningTagToken(input, lt, strict_mode) catch |err| switch (err) {
+                                error.UnexpectedEndOfData => if (incremental)
+                                    return .{ .next = lt, .needs_more = true }
+                                else
+                                    return err,
+                                else => return err,
+                            };
                             i = open.next;
                             if (!open.self_closing) try self.skip_stack.append(self.allocator, .{
                                 .name_start = @intCast(open.name_start),
                                 .key = open.scan.key,
-                                .len = open.scan.len,
+                                .len = @intCast(open.scan.end - open.name_start),
                             });
                         },
                     }
                 }
-                return error.UnexpectedEndOfData;
+
+                if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                return .{ .next = input.len };
+            }
+
+            fn skipAvailable(noalias self: *Self, input: []const u8) ParseError!bool {
+                const progress = try self.walkSkipped(input, self.offset, true);
+                self.offset = progress.next;
+                if (progress.complete) self.skipping = false;
+                return !progress.needs_more;
+            }
+
+            fn skipSubtree(noalias self: *Self, input: []const u8, start: usize, root_scan: scanner.NameScan, root_name: Span) ParseError!usize {
+                try self.beginSkip(root_scan, root_name);
+                defer self.skip_stack.items.len = 0;
+                const progress = try self.walkSkipped(input, start, false);
+                return progress.next;
             }
 
             fn tryFinishSimpleTextElement(
@@ -617,11 +766,12 @@ pub fn Types(comptime options: ParseOptions) type {
                 const lt = scanner.findByte(input, content_start, '<') orelse return null;
                 if (lt == content_start or lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
+                const open_len = open_scan.end - name_start;
                 const close_start = lt + 2;
-                const close_end = close_start + open_scan.len;
+                const close_end = close_start + open_len;
                 if (close_end > input.len) return null;
                 if (scanner.prefixKey(input[close_start..close_end]) != open_scan.key) return null;
-                if (open_scan.len > 8 and !std.mem.eql(u8, input[name_start + 8 .. name_start + open_scan.len], input[close_start + 8 .. close_end])) return null;
+                if (open_len > 8 and !std.mem.eql(u8, input[name_start + 8 .. name_start + open_len], input[close_start + 8 .. close_end])) return null;
 
                 var j = close_end;
                 if (j >= input.len) {
@@ -667,7 +817,7 @@ pub fn Types(comptime options: ParseOptions) type {
         const StackEntry = struct {
             name_start: IndexInt,
             key: u64,
-            len: u16,
+            len: IndexInt,
         };
     };
 }
@@ -744,14 +894,14 @@ fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
         if (i + 1 >= input.len) return error.UnexpectedEndOfData;
         switch (input[i + 1]) {
             '/' => {
-                i = (try scanClosingTag(input, i)).next;
+                i = (try scanClosingTag(input, i, true)).next;
                 depth -= 1;
                 if (depth == 0) return i;
             },
-            '?' => i = try skipPi(input, i),
-            '!' => i = try skipBang(input, i),
+            '?' => i = try skipPi(input, i, true, true),
+            '!' => i = try skipBang(input, i, true, true),
             else => {
-                const open = try scanOpeningTagToken(input, i);
+                const open = try scanOpeningTagToken(input, i, true);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
@@ -773,29 +923,49 @@ const CloseToken = struct {
     scan: scanner.NameScan,
 };
 
-fn scanOpeningTagToken(input: []const u8, start: usize) ParseError!OpenToken {
+fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) ParseError!OpenToken {
     var i = start + 1;
     if (i >= input.len or !tables.isNameStart(input[i])) return error.ExpectedElementName;
     const name_start = i;
     const scan = scanner.scanNameAndKey(input, i);
     i = scan.end;
     while (i < input.len) {
+        const boundary = i;
         i = skipWs(input, i);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
         if (c == '>') return .{ .next = i + 1, .self_closing = false, .name_start = name_start, .scan = scan };
-        if (c == '/' and i + 1 < input.len and input[i + 1] == '>') return .{ .next = i + 2, .self_closing = true, .name_start = name_start, .scan = scan };
-        if (!tables.isNameStart(c)) return error.ExpectedAttributeName;
+        if (c == '/') {
+            if (i + 1 >= input.len) return error.UnexpectedEndOfData;
+            if (input[i + 1] == '>') return .{ .next = i + 2, .self_closing = true, .name_start = name_start, .scan = scan };
+        }
+        if (strict and i == boundary) {
+            @branchHint(.unlikely);
+            return error.ExpectedAttributeName;
+        }
+        if (!tables.isNameStart(c)) {
+            if (strict) return error.ExpectedAttributeName;
+            i += 1;
+            continue;
+        }
         i = scanner.findNameEnd(input, i);
         i = skipWs(input, i);
-        if (i >= input.len or input[i] != '=') return error.ExpectedEq;
+        if (i >= input.len) return error.UnexpectedEndOfData;
+        if (input[i] != '=') {
+            if (strict) {
+                @branchHint(.unlikely);
+                return error.ExpectedEq;
+            }
+            continue;
+        }
         i += 1;
         i = skipWs(input, i);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
-            i = (scanner.findByte(input, i + 1, quote) orelse return error.ExpectedQuote) + 1;
+            i = (scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData) + 1;
         } else {
+            if (strict) return error.ExpectedQuote;
             const raw_end = scanner.findAttrUnquotedEnd(input, i);
             if (raw_end > i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
                 i = raw_end - 1;
@@ -807,77 +977,75 @@ fn scanOpeningTagToken(input: []const u8, start: usize) ParseError!OpenToken {
     return error.UnexpectedEndOfData;
 }
 
-fn scanClosingTag(input: []const u8, start: usize) ParseError!CloseToken {
+fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseError!CloseToken {
     var i = start + 2;
-    if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
-    if (i >= input.len or !tables.isNameStart(input[i])) return error.InvalidClosingTagName;
+    if (i < input.len and tables.isWhitespace(input[i])) {
+        if (strict) return error.InvalidClosingTagName;
+        i = skipWs(input, i);
+    }
+    if (i >= input.len) return error.UnexpectedEndOfData;
+    if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
     const name_start = i;
     const scan = scanner.scanNameAndKey(input, i);
     i = scan.end;
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
-    if (i >= input.len or input[i] != '>') return error.InvalidClosingTagName;
+    if (i >= input.len) return error.UnexpectedEndOfData;
+    if (input[i] != '>') return error.InvalidClosingTagName;
     return .{ .next = i + 1, .name_start = name_start, .scan = scan };
 }
 
-fn skipPi(input: []const u8, start: usize) ParseError!usize {
-    const end = scanner.findSequence(input, start + 2, "?>") orelse return error.UnexpectedEndOfData;
+fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {
+    const end = scanner.findSequence(input, start + 2, "?>") orelse {
+        if (strict or incremental) return error.UnexpectedEndOfData;
+        return input.len;
+    };
     return end + 2;
 }
 
-fn skipBang(input: []const u8, start: usize) ParseError!usize {
+fn tokenPrefixNeedsMore(input: []const u8, start: usize, comptime token: []const u8, comptime ascii_case_insensitive: bool) bool {
+    if (start >= input.len) return false;
+    const available = input.len - start;
+    if (available >= token.len) return false;
+    const prefix = token[0..available];
+    if (ascii_case_insensitive) return std.ascii.eqlIgnoreCase(input[start..], prefix);
+    return std.mem.eql(u8, input[start..], prefix);
+}
+
+fn bangPrefixNeedsMore(input: []const u8, start: usize) bool {
+    return tokenPrefixNeedsMore(input, start, "<!--", false) or
+        tokenPrefixNeedsMore(input, start, "<![CDATA[", false) or
+        tokenPrefixNeedsMore(input, start, "<!DOCTYPE", true);
+}
+
+fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {
     if (start + 3 < input.len and input[start + 2] == '-' and input[start + 3] == '-') {
-        const end = scanner.findSequence(input, start + 4, "-->") orelse return error.UnexpectedEndOfData;
+        const end = scanner.findSequence(input, start + 4, "-->") orelse {
+            if (strict or incremental) return error.UnexpectedEndOfData;
+            return input.len;
+        };
         return end + 3;
     }
     if (start + 8 < input.len and input[start + 2] == '[' and input[start + 3] == 'C' and input[start + 4] == 'D' and input[start + 5] == 'A' and input[start + 6] == 'T' and input[start + 7] == 'A' and input[start + 8] == '[') {
-        const end = scanner.findSequence(input, start + 9, "]]>") orelse return error.UnexpectedEndOfData;
+        const end = scanner.findSequence(input, start + 9, "]]>") orelse {
+            if (strict or incremental) return error.UnexpectedEndOfData;
+            return input.len;
+        };
         return end + 3;
     }
-    if (isDoctype(input, start)) {
-        const end = findDoctypeEnd(input, start + 9) orelse return error.UnexpectedEndOfData;
+    if (scanner.isDoctype(input, start)) {
+        const end = scanner.findDoctypeEnd(input, start + 9) orelse {
+            if (strict or incremental) return error.UnexpectedEndOfData;
+            return input.len;
+        };
         return end + 1;
     }
-    return error.ExpectedGt;
-}
-
-fn isDoctype(input: []const u8, start: usize) bool {
-    return start + 9 <= input.len and
-        input[start] == '<' and
-        input[start + 1] == '!' and
-        ((input[start + 2] | 0x20) == 'd') and
-        ((input[start + 3] | 0x20) == 'o') and
-        ((input[start + 4] | 0x20) == 'c') and
-        ((input[start + 5] | 0x20) == 't') and
-        ((input[start + 6] | 0x20) == 'y') and
-        ((input[start + 7] | 0x20) == 'p') and
-        ((input[start + 8] | 0x20) == 'e');
-}
-
-fn findDoctypeEnd(input: []const u8, start: usize) ?usize {
-    var j = start;
-    var bracket_depth: i32 = 0;
-    var quote: u8 = 0;
-    while (j < input.len) : (j += 1) {
-        const c = input[j];
-        if (quote != 0) {
-            if (c == quote) quote = 0;
-            continue;
-        }
-        if (c == '\'' or c == '"') {
-            quote = c;
-            continue;
-        }
-        if (c == '[') {
-            bracket_depth += 1;
-            continue;
-        }
-        if (c == ']') {
-            if (bracket_depth > 0) bracket_depth -= 1;
-            continue;
-        }
-        if (c == '>' and bracket_depth == 0) return j;
-    }
-    return null;
+    if (incremental and bangPrefixNeedsMore(input, start)) return error.UnexpectedEndOfData;
+    if (strict) return error.ExpectedGt;
+    const gt = scanner.findByte(input, start + 2, '>') orelse {
+        if (incremental) return error.UnexpectedEndOfData;
+        return input.len;
+    };
+    return gt + 1;
 }
 
 test "streaming parser self-test: order attributes and depths" {
@@ -975,4 +1143,387 @@ test "streaming parser parseAvailable resumes from saved state" {
     try parser.finish();
     try std.testing.expectEqual(@as(usize, 2), ctx.elements);
     try std.testing.expectEqual(@as(usize, 1), ctx.text);
+}
+
+test "streaming parseAvailable preserves whitespace when a later chunk extends text" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .drop_whitespace_text_nodes = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        texts: usize = 0,
+        saw_full_text: bool = false,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            switch (node.kind) {
+                .element => self.elements += 1,
+                .text => {
+                    self.texts += 1;
+                    self.saw_full_text = std.mem.eql(u8, node.valueRawSlice(), "   x");
+                },
+                else => {},
+            }
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(try parser.parseAvailable("<r>   ", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 0), ctx.texts);
+
+    try std.testing.expect(try parser.parseAvailable("<r>   x</r>", &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqual(@as(usize, 1), ctx.texts);
+    try std.testing.expect(ctx.saw_full_text);
+}
+
+test "streaming parseAvailable accepts every valid token prefix" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<?pi?><!DOCTYPE r [<!ELEMENT r ANY>]><r a='x'><!--c--><![CDATA[d]]><x/></r>";
+
+    const Ctx = struct {
+        events: usize = 0,
+        fn onNode(self: *@This(), _: Event) bool {
+            self.events += 1;
+            return true;
+        }
+    };
+
+    for (0..source.len + 1) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqual(@as(usize, 6), ctx.events);
+    }
+}
+
+test "streaming skipped subtrees accept every valid token prefix" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r><skip><?pi?><!----><![CDATA[x]]><a q='v'/></skip><tail/></r>";
+
+    const Ctx = struct {
+        elements: usize = 0,
+        skip_callbacks: usize = 0,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind != .element) return true;
+            self.elements += 1;
+            if (std.mem.eql(u8, node.nameSlice(), "skip")) {
+                self.skip_callbacks += 1;
+                return false;
+            }
+            return true;
+        }
+    };
+
+    for (0..source.len + 1) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqual(@as(usize, 3), ctx.elements);
+        try std.testing.expectEqual(@as(usize, 1), ctx.skip_callbacks);
+    }
+}
+
+test "streaming strict token errors match DOM parsing" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const Document = document.Types(opts).Document;
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const cases = [_][]const u8{
+        "<r/>",
+        "<r></r>",
+        "<r a='x'/>",
+        "<r a = 'x'/>",
+        "<r a/>",
+        "<r a='x'b='y'/>",
+        "<r a='x>",
+        "<r></ r>",
+        "<r></x>",
+        "<r>",
+        "<?",
+        "<?pi",
+        "<!",
+        "<!-",
+        "<!--",
+        "<!--x",
+        "<![C",
+        "<![CDATA[x",
+        "<!D",
+        "<!DOCTYPE r",
+    };
+
+    for (cases) |input| {
+        var doc = Document.init(std.testing.allocator);
+        defer doc.deinit();
+        const dom_err: ?ParseError = blk: {
+            doc.parse(input, opts) catch |err| break :blk err;
+            break :blk null;
+        };
+
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        const stream_err: ?ParseError = blk: {
+            parser.parse(input, &ctx, Ctx.onNode) catch |err| break :blk err;
+            break :blk null;
+        };
+
+        if (dom_err != stream_err) std.debug.print("mismatch {s}: dom={any} stream={any}\n", .{ input, dom_err, stream_err });
+        try std.testing.expectEqual(dom_err, stream_err);
+    }
+}
+
+test "streaming strict start-tag grammar matches DOM strictness" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expectError(error.ExpectedEq, parser.parse("<r a/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.ExpectedAttributeName, parser.parse("<r !a='1'/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.ExpectedAttributeName, parser.parse("<r a='1'b='2'/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.ExpectedEq, parser.parse("<r a='1' b/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<r></ r>", &ctx, Ctx.onNode));
+}
+
+test "streaming parseAvailable does not replay callbacks across incomplete close tags" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .drop_whitespace_text_nodes = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        texts: usize = 0,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind == .element) self.elements += 1;
+            if (node.kind == .text) self.texts += 1;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(!try parser.parseAvailable("<r>text</r", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.texts);
+    try std.testing.expectError(error.UnexpectedEndOfData, parser.finish());
+
+    try std.testing.expect(try parser.parseAvailable("<r>text</r>", &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.texts);
+}
+
+test "streaming parseAvailable resumes skipped subtrees without replaying their root" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        skip_callbacks: usize = 0,
+        saw_tail: bool = false,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind != .element) return true;
+            self.elements += 1;
+            if (std.mem.eql(u8, node.nameSlice(), "skip")) {
+                self.skip_callbacks += 1;
+                return false;
+            }
+            if (std.mem.eql(u8, node.nameSlice(), "tail")) self.saw_tail = true;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(!try parser.parseAvailable("<r><skip><a", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 2), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.skip_callbacks);
+
+    try std.testing.expect(try parser.parseAvailable("<r><skip><a/></skip><tail/></r>", &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqual(@as(usize, 3), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.skip_callbacks);
+    try std.testing.expect(ctx.saw_tail);
+}
+
+test "streaming skipped eof behavior matches normal descent" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        skip: bool,
+        fn onNode(self: *@This(), node: Event) bool {
+            return !(self.skip and node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+
+    var descended = ParserType.init(std.testing.allocator);
+    defer descended.deinit();
+    var descend_ctx: Ctx = .{ .skip = false };
+    try descended.parse("<skip><x/>", &descend_ctx, Ctx.onNode);
+
+    var skipped = ParserType.init(std.testing.allocator);
+    defer skipped.deinit();
+    var skip_ctx: Ctx = .{ .skip = true };
+    try skipped.parse("<skip><x/>", &skip_ctx, Ctx.onNode);
+}
+
+test "streaming require-closed does not accept a truncated close token" {
+    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<r></", &ctx, Ctx.onNode));
+}
+
+test "streaming skipped subtrees honor require-closed at eof" {
+    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return !std.mem.eql(u8, node.nameSlice(), "skip");
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<skip><x/>", &ctx, Ctx.onNode));
+
+    parser.clear();
+    try std.testing.expect(try parser.parseAvailable("<skip><x/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.UnexpectedEndOfData, parser.finish());
+}
+
+test "streaming skipped subtrees remain strict-validated" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return !std.mem.eql(u8, node.nameSlice(), "skip");
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expectError(error.ExpectedQuote, parser.parse("<r><skip><x a=1/></skip></r>", &ctx, Ctx.onNode));
+
+    parser.clear();
+    try std.testing.expectError(error.ExpectedQuote, parser.parseAvailable("<r><skip><x a=1/></skip></r>", &ctx, Ctx.onNode));
+}
+
+test "streaming turbo parseAvailable waits for an incomplete closing token" {
+    const opts: ParseOptions = .{ .mode = .turbo, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind == .element) self.elements += 1;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(!try parser.parseAvailable("<r></r", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    try std.testing.expect(try parser.parseAvailable("<r></r>", &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+}
+
+test "streaming strict validation supports tag names longer than u16" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const name_len = 70_000;
+    const source_len = name_len * 2 + 5;
+    if (!common.lenFits(source_len)) return error.SkipZigTest;
+    const source = try std.testing.allocator.alloc(u8, source_len);
+    defer std.testing.allocator.free(source);
+
+    source[0] = '<';
+    @memset(source[1 .. 1 + name_len], 'a');
+    source[1 + name_len] = '>';
+    source[2 + name_len] = '<';
+    source[3 + name_len] = '/';
+    @memset(source[4 + name_len .. 4 + name_len * 2], 'a');
+    source[source_len - 1] = '>';
+
+    const Ctx = struct {
+        count: usize = 0,
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind == .element) self.count += 1;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse(source, &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 1), ctx.count);
 }

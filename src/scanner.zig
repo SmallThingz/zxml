@@ -17,15 +17,12 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
     while (i < probe_end) : (i += 1) {
         if (haystack[i] == needle) return i;
     }
-    if (probe_end == haystack.len) {
-        return null;
-    }
+    if (probe_end == haystack.len) return null;
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
 }
 
 pub const NameScan = struct {
     end: usize,
-    len: u16,
     /// Prefix fingerprint used as a fast reject for tag matching.
     key: u64,
 };
@@ -60,7 +57,6 @@ pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
         if (i >= input.len or !tables.isNameChar(input[i])) {
             return .{
                 .end = i,
-                .len = @intCast(i - start),
                 .key = key,
             };
         }
@@ -70,7 +66,6 @@ pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
     while (i < input.len and tables.isNameChar(input[i])) : (i += 1) {}
     return .{
         .end = i,
-        .len = @intCast(i - start),
         .key = key,
     };
 }
@@ -173,6 +168,48 @@ pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: 
     return std.mem.indexOfPos(u8, haystack, start, needle);
 }
 
+pub inline fn isDoctype(input: []const u8, start: usize) bool {
+    return start + 9 <= input.len and
+        input[start] == '<' and
+        input[start + 1] == '!' and
+        ((input[start + 2] | 0x20) == 'd') and
+        ((input[start + 3] | 0x20) == 'o') and
+        ((input[start + 4] | 0x20) == 'c') and
+        ((input[start + 5] | 0x20) == 't') and
+        ((input[start + 6] | 0x20) == 'y') and
+        ((input[start + 7] | 0x20) == 'p') and
+        ((input[start + 8] | 0x20) == 'e');
+}
+
+/// Finds the terminal `>` of a doctype while ignoring quoted text and the
+/// internal subset. `start` points immediately after `<!DOCTYPE`.
+pub fn findDoctypeEnd(input: []const u8, start: usize) ?usize {
+    var i = start;
+    var bracket_depth: usize = 0;
+    var quote: u8 = 0;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        if (c == '[') {
+            bracket_depth += 1;
+            continue;
+        }
+        if (c == ']') {
+            bracket_depth -|= 1;
+            continue;
+        }
+        if (c == '>' and bracket_depth == 0) return i;
+    }
+    return null;
+}
+
 test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, 3), findByte("abc<def", 0, '<'));
     try std.testing.expectEqual(@as(?usize, null), findByte("abc", 9, '<'));
@@ -182,6 +219,14 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abcqrstdef", 0, "qrst"));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 0, "?>"));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
+}
+
+test "doctype scanner ignores quotes and internal subsets" {
+    const src = "<!DOCTYPE r [<!ENTITY x 'a>b'>]><r/>";
+    try std.testing.expect(isDoctype(src, 0));
+    const end = findDoctypeEnd(src, 9) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(@as(usize, 31), end);
+    try std.testing.expectEqual(@as(?usize, null), findDoctypeEnd("<!DOCTYPE r [", 9));
 }
 
 test "name and attribute scanners stop at the right boundary" {

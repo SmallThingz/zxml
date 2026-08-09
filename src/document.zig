@@ -108,7 +108,7 @@ pub const ParseStackEntry = struct {
     tag_key: u64 = 0,
     /// Full tag-name length so close-tag validation can reject mismatches
     /// before touching the source bytes again.
-    tag_len: u16 = 0,
+    tag_len: IndexInt = 0,
 };
 
 pub const NodeType = enum(u4) {

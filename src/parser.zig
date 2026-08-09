@@ -104,7 +104,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const scan = scanner.scanNameAndKey(self.input, self.i);
             self.i = scan.end;
             const name_end = scan.end;
-            const tag_len = scan.len;
+            const tag_len = scan.end - name_start;
             const tag_key = scan.key;
 
             const parent_idx = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1].idx;
@@ -143,6 +143,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             while (self.i < self.input.len) {
+                const boundary = self.i;
                 self.skipWhitespace();
                 if (self.i >= self.input.len) return error.UnexpectedEndOfData;
 
@@ -172,6 +173,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     return;
                 }
 
+                if (strict_mode and self.i == boundary) {
+                    @branchHint(.unlikely);
+                    return error.ExpectedAttributeName;
+                }
                 try self.parseAttribute();
             }
 
@@ -182,6 +187,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (self.i >= self.input.len) return error.UnexpectedEndOfData;
 
             if (!tables.isNameStart(self.input[self.i])) {
+                if (strict_mode) {
+                    @branchHint(.unlikely);
+                    return error.ExpectedAttributeName;
+                }
                 self.i += 1;
                 return;
             }
@@ -244,6 +253,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             value_end = self.i;
                         }
                     }
+                    break :parse_value;
+                }
+
+                if (strict_mode) {
+                    @branchHint(.unlikely);
+                    if (self.i >= input_len) return error.UnexpectedEndOfData;
+                    return error.ExpectedEq;
                 }
             }
 
@@ -281,6 +297,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i += 2; // </
 
             if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) {
+                if (strict_mode) return error.InvalidClosingTagName;
                 self.skipWhitespace();
             }
             if (self.i >= self.input.len) {
@@ -304,11 +321,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const scan = scanner.scanNameAndKey(self.input, self.i);
             self.i = scan.end;
             const close_end = scan.end;
-            const close_len = scan.len;
+            const close_len = scan.end - close_start;
             const close_key = scan.key;
 
             const top = self.doc.parse_stack.items[self.doc.parse_stack.items.len - 1];
-            if (top.tag_len == close_len and top.tag_key == close_key) {
+            if (@as(usize, top.tag_len) == close_len and top.tag_key == close_key) {
                 if (close_len > 8) {
                     const open_name = self.doc.nodes.items[top.idx].name.slice(self.input);
                     if (!std.mem.eql(u8, open_name[8..], self.input[close_start + 8 .. close_end])) {
@@ -442,51 +459,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 return;
             }
 
-            if (self.i + 9 <= self.input.len and
-                self.input[self.i] == '<' and
-                self.input[self.i + 1] == '!' and
-                ((self.input[self.i + 2] | 0x20) == 'd') and
-                ((self.input[self.i + 3] | 0x20) == 'o') and
-                ((self.input[self.i + 4] | 0x20) == 'c') and
-                ((self.input[self.i + 5] | 0x20) == 't') and
-                ((self.input[self.i + 6] | 0x20) == 'y') and
-                ((self.input[self.i + 7] | 0x20) == 'p') and
-                ((self.input[self.i + 8] | 0x20) == 'e'))
-            {
-                var j = self.i + 9;
-                var bracket_depth: i32 = 0;
-                var quote: u8 = 0;
-
-                while (j < self.input.len) : (j += 1) {
-                    const c = self.input[j];
-                    if (quote != 0) {
-                        if (c == quote) quote = 0;
-                        continue;
-                    }
-
-                    if (c == '\'' or c == '"') {
-                        quote = c;
-                        continue;
-                    }
-
-                    if (c == '[') {
-                        bracket_depth += 1;
-                        continue;
-                    }
-
-                    if (c == ']') {
-                        if (bracket_depth > 0) bracket_depth -= 1;
-                        continue;
-                    }
-
-                    if (c == '>' and bracket_depth == 0) break;
-                }
-
-                if (j >= self.input.len) {
+            if (scanner.isDoctype(self.input, self.i)) {
+                const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (strict_mode) return error.UnexpectedEndOfData;
                     self.i = self.input.len;
                     return;
-                }
+                };
 
                 const value_start = self.i + 9;
                 const value_end = j;
@@ -575,7 +553,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64, tag_len: u16) ParseError!void {
+        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64, tag_len: usize) ParseError!void {
             const len = self.doc.parse_stack.items.len;
             if (len == self.doc.parse_stack.capacity) {
                 @branchHint(.unlikely);
@@ -585,7 +563,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             out.* = .{
                 .idx = idx,
                 .tag_key = tag_key,
-                .tag_len = tag_len,
+                .tag_len = @intCast(tag_len),
             };
         }
 
@@ -628,7 +606,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             noalias self: *Self,
             idx: IndexInt,
             name_start: usize,
-            tag_len: u16,
+            tag_len: usize,
             tag_key: u64,
         ) ParseError!bool {
             // Fast-path the common `<tag>text</tag>` shape to avoid pushing a
@@ -710,4 +688,53 @@ test "parseInto builds a minimal DOM and enforces strict closing tags" {
         error.InvalidClosingTagName,
         parseInto(&doc, &bad, .{ .mode = .strict, .validate_closing_tags = true }),
     );
+}
+
+test "strict start-tag grammar rejects malformed attributes" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    const Case = struct { input: []const u8, err: ParseError };
+    const cases = [_]Case{
+        .{ .input = "<r a/>", .err = error.ExpectedEq },
+        .{ .input = "<r !a='1'/>", .err = error.ExpectedAttributeName },
+        .{ .input = "<r a='1'b='2'/>", .err = error.ExpectedAttributeName },
+        .{ .input = "<r a='1' b/>", .err = error.ExpectedEq },
+    };
+
+    for (cases) |case| {
+        doc.clear();
+        doc.source = case.input;
+        try std.testing.expectError(case.err, parseInto(&doc, case.input, .{ .mode = .strict, .validate_closing_tags = true }));
+    }
+
+    doc.clear();
+    doc.source = "<r></ r>";
+    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_closing_tags = true }));
+}
+
+test "strict closing validation supports tag names longer than u16" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    const name_len = 70_000;
+    const source_len = name_len * 2 + 5;
+    if (!common.lenFits(source_len)) return error.SkipZigTest;
+    const source = try std.testing.allocator.alloc(u8, source_len);
+    defer std.testing.allocator.free(source);
+
+    source[0] = '<';
+    @memset(source[1 .. 1 + name_len], 'a');
+    source[1 + name_len] = '>';
+    source[2 + name_len] = '<';
+    source[3 + name_len] = '/';
+    @memset(source[4 + name_len .. 4 + name_len * 2], 'a');
+    source[source_len - 1] = '>';
+
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    doc.source = source;
+    try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+    try std.testing.expectEqual(@as(usize, name_len), doc.nodeAt(1).?.nameSlice().len);
 }

@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "unexpected-end-open-tag-both-fail",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "strict",
+        "turbo_default"
+      ],
       "xml": "<a><b",
       "expect_ok": false,
       "expect_error": "UnexpectedEndOfData"
@@ -133,6 +136,37 @@
       "expect_root_name": "r",
       "expect_root_attr_name": "a",
       "expect_root_attr_value": "1"
+    },
+    {
+      "name": "strict-missing-attribute-equals-fails",
+      "profile": "strict",
+      "xml": "<r a/>",
+      "expect_ok": false,
+      "expect_error": "ExpectedEq"
+    },
+    {
+      "name": "strict-adjacent-attributes-without-space-fail",
+      "profile": "strict",
+      "xml": "<r a='1'b='2'/>",
+      "expect_ok": false,
+      "expect_error": "ExpectedAttributeName"
+    },
+    {
+      "name": "strict-whitespace-around-equals-passes",
+      "profile": "strict",
+      "xml": "<r a = '1'/>",
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "r",
+      "expect_root_attr_name": "a",
+      "expect_root_attr_value": "1"
+    },
+    {
+      "name": "strict-space-after-end-tag-open-fails",
+      "profile": "strict",
+      "xml": "<r></ r>",
+      "expect_ok": false,
+      "expect_error": "InvalidClosingTagName"
     },
     {
       "name": "strict-invalid-surrogate-entity-fails",

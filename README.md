@@ -122,6 +122,14 @@ _ = try stream.parseAvailable(buffer_so_far, &ctx, onNode);
 try stream.finish();
 ```
 
+`parseAvailable` expects a cumulative buffer: each call keeps the same prefix and
+adds newly received bytes. It commits only complete tokens, so callbacks for
+already-completed markup are not replayed when a later token needs more data. A
+`false` return means the final token is incomplete; pass a longer cumulative
+buffer and call again. `finish` reports a still-incomplete token and also applies
+`require_closed_elements_on_eof`. Callback-based subtree skipping is resumable
+across the same chunk boundaries.
+
 Use raw accessors when you want borrowed source slices:
 
 ```zig
