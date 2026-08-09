@@ -394,7 +394,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 while (!closed and i < input.len) {
                     const boundary = i;
-                    i = skipWs(input, i);
+                    i = skipWsMode(input, i, strict_mode);
                     if (i >= input.len) return error.UnexpectedEndOfData;
                     const c = input[i];
                     if (c == '>') {
@@ -434,7 +434,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                     }
 
-                    attr_i = skipWs(input, attr_i);
+                    attr_i = skipWsMode(input, attr_i, strict_mode);
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     if (input[attr_i] != '=') {
                         if (strict_mode) {
@@ -445,7 +445,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         continue;
                     }
                     attr_i += 1;
-                    attr_i = skipWs(input, attr_i);
+                    attr_i = skipWsMode(input, attr_i, strict_mode);
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     const quote = input[attr_i];
                     if (quote == '\'' or quote == '"') {
@@ -508,7 +508,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 var i = start + 2;
                 if (i < input.len and tables.isWhitespace(input[i])) {
                     if (strict_mode) return error.InvalidClosingTagName;
-                    i = skipWs(input, i);
+                    i = skipWsMode(input, i, strict_mode);
                 }
                 if (i >= input.len) {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
@@ -523,7 +523,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name_scan = scanner.scanNameAndKey(input, i);
                 const name_end = name_scan.end;
                 i = name_end;
-                if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
+                if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict_mode);
                 if (i >= input.len) {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
@@ -565,7 +565,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const target_start = i;
                 i = scanner.findNameEnd(input, i);
                 const target_end = i;
-                i = skipWs(input, i);
+                i = skipWsMode(input, i, strict_mode);
                 const value_start = i;
                 const end = scanner.findSequence(input, i, "?>") orelse {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
@@ -788,7 +788,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (input[j] == '>') {
                     j += 1;
                 } else if (tables.isWhitespace(input[j])) {
-                    j = skipWs(input, j);
+                    j = skipWsMode(input, j, strict_mode);
                     if (j >= input.len) {
                         if (strict_mode) return error.UnexpectedEndOfData;
                         return null;
@@ -928,6 +928,26 @@ inline fn skipWs(input: []const u8, start: usize) usize {
     return scanner.skipWhitespace(input, start);
 }
 
+inline fn skipWsStrict(input: []const u8, start: usize) usize {
+    if (start >= input.len) return start;
+    const c = input[start];
+    if (c == ' ') {
+        const next = start + 1;
+        // XML whitespace is limited to space, tab, LF, and CR. Every one of
+        // those bytes is <= ASCII space, so ordinary ` space + token` input
+        // exits here while mixed whitespace falls through to the full scan.
+        if (next >= input.len or input[next] > ' ') return next;
+    } else if (!tables.isWhitespace(c)) {
+        return start;
+    }
+    return scanner.skipWhitespace(input, start);
+}
+
+inline fn skipWsMode(input: []const u8, start: usize, comptime strict: bool) usize {
+    if (comptime strict) return skipWsStrict(input, start);
+    return skipWs(input, start);
+}
+
 fn subtreeEndOffset(input: []const u8, kind: NodeType, token_end: IndexInt, self_closing: bool) ParseError!usize {
     const end: usize = token_end;
     return switch (kind) {
@@ -984,7 +1004,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
     const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
     while (i < input.len) {
         const boundary = i;
-        i = skipWs(input, i);
+        i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
         if (c == '>') return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
@@ -1002,7 +1022,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
             continue;
         }
         i = scanner.findNameEnd(input, i);
-        i = skipWs(input, i);
+        i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         if (input[i] != '=') {
             if (strict) {
@@ -1012,7 +1032,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
             continue;
         }
         i += 1;
-        i = skipWs(input, i);
+        i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
@@ -1034,7 +1054,7 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseE
     var i = start + 2;
     if (i < input.len and tables.isWhitespace(input[i])) {
         if (strict) return error.InvalidClosingTagName;
-        i = skipWs(input, i);
+        i = skipWsMode(input, i, strict);
     }
     if (i >= input.len) return error.UnexpectedEndOfData;
     if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
@@ -1042,7 +1062,7 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseE
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
     i = name_end;
-    if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
+    if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict);
     if (i >= input.len) return error.UnexpectedEndOfData;
     if (input[i] != '>') return error.InvalidClosingTagName;
     return .{ .next = i + 1, .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) }, .key = name_scan.key };
@@ -1580,4 +1600,22 @@ test "streaming strict validation supports tag names longer than u16" {
     var ctx: Ctx = .{};
     try parser.parse(source, &ctx, Ctx.onNode);
     try std.testing.expectEqual(@as(usize, 1), ctx.count);
+}
+
+test "streaming strict accepts mixed XML whitespace between attributes" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        count: usize = 0,
+        fn onNode(self: *@This(), _: Event) bool {
+            self.count += 1;
+            return true;
+        }
+    };
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse("<r \n\t a='1' \r\n b=\"2\">x</r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 2), ctx.count);
 }

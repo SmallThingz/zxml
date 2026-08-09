@@ -588,7 +588,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const c = self.input[self.i];
             if (c == ' ') {
                 const next = self.i + 1;
-                if (next >= self.input.len or self.input[next] != ' ') {
+                if (comptime strict_mode) {
+                    // All XML whitespace bytes are <= ASCII space. Keep the
+                    // ordinary ` space + token` path to one extra comparison,
+                    // but fall through for mixed space/newline/tab/CR runs.
+                    if (next >= self.input.len or self.input[next] > ' ') {
+                        self.i = next;
+                        return;
+                    }
+                } else if (next >= self.input.len or self.input[next] != ' ') {
                     self.i = next;
                     return;
                 }
@@ -739,4 +747,15 @@ test "strict closing validation supports tag names longer than u16" {
     doc.source = source;
     try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
     try std.testing.expectEqual(@as(usize, name_len), doc.nodeAt(1).?.nameSlice().len);
+}
+
+test "strict start tags accept mixed XML whitespace between attributes" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    const source = "<r \n\t a='1' \r\n b=\"2\">x</r>";
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    doc.source = source;
+    try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+    try std.testing.expectEqual(@as(usize, 2), doc.attrs.items.len);
 }

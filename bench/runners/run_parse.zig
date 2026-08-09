@@ -31,6 +31,8 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
     var turbo_stream = StreamTurbo.StreamingParser.init(alloc);
     defer turbo_stream.deinit();
 
+    var final_checksum: u64 = 0;
+    var final_count: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     switch (mode) {
         .strict => {
@@ -56,30 +58,64 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
         },
         .stream_strict => {
             const StreamingEventType = StreamStrict.StreamingEvent;
-            const Callback = struct {
-                fn onNode(_: *const StreamingEventType) bool {
+            const Context = struct {
+                checksum: u64 = 0,
+                count: u64 = 0,
+
+                fn onNode(self: *@This(), node: *const StreamingEventType) bool {
+                    self.count +%= 1;
+                    var x: u64 = @intFromEnum(node.kind);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.depth);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.start);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.end);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.start);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.end);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.token_end);
+                    x = x *% 0x9e3779b185ebca87 +% @intFromBool(node.self_closing);
+                    self.checksum = (self.checksum ^ x) *% 0x100000001b3;
                     return true;
                 }
             };
+            var ctx: Context = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
-                try strict_stream.parse(input, {}, Callback.onNode);
+                try strict_stream.parse(input, &ctx, Context.onNode);
             }
+            final_checksum = ctx.checksum;
+            final_count = ctx.count;
         },
         .stream_turbo => {
             const StreamingEventType = StreamTurbo.StreamingEvent;
-            const Callback = struct {
-                fn onNode(_: *const StreamingEventType) bool {
+            const Context = struct {
+                checksum: u64 = 0,
+                count: u64 = 0,
+
+                fn onNode(self: *@This(), node: *const StreamingEventType) bool {
+                    self.count +%= 1;
+                    var x: u64 = @intFromEnum(node.kind);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.depth);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.start);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.end);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.start);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.end);
+                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.token_end);
+                    x = x *% 0x9e3779b185ebca87 +% @intFromBool(node.self_closing);
+                    self.checksum = (self.checksum ^ x) *% 0x100000001b3;
                     return true;
                 }
             };
+            var ctx: Context = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
-                try turbo_stream.parse(input, {}, Callback.onNode);
+                try turbo_stream.parse(input, &ctx, Context.onNode);
             }
+            final_checksum = ctx.checksum;
+            final_count = ctx.count;
         },
     }
     const end = std.Io.Clock.Timestamp.now(io, .awake);
+    std.mem.doNotOptimizeAway(final_checksum);
+    std.mem.doNotOptimizeAway(final_count);
     const elapsed = start.durationTo(end);
     return @intCast(@max(elapsed.raw.nanoseconds, 0));
 }
