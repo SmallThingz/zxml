@@ -397,6 +397,12 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize) ParseError!usize {
+                if (!validate_closing_tags) {
+                    const gt = scanner.findByte(input, start + 2, '>') orelse input.len;
+                    if (self.stack.items.len != 0) self.stack.items.len -= 1;
+                    return if (gt < input.len) gt + 1 else gt;
+                }
+
                 var i = start + 2;
                 if (i < input.len and tables.isWhitespace(input[i])) i = skipWs(input, i);
                 if (i >= input.len) {
