@@ -45,7 +45,7 @@ it benchmarks string scanning more than XML DOM work.
 
 <!-- BENCH_README_AUTO_SNAPSHOT:START -->
 
-Source: `bench/results/latest.json` (`quick` profile).
+Source: `bench/results/latest.json` (`stable` profile).
 
 ## Latest Benchmark Snapshot
 
@@ -53,76 +53,91 @@ Source: `bench/results/latest.json` (`quick` profile).
 
 | Fixture | ours-turbo | ours-strict | stream-turbo | stream-strict | pugixml | rapidxml |
 |---|---:|---:|---:|---:|---:|---:|
-| `note.xml` | 2164.90 | 2222.21 | 2851.12 | 2721.45 | 1000.75 | 1850.06 |
-| `sitemaps.xml` | 2163.78 | 2091.18 | 2592.26 | 2547.53 | 1836.92 | 1865.24 |
-| `plant_catalog.xml` | 2054.40 | 1926.40 | 2822.16 | 2681.89 | 1426.47 | 1501.57 |
-| `cd_catalog.xml` | 1915.22 | 1874.03 | 2764.71 | 2653.73 | 1353.70 | 1518.43 |
-| `hnrss.xml` | 5392.69 | 5021.62 | 5860.17 | 5646.02 | 2798.12 | 2247.02 |
-| `xkcd_rss.xml` | 6315.79 | 6195.11 | 7660.55 | 7290.42 | 2493.55 | 1797.80 |
-| `bbc_world.xml` | 3572.87 | 3382.62 | 4547.00 | 4374.07 | 2567.42 | 2278.82 |
-| `arxiv_cs.xml` | 6982.12 | 6679.45 | 8794.25 | 8766.35 | 2657.65 | 1612.40 |
-| `ecb_usd.xml` | 4316.35 | 3955.79 | 4761.78 | 4619.57 | 2595.24 | 2395.64 |
-| `pugixml_large.xml` | 1776.46 | 1847.78 | 2144.24 | 2141.00 | 460.29 | 295.89 |
-| `weekly_utf8.xml` | 2521.22 | 2159.67 | 2801.03 | 2626.65 | 2098.78 | 2289.56 |
-| `xgconsole.xml` | 2807.89 | 2649.75 | 3441.16 | 3339.73 | 1908.24 | 2132.04 |
-| `synthetic_flat_attrs.xml` | 1598.11 | 1560.92 | 1761.33 | 1707.89 | 429.33 | 329.95 |
-| `synthetic_deep_tree.xml` | 1349.59 | 1265.79 | 1855.53 | 1692.12 | 1144.59 | 478.15 |
-| `synthetic_entities.xml` | 3724.32 | 3639.18 | 4495.13 | 4398.12 | 520.80 | 775.46 |
-| `synthetic_cdata_mix.xml` | 2338.00 | 2312.74 | 2809.75 | 2649.63 | 901.11 | 839.17 |
-| `synthetic_wide_siblings.xml` | 1797.96 | 1745.97 | 2563.43 | 2439.20 | 415.81 | 283.58 |
-| `synthetic_namespace_mix.xml` | 2564.84 | 2409.58 | 2976.85 | 2836.49 | 652.06 | 520.23 |
-| `synthetic_long_names.xml` | 3736.59 | 3448.65 | 4042.33 | 3567.12 | 1283.70 | 1349.39 |
-| `synthetic_self_closing_swarm.xml` | 2461.44 | 2463.97 | 2960.03 | 2855.22 | 571.40 | 445.19 |
+| `note.xml` | 2145.75 | 2038.67 | 2915.60 | 2814.18 | 1024.88 | 1837.21 |
+| `sitemaps.xml` | 2161.69 | 1997.86 | 3000.88 | 2901.07 | 1920.33 | 1901.58 |
+| `plant_catalog.xml` | 2036.53 | 1834.67 | 3081.86 | 2839.59 | 1510.53 | 1537.13 |
+| `cd_catalog.xml` | 1896.12 | 1810.49 | 3072.63 | 2835.03 | 1374.80 | 1597.87 |
+| `hnrss.xml` | 5364.44 | 4794.50 | 6431.49 | 5770.48 | 2718.02 | 2260.28 |
+| `xkcd_rss.xml` | 6342.06 | 5983.89 | 8252.95 | 7351.87 | 2494.80 | 1837.27 |
+| `bbc_world.xml` | 3397.25 | 3262.97 | 4779.41 | 4387.63 | 2575.75 | 2292.94 |
+| `arxiv_cs.xml` | 7094.64 | 6681.59 | 9298.30 | 8922.12 | 2692.95 | 1695.16 |
+| `ecb_usd.xml` | 4134.45 | 3866.29 | 4989.79 | 4460.99 | 2658.14 | 2368.75 |
+| `tree.xml` | 2200.46 | 2078.34 | 2678.92 | 2390.42 | 1322.85 | 2088.78 |
+| `character.xml` | 2006.47 | 1929.45 | 2704.82 | 2319.08 | 1227.74 | 1933.98 |
+| `transitions.xml` | 2207.47 | 1932.16 | 2833.79 | 2305.90 | 1399.26 | 1773.44 |
+| `xgconsole.xml` | 2644.51 | 2514.09 | 3722.08 | 3408.65 | 1993.73 | 2127.41 |
+| `weekly_utf8.xml` | 2314.66 | 2066.98 | 3079.63 | 2502.80 | 2073.51 | 2304.10 |
+| `pugixml_large.xml` | 1606.68 | 1570.55 | 2313.99 | 2305.85 | 480.42 | 309.93 |
+| `synthetic_flat_attrs.xml` | 1459.42 | 1271.14 | 1947.37 | 1653.66 | 459.75 | 342.61 |
+| `synthetic_deep_tree.xml` | 1311.46 | 1154.92 | 2113.16 | 1757.29 | 1225.40 | 489.61 |
+| `synthetic_entities.xml` | 3651.54 | 3373.82 | 4830.49 | 4522.34 | 534.64 | 817.65 |
+| `synthetic_cdata_mix.xml` | 2398.14 | 2329.49 | 2903.95 | 2699.19 | 925.64 | 860.17 |
+| `synthetic_wide_siblings.xml` | 1796.73 | 1633.17 | 2834.59 | 2525.51 | 440.03 | 310.93 |
+| `synthetic_namespace_mix.xml` | 2518.08 | 2219.96 | 3413.04 | 2927.09 | 685.77 | 529.31 |
+| `synthetic_long_names.xml` | 3527.68 | 3394.62 | 3884.11 | 3438.99 | 1317.14 | 1379.72 |
+| `synthetic_self_closing_swarm.xml` | 2372.60 | 2163.56 | 3195.18 | 2823.60 | 598.43 | 474.36 |
+| `synthetic_mixed_content.xml` | 1978.03 | 1904.09 | 2749.83 | 2521.29 | 639.59 | 492.19 |
+| `synthetic_small_records.xml` | 2051.80 | 1853.17 | 3030.26 | 2672.49 | 436.36 | 322.53 |
 
 ### Stable Gates
 
 | Fixture | ours-turbo | best external | ours/best-ext | Result |
 |---|---:|---|---:|---|
-| `note.xml` | 2164.90 | `rapidxml` 1850.06 | 1.170 | PASS |
-| `sitemaps.xml` | 2163.78 | `rapidxml` 1865.24 | 1.160 | PASS |
-| `plant_catalog.xml` | 2054.40 | `rapidxml` 1501.57 | 1.368 | PASS |
-| `cd_catalog.xml` | 1915.22 | `rapidxml` 1518.43 | 1.261 | PASS |
-| `hnrss.xml` | 5392.69 | `pugixml` 2798.12 | 1.927 | PASS |
-| `xkcd_rss.xml` | 6315.79 | `pugixml` 2493.55 | 2.533 | PASS |
-| `bbc_world.xml` | 3572.87 | `pugixml` 2567.42 | 1.392 | PASS |
-| `arxiv_cs.xml` | 6982.12 | `pugixml` 2657.65 | 2.627 | PASS |
-| `ecb_usd.xml` | 4316.35 | `pugixml` 2595.24 | 1.663 | PASS |
-| `pugixml_large.xml` | 1776.46 | `pugixml` 460.29 | 3.859 | PASS |
-| `weekly_utf8.xml` | 2521.22 | `rapidxml` 2289.56 | 1.101 | PASS |
-| `xgconsole.xml` | 2807.89 | `rapidxml` 2132.04 | 1.317 | PASS |
-| `synthetic_flat_attrs.xml` | 1598.11 | `pugixml` 429.33 | 3.722 | PASS |
-| `synthetic_deep_tree.xml` | 1349.59 | `pugixml` 1144.59 | 1.179 | PASS |
-| `synthetic_entities.xml` | 3724.32 | `rapidxml` 775.46 | 4.803 | PASS |
-| `synthetic_cdata_mix.xml` | 2338.00 | `pugixml` 901.11 | 2.595 | PASS |
-| `synthetic_wide_siblings.xml` | 1797.96 | `pugixml` 415.81 | 4.324 | PASS |
-| `synthetic_namespace_mix.xml` | 2564.84 | `pugixml` 652.06 | 3.933 | PASS |
-| `synthetic_long_names.xml` | 3736.59 | `rapidxml` 1349.39 | 2.769 | PASS |
-| `synthetic_self_closing_swarm.xml` | 2461.44 | `pugixml` 571.40 | 4.308 | PASS |
+| `note.xml` | 2145.75 | `rapidxml` 1837.21 | 1.168 | PASS |
+| `sitemaps.xml` | 2161.69 | `pugixml` 1920.33 | 1.126 | PASS |
+| `plant_catalog.xml` | 2036.53 | `rapidxml` 1537.13 | 1.325 | PASS |
+| `cd_catalog.xml` | 1896.12 | `rapidxml` 1597.87 | 1.187 | PASS |
+| `hnrss.xml` | 5364.44 | `pugixml` 2718.02 | 1.974 | PASS |
+| `xkcd_rss.xml` | 6342.06 | `pugixml` 2494.80 | 2.542 | PASS |
+| `bbc_world.xml` | 3397.25 | `pugixml` 2575.75 | 1.319 | PASS |
+| `arxiv_cs.xml` | 7094.64 | `pugixml` 2692.95 | 2.635 | PASS |
+| `ecb_usd.xml` | 4134.45 | `pugixml` 2658.14 | 1.555 | PASS |
+| `tree.xml` | 2200.46 | `rapidxml` 2088.78 | 1.053 | PASS |
+| `character.xml` | 2006.47 | `rapidxml` 1933.98 | 1.037 | PASS |
+| `transitions.xml` | 2207.47 | `rapidxml` 1773.44 | 1.245 | PASS |
+| `xgconsole.xml` | 2644.51 | `rapidxml` 2127.41 | 1.243 | PASS |
+| `weekly_utf8.xml` | 2314.66 | `rapidxml` 2304.10 | 1.005 | PASS |
+| `pugixml_large.xml` | 1606.68 | `pugixml` 480.42 | 3.344 | PASS |
+| `synthetic_flat_attrs.xml` | 1459.42 | `pugixml` 459.75 | 3.174 | PASS |
+| `synthetic_deep_tree.xml` | 1311.46 | `pugixml` 1225.40 | 1.070 | PASS |
+| `synthetic_entities.xml` | 3651.54 | `rapidxml` 817.65 | 4.466 | PASS |
+| `synthetic_cdata_mix.xml` | 2398.14 | `pugixml` 925.64 | 2.591 | PASS |
+| `synthetic_wide_siblings.xml` | 1796.73 | `pugixml` 440.03 | 4.083 | PASS |
+| `synthetic_namespace_mix.xml` | 2518.08 | `pugixml` 685.77 | 3.672 | PASS |
+| `synthetic_long_names.xml` | 3527.68 | `rapidxml` 1379.72 | 2.557 | PASS |
+| `synthetic_self_closing_swarm.xml` | 2372.60 | `pugixml` 598.43 | 3.965 | PASS |
+| `synthetic_mixed_content.xml` | 1978.03 | `pugixml` 639.59 | 3.093 | PASS |
+| `synthetic_small_records.xml` | 2051.80 | `pugixml` 436.36 | 4.702 | PASS |
 
 ### Streaming Gates
 
 | Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours | Result |
 |---|---:|---:|---:|---:|---:|---:|---|
-| `note.xml` | 2851.12 | 2164.90 | 1.317 | 2721.45 | 2222.21 | 1.225 | PASS |
-| `sitemaps.xml` | 2592.26 | 2163.78 | 1.198 | 2547.53 | 2091.18 | 1.218 | PASS |
-| `plant_catalog.xml` | 2822.16 | 2054.40 | 1.374 | 2681.89 | 1926.40 | 1.392 | PASS |
-| `cd_catalog.xml` | 2764.71 | 1915.22 | 1.444 | 2653.73 | 1874.03 | 1.416 | PASS |
-| `hnrss.xml` | 5860.17 | 5392.69 | 1.087 | 5646.02 | 5021.62 | 1.124 | PASS |
-| `xkcd_rss.xml` | 7660.55 | 6315.79 | 1.213 | 7290.42 | 6195.11 | 1.177 | PASS |
-| `bbc_world.xml` | 4547.00 | 3572.87 | 1.273 | 4374.07 | 3382.62 | 1.293 | PASS |
-| `arxiv_cs.xml` | 8794.25 | 6982.12 | 1.260 | 8766.35 | 6679.45 | 1.312 | PASS |
-| `ecb_usd.xml` | 4761.78 | 4316.35 | 1.103 | 4619.57 | 3955.79 | 1.168 | PASS |
-| `pugixml_large.xml` | 2144.24 | 1776.46 | 1.207 | 2141.00 | 1847.78 | 1.159 | PASS |
-| `weekly_utf8.xml` | 2801.03 | 2521.22 | 1.111 | 2626.65 | 2159.67 | 1.216 | PASS |
-| `xgconsole.xml` | 3441.16 | 2807.89 | 1.226 | 3339.73 | 2649.75 | 1.260 | PASS |
-| `synthetic_flat_attrs.xml` | 1761.33 | 1598.11 | 1.102 | 1707.89 | 1560.92 | 1.094 | PASS |
-| `synthetic_deep_tree.xml` | 1855.53 | 1349.59 | 1.375 | 1692.12 | 1265.79 | 1.337 | PASS |
-| `synthetic_entities.xml` | 4495.13 | 3724.32 | 1.207 | 4398.12 | 3639.18 | 1.209 | PASS |
-| `synthetic_cdata_mix.xml` | 2809.75 | 2338.00 | 1.202 | 2649.63 | 2312.74 | 1.146 | PASS |
-| `synthetic_wide_siblings.xml` | 2563.43 | 1797.96 | 1.426 | 2439.20 | 1745.97 | 1.397 | PASS |
-| `synthetic_namespace_mix.xml` | 2976.85 | 2564.84 | 1.161 | 2836.49 | 2409.58 | 1.177 | PASS |
-| `synthetic_long_names.xml` | 4042.33 | 3736.59 | 1.082 | 3567.12 | 3448.65 | 1.034 | PASS |
-| `synthetic_self_closing_swarm.xml` | 2960.03 | 2461.44 | 1.203 | 2855.22 | 2463.97 | 1.159 | PASS |
+| `note.xml` | 2915.60 | 2145.75 | 1.359 | 2814.18 | 2038.67 | 1.380 | PASS |
+| `sitemaps.xml` | 3000.88 | 2161.69 | 1.388 | 2901.07 | 1997.86 | 1.452 | PASS |
+| `plant_catalog.xml` | 3081.86 | 2036.53 | 1.513 | 2839.59 | 1834.67 | 1.548 | PASS |
+| `cd_catalog.xml` | 3072.63 | 1896.12 | 1.620 | 2835.03 | 1810.49 | 1.566 | PASS |
+| `hnrss.xml` | 6431.49 | 5364.44 | 1.199 | 5770.48 | 4794.50 | 1.204 | PASS |
+| `xkcd_rss.xml` | 8252.95 | 6342.06 | 1.301 | 7351.87 | 5983.89 | 1.229 | PASS |
+| `bbc_world.xml` | 4779.41 | 3397.25 | 1.407 | 4387.63 | 3262.97 | 1.345 | PASS |
+| `arxiv_cs.xml` | 9298.30 | 7094.64 | 1.311 | 8922.12 | 6681.59 | 1.335 | PASS |
+| `ecb_usd.xml` | 4989.79 | 4134.45 | 1.207 | 4460.99 | 3866.29 | 1.154 | PASS |
+| `tree.xml` | 2678.92 | 2200.46 | 1.217 | 2390.42 | 2078.34 | 1.150 | PASS |
+| `character.xml` | 2704.82 | 2006.47 | 1.348 | 2319.08 | 1929.45 | 1.202 | PASS |
+| `transitions.xml` | 2833.79 | 2207.47 | 1.284 | 2305.90 | 1932.16 | 1.193 | PASS |
+| `xgconsole.xml` | 3722.08 | 2644.51 | 1.407 | 3408.65 | 2514.09 | 1.356 | PASS |
+| `weekly_utf8.xml` | 3079.63 | 2314.66 | 1.330 | 2502.80 | 2066.98 | 1.211 | PASS |
+| `pugixml_large.xml` | 2313.99 | 1606.68 | 1.440 | 2305.85 | 1570.55 | 1.468 | PASS |
+| `synthetic_flat_attrs.xml` | 1947.37 | 1459.42 | 1.334 | 1653.66 | 1271.14 | 1.301 | PASS |
+| `synthetic_deep_tree.xml` | 2113.16 | 1311.46 | 1.611 | 1757.29 | 1154.92 | 1.522 | PASS |
+| `synthetic_entities.xml` | 4830.49 | 3651.54 | 1.323 | 4522.34 | 3373.82 | 1.340 | PASS |
+| `synthetic_cdata_mix.xml` | 2903.95 | 2398.14 | 1.211 | 2699.19 | 2329.49 | 1.159 | PASS |
+| `synthetic_wide_siblings.xml` | 2834.59 | 1796.73 | 1.578 | 2525.51 | 1633.17 | 1.546 | PASS |
+| `synthetic_namespace_mix.xml` | 3413.04 | 2518.08 | 1.355 | 2927.09 | 2219.96 | 1.319 | PASS |
+| `synthetic_long_names.xml` | 3884.11 | 3527.68 | 1.101 | 3438.99 | 3394.62 | 1.013 | PASS |
+| `synthetic_self_closing_swarm.xml` | 3195.18 | 2372.60 | 1.347 | 2823.60 | 2163.56 | 1.305 | PASS |
+| `synthetic_mixed_content.xml` | 2749.83 | 1978.03 | 1.390 | 2521.29 | 1904.09 | 1.324 | PASS |
+| `synthetic_small_records.xml` | 3030.26 | 2051.80 | 1.477 | 2672.49 | 1853.17 | 1.442 | PASS |
 
 For the full terminal-style report:
 - `bench/results/latest.md`

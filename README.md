@@ -2,7 +2,7 @@
 
 Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an in-tree benchmark/conformance harness.
 
-![zig](https://img.shields.io/badge/zig-0.15.2-f7a41d?logo=zig&logoColor=111)
+![zig](https://img.shields.io/badge/zig-0.16-f7a41d?logo=zig&logoColor=111)
 ![format](https://img.shields.io/badge/format-xml-0f766e)
 
 ## Features
@@ -18,25 +18,25 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`quick` profile).
+Source: `bench/results/latest.json` (`stable` profile).
 
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-stream-turbo  │████████████████████│ 3725.24 MB/s (100.00%)
-stream-strict │███████████████████░│ 3577.71 MB/s (96.04%)
-ours-turbo    │█████████████████░░░│ 3077.73 MB/s (82.62%)
-ours-strict   │████████████████░░░░│ 2942.62 MB/s (78.99%)
-pugixml       │████████░░░░░░░░░░░░│ 1455.80 MB/s (39.08%)
-rapidxml      │███████░░░░░░░░░░░░░│ 1340.28 MB/s (35.98%)
+stream-turbo  │████████████████████│ 3762.33 MB/s (100.00%)
+stream-strict │██████████████████░░│ 3402.28 MB/s (90.43%)
+ours-turbo    │███████████████░░░░░│ 2824.75 MB/s (75.08%)
+ours-strict   │██████████████░░░░░░│ 2626.42 MB/s (69.81%)
+pugixml       │███████░░░░░░░░░░░░░│ 1389.22 MB/s (36.92%)
+rapidxml      │███████░░░░░░░░░░░░░│ 1355.40 MB/s (36.03%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `quick` | 20/20 | `ours-turbo >= max(pugixml, rapidxml)` |
-| `quick` | 20/20 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
+| `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `stable` | 25/25 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
