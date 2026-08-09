@@ -1,10 +1,11 @@
 const std = @import("std");
 const tables = @import("tables.zig");
-const mem = @import("mem.zig");
 
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
-    // Most XML runs are short. Keep the branch-light scalar probe for those;
-    // use SIMD only once enough input remains to amortize vector setup.
+    if (start >= haystack.len) {
+        @branchHint(.unlikely);
+        return null;
+    }
     const probe_end = @min(haystack.len, start + 32);
     var i = start;
     while (i + 8 <= probe_end) : (i += 8) {
@@ -17,16 +18,11 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
         if (haystack[i + 6] == needle) return i + 6;
         if (haystack[i + 7] == needle) return i + 7;
     }
-    while (i < probe_end) : (i += 1) if (haystack[i] == needle) return i;
+    while (i < probe_end) : (i += 1) {
+        if (haystack[i] == needle) return i;
+    }
+    if (probe_end == haystack.len) return null;
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
-}
-
-/// SIMD-backed variant for text-sized runs. Callers use the scalar-probed
-/// `findByte` for typically short names and attribute values.
-pub inline fn findByteLong(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
-    const probe_end = @min(haystack.len, start + 32);
-    const early = findByte(haystack[0..probe_end], start, needle);
-    return early orelse mem.findBytePos(haystack, probe_end, needle);
 }
 
 pub const NameScan = struct {
@@ -125,12 +121,12 @@ pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
     if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
     if (!tables.WhitespaceTable[hay[start]]) {
         return .{
-            .lt_index = findByteLong(hay, start, '<') orelse hay.len,
+            .lt_index = findByte(hay, start, '<') orelse hay.len,
             .has_non_whitespace = true,
         };
     }
 
-    const lt_index = findByteLong(hay, start, '<') orelse hay.len;
+    const lt_index = findByte(hay, start, '<') orelse hay.len;
     var i = start + 1;
     while (i < lt_index) : (i += 1) {
         if (!tables.WhitespaceTable[hay[i]]) {
@@ -211,6 +207,7 @@ pub fn findDoctypeEnd(input: []const u8, start: usize) ?usize {
 test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, 3), findByte("abc<def", 0, '<'));
     try std.testing.expectEqual(@as(?usize, null), findByte("abc", 9, '<'));
+    try std.testing.expectEqual(@as(?usize, null), findByte("abc", std.math.maxInt(usize), '<'));
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abc?def", 0, "?"));
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abc?>def", 0, "?>"));
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abc]]>def", 0, "]]>"));

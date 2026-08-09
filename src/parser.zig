@@ -566,7 +566,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const text_start = self.i;
             if (text_start >= self.input.len or self.input[text_start] == '<') return false;
 
-            const lt = scanner.findByteLong(self.input, text_start, '<') orelse return false;
+            const lt = scanner.findByte(self.input, text_start, '<') orelse return false;
             if (lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
 
             const close_start = lt + 2;

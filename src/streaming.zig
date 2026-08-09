@@ -623,7 +623,7 @@ pub fn Types(comptime options: ParseOptions) type {
             fn walkSkipped(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!SkipProgress {
                 var i = start;
                 while (i < input.len) {
-                    const lt = scanner.findByteLong(input, i, '<') orelse {
+                    const lt = scanner.findByte(input, i, '<') orelse {
                         if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     };
@@ -725,7 +725,7 @@ pub fn Types(comptime options: ParseOptions) type {
             ) ParseError!?usize {
                 if (content_start >= input.len or input[content_start] == '<') return null;
 
-                const lt = scanner.findByteLong(input, content_start, '<') orelse return null;
+                const lt = scanner.findByte(input, content_start, '<') orelse return null;
                 if (lt == content_start or lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
                 const open_len: usize = name.len();
