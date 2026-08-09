@@ -23,12 +23,12 @@ Source: `bench/results/latest.json` (`stable` profile).
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-stream-turbo  │████████████████████│ 3569.70 MB/s (100.00%)
-stream-strict │██████████████████░░│ 3198.87 MB/s (89.61%)
-ours-turbo    │███████████████░░░░░│ 2758.91 MB/s (77.29%)
-ours-strict   │███████████████░░░░░│ 2589.68 MB/s (72.55%)
-rapidxml      │████████░░░░░░░░░░░░│ 1357.71 MB/s (38.03%)
-pugixml       │███████░░░░░░░░░░░░░│ 1316.35 MB/s (36.88%)
+stream-turbo  │████████████████████│ 3497.01 MB/s (100.00%)
+stream-strict │██████████████████░░│ 3177.11 MB/s (90.85%)
+ours-turbo    │████████████████░░░░│ 2777.58 MB/s (79.43%)
+ours-strict   │███████████████░░░░░│ 2588.90 MB/s (74.03%)
+rapidxml      │████████░░░░░░░░░░░░│ 1371.94 MB/s (39.23%)
+pugixml       │████████░░░░░░░░░░░░│ 1338.41 MB/s (38.27%)
 ```
 
 ### Stable Gate Snapshot

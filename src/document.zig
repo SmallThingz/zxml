@@ -100,7 +100,11 @@ pub const ParseDiagnostic = struct {
     }
 };
 
-const ParseStackEntry = IndexInt;
+pub const ParseStackEntry = struct {
+    idx: IndexInt,
+    tag_key: u64 = 0,
+    tag_len: IndexInt = 0,
+};
 
 pub const NodeType = enum(u4) {
     document,
@@ -384,7 +388,10 @@ pub const Document = struct {
 
     nodes: std.ArrayList(RawNode) = .empty,
     attrs: std.ArrayList(RawAttribute) = .empty,
-    parse_stack: std.ArrayList(ParseStackEntry) = .empty,
+    /// Kept compact because every parse mode uses this parent stack.
+    parse_stack: std.ArrayList(IndexInt) = .empty,
+    /// Interleaved validation stack selected only by strict/validated parses.
+    parse_validate_stack: std.ArrayList(ParseStackEntry) = .empty,
     entity_map: std.StringHashMap([]u8),
 
     pub fn init(allocator: std.mem.Allocator) Document {
@@ -400,6 +407,7 @@ pub const Document = struct {
         self.nodes.deinit(self.allocator);
         self.attrs.deinit(self.allocator);
         self.parse_stack.deinit(self.allocator);
+        self.parse_validate_stack.deinit(self.allocator);
     }
 
     inline fn resetParsedData(self: *Document) void {
@@ -407,6 +415,7 @@ pub const Document = struct {
         self.nodes.items.len = 0;
         self.attrs.items.len = 0;
         self.parse_stack.items.len = 0;
+        self.parse_validate_stack.items.len = 0;
     }
 
     pub fn clear(self: *Document) void {
