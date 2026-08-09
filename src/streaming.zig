@@ -184,18 +184,33 @@ pub fn Types(comptime options: ParseOptions) type {
                                 continue;
                             }
                         }
-                        const run = scanner.scanTextRun(input, i);
-                        if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
-                            const node: Node = .{
-                                .source = input,
-                                .kind = .text,
-                                .depth = @intCast(self.stackLen()),
-                                .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
-                                .token_end = @intCast(run.lt_index),
-                            };
-                            _ = callCallback(ctx, callback, &node);
+                        if (comptime strict_mode) {
+                            const run = scanner.scanTextRun(input, i);
+                            if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                                const node: Node = .{
+                                    .source = input,
+                                    .kind = .text,
+                                    .depth = @intCast(self.stackLen()),
+                                    .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
+                                    .token_end = @intCast(run.lt_index),
+                                };
+                                _ = callCallback(ctx, callback, &node);
+                            }
+                            i = run.lt_index;
+                        } else {
+                            const lt_index = scanner.findByte(input, i, '<') orelse input.len;
+                            if (lt_index > i) {
+                                const node: Node = .{
+                                    .source = input,
+                                    .kind = .text,
+                                    .depth = @intCast(self.stackLen()),
+                                    .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
+                                    .token_end = @intCast(lt_index),
+                                };
+                                _ = callCallback(ctx, callback, &node);
+                            }
+                            i = lt_index;
                         }
-                        i = run.lt_index;
                         continue;
                     }
 
@@ -295,18 +310,32 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (next >= input.len) return next;
                         if (input[next] == '<') return next;
                     }
-                    const run = scanner.scanTextRun(input, i);
-                    if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                    if (comptime strict_mode) {
+                        const run = scanner.scanTextRun(input, i);
+                        if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                            const node: Node = .{
+                                .source = input,
+                                .kind = .text,
+                                .depth = @intCast(self.stackLen()),
+                                .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
+                                .token_end = @intCast(run.lt_index),
+                            };
+                            _ = callCallback(ctx, callback, &node);
+                        }
+                        return run.lt_index;
+                    }
+                    const lt_index = scanner.findByte(input, i, '<') orelse input.len;
+                    if (lt_index > i) {
                         const node: Node = .{
                             .source = input,
                             .kind = .text,
                             .depth = @intCast(self.stackLen()),
-                            .data = .{ .start = @intCast(i), .end = @intCast(run.lt_index) },
-                            .token_end = @intCast(run.lt_index),
+                            .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
+                            .token_end = @intCast(lt_index),
                         };
                         _ = callCallback(ctx, callback, &node);
                     }
-                    return run.lt_index;
+                    return lt_index;
                 }
                 if (i + 1 >= input.len) {
                     if (!incremental and !strict_mode) return input.len;
@@ -340,7 +369,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const name_start = i;
-                const name_scan = scanner.scanNameAndKey(input, i);
+                const name_scan = if (comptime validate_closing_tags) scanner.scanNameAndKey(input, i) else scanner.NameScan{
+                    .end = scanner.findNameEnd(input, i),
+                    .key = 0,
+                };
                 const name_end = name_scan.end;
                 i = name_end;
                 const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
@@ -349,7 +381,18 @@ pub fn Types(comptime options: ParseOptions) type {
                 var self_closing = false;
                 var closed = false;
 
-                while (i < input.len) {
+                if (i < input.len and input[i] == '>') {
+                    attr_end = i;
+                    i += 1;
+                    closed = true;
+                } else if (i + 1 < input.len and input[i] == '/' and input[i + 1] == '>') {
+                    attr_end = i;
+                    i += 2;
+                    self_closing = true;
+                    closed = true;
+                }
+
+                while (!closed and i < input.len) {
                     const boundary = i;
                     i = skipWs(input, i);
                     if (i >= input.len) return error.UnexpectedEndOfData;
@@ -442,8 +485,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     return try self.skipSubtree(input, i, name, name_scan.key);
                 }
-                if (!incremental) {
-                    if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
+                if (comptime validate_closing_tags) {
+                    if (!incremental) {
+                        if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
+                    }
                 }
 
                 try self.pushStack(name, name_scan.key);

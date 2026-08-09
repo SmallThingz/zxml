@@ -64,6 +64,23 @@ pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
     return .{ .end = findNameEnd(input, i), .key = key };
 }
 
+pub inline fn scanNameAndKeyAfterStart(input: []const u8, start: usize) NameScan {
+    std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
+    var i = start + 1;
+    var key: u64 = input[start];
+    inline for (1..8) |n| {
+        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{ .end = i, .key = key };
+        key |= @as(u64, input[i]) << @intCast(n * 8);
+        i += 1;
+    }
+    return .{ .end = findNameEnd(input, i), .key = key };
+}
+
+pub inline fn findNameEndAfterStart(noalias input: []const u8, start: usize) usize {
+    std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
+    return findNameEnd(input, start + 1);
+}
+
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {
     var i = start;
     while (i + 8 <= input.len) : (i += 8) {
@@ -134,6 +151,27 @@ pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
         }
     }
     return .{ .lt_index = lt_index, .has_non_whitespace = false };
+}
+
+pub fn scanTextRunStrict(hay: []const u8, start: usize) TextRun {
+    if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
+    if (!tables.WhitespaceTable[hay[start]]) {
+        return .{
+            .lt_index = findByte(hay, start, '<') orelse hay.len,
+            .has_non_whitespace = true,
+        };
+    }
+    return scanWhitespaceTextRun(hay, start);
+}
+
+noinline fn scanWhitespaceTextRun(hay: []const u8, start: usize) TextRun {
+    const next = skipWhitespace(hay, start);
+    if (next >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
+    if (hay[next] == '<') return .{ .lt_index = next, .has_non_whitespace = false };
+    return .{
+        .lt_index = findByte(hay, next, '<') orelse hay.len,
+        .has_non_whitespace = true,
+    };
 }
 
 pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: []const u8) ?usize {
