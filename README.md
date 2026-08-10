@@ -23,12 +23,12 @@ Source: `bench/results/latest.json` (`stable` profile).
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-stream-turbo  │████████████████████│ 3497.01 MB/s (100.00%)
-stream-strict │██████████████████░░│ 3177.11 MB/s (90.85%)
-ours-turbo    │████████████████░░░░│ 2777.58 MB/s (79.43%)
-ours-strict   │███████████████░░░░░│ 2588.90 MB/s (74.03%)
-rapidxml      │████████░░░░░░░░░░░░│ 1371.94 MB/s (39.23%)
-pugixml       │████████░░░░░░░░░░░░│ 1338.41 MB/s (38.27%)
+stream-turbo  │████████████████████│ 3428.34 MB/s (100.00%)
+stream-strict │██████████████████░░│ 3098.08 MB/s (90.37%)
+ours-turbo    │██████████████████░░│ 2999.85 MB/s (87.50%)
+ours-strict   │█████████████████░░░│ 2838.36 MB/s (82.79%)
+rapidxml      │████████░░░░░░░░░░░░│ 1373.49 MB/s (40.06%)
+pugixml       │████████░░░░░░░░░░░░│ 1334.58 MB/s (38.93%)
 ```
 
 ### Stable Gate Snapshot
@@ -36,7 +36,7 @@ pugixml       │████████░░░░░░░░░░░░│
 | Profile | Passed | Rule |
 |---|---:|---|
 | `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
-| `stable` | 25/25 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
+| `stable` | 22/25 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
