@@ -497,7 +497,7 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     try common.ensureDir(io, BIN_DIR);
     try common.ensureDir(io, TMP_SCRATCH_DIR);
 
-    const zig_build = [_][]const u8{ "zig", "build", "-Doptimize=ReleaseFast" };
+    const zig_build = [_][]const u8{ "zig", "build", "-Doptimize=ReleaseFast", "-Dcpu=native" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
     const copy_ours = [_][]const u8{

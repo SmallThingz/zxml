@@ -199,16 +199,14 @@ pub fn Types(comptime options: ParseOptions) type {
                             i = run.lt_index;
                         } else {
                             const lt_index = scanner.findByte(input, i, '<') orelse input.len;
-                            if (lt_index > i) {
-                                const node: Node = .{
-                                    .source = input,
-                                    .kind = .text,
-                                    .depth = @intCast(self.stackLen()),
-                                    .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
-                                    .token_end = @intCast(lt_index),
-                                };
-                                _ = callCallback(ctx, callback, &node);
-                            }
+                            const node: Node = .{
+                                .source = input,
+                                .kind = .text,
+                                .depth = @intCast(self.stackLen()),
+                                .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
+                                .token_end = @intCast(lt_index),
+                            };
+                            _ = callCallback(ctx, callback, &node);
                             i = lt_index;
                         }
                         continue;
@@ -325,16 +323,14 @@ pub fn Types(comptime options: ParseOptions) type {
                         return run.lt_index;
                     }
                     const lt_index = scanner.findByte(input, i, '<') orelse input.len;
-                    if (lt_index > i) {
-                        const node: Node = .{
-                            .source = input,
-                            .kind = .text,
-                            .depth = @intCast(self.stackLen()),
-                            .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
-                            .token_end = @intCast(lt_index),
-                        };
-                        _ = callCallback(ctx, callback, &node);
-                    }
+                    const node: Node = .{
+                        .source = input,
+                        .kind = .text,
+                        .depth = @intCast(self.stackLen()),
+                        .data = .{ .start = @intCast(i), .end = @intCast(lt_index) },
+                        .token_end = @intCast(lt_index),
+                    };
+                    _ = callCallback(ctx, callback, &node);
                     return lt_index;
                 }
                 if (i + 1 >= input.len) {
@@ -507,6 +503,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 var i = start + 2;
                 if (i < input.len and tables.isWhitespace(input[i])) {
+                    @branchHint(.unlikely);
                     if (strict_mode) return error.InvalidClosingTagName;
                     i = skipWsMode(input, i, strict_mode);
                 }
@@ -515,6 +512,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return input.len;
                 }
                 if (!tables.isNameStart(input[i])) {
+                    @branchHint(.unlikely);
                     if (validate_closing_tags) return error.InvalidClosingTagName;
                     const gt = scanner.findByte(input, i, '>') orelse input.len;
                     return if (gt < input.len) gt + 1 else gt;
@@ -523,15 +521,22 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name_scan = scanner.scanNameAndKey(input, i);
                 const name_end = name_scan.end;
                 i = name_end;
-                if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict_mode);
+                if (i < input.len and tables.isWhitespace(input[i])) {
+                    @branchHint(.unlikely);
+                    i = skipWsMode(input, i, strict_mode);
+                }
                 if (i >= input.len) {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 }
-                if (input[i] != '>') return error.InvalidClosingTagName;
+                if (input[i] != '>') {
+                    @branchHint(.unlikely);
+                    return error.InvalidClosingTagName;
+                }
                 i += 1;
 
                 if (self.stackLen() == 0) {
+                    @branchHint(.unlikely);
                     if (validate_closing_tags) return error.InvalidClosingTagName;
                     return i;
                 }
@@ -539,8 +544,14 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (validate_closing_tags) {
                     const top = self.topStack();
                     const close_len = name_end - name_start;
-                    if (top.name.len() != close_len or top.key != name_scan.key) return error.InvalidClosingTagName;
-                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[name_start + 8 .. name_end])) return error.InvalidClosingTagName;
+                    if (top.name.len() != close_len or top.key != name_scan.key) {
+                        @branchHint(.unlikely);
+                        return error.InvalidClosingTagName;
+                    }
+                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[name_start + 8 .. name_end])) {
+                        @branchHint(.unlikely);
+                        return error.InvalidClosingTagName;
+                    }
                 }
                 self.popStack();
                 return i;
@@ -771,7 +782,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (content_start >= input.len or input[content_start] == '<') return null;
 
                 const lt = scanner.findByte(input, content_start, '<') orelse return null;
-                if (lt == content_start or lt + 2 >= input.len or input[lt + 1] != '/') return null;
+                if (lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
                 const open_len: usize = name.len();
                 const close_start = lt + 2;

@@ -64,15 +64,14 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
 
                 fn onNode(self: *@This(), node: *const StreamingEventType) bool {
                     self.count +%= 1;
-                    var x: u64 = @intFromEnum(node.kind);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.depth);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.start);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.end);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.start);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.end);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.token_end);
-                    x = x *% 0x9e3779b185ebca87 +% @intFromBool(node.self_closing);
-                    self.checksum = (self.checksum ^ x) *% 0x100000001b3;
+                    self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+                    switch (node.kind) {
+                        .element => {
+                            self.checksum +%= @as(u64, node.name.end - node.name.start);
+                            self.checksum +%= @as(u64, node.data.end - node.data.start);
+                        },
+                        else => self.checksum +%= @as(u64, node.data.end - node.data.start),
+                    }
                     return true;
                 }
             };
@@ -92,15 +91,14 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
 
                 fn onNode(self: *@This(), node: *const StreamingEventType) bool {
                     self.count +%= 1;
-                    var x: u64 = @intFromEnum(node.kind);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.depth);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.start);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.name.end);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.start);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.data.end);
-                    x = x *% 0x9e3779b185ebca87 +% @as(u64, node.token_end);
-                    x = x *% 0x9e3779b185ebca87 +% @intFromBool(node.self_closing);
-                    self.checksum = (self.checksum ^ x) *% 0x100000001b3;
+                    self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+                    switch (node.kind) {
+                        .element => {
+                            self.checksum +%= @as(u64, node.name.end - node.name.start);
+                            self.checksum +%= @as(u64, node.data.end - node.data.start);
+                        },
+                        else => self.checksum +%= @as(u64, node.data.end - node.data.start),
+                    }
                     return true;
                 }
             };
