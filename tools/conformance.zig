@@ -31,7 +31,9 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
         if (!std.mem.eql(u8, args[i], "--suite")) return ConformanceError.InvalidArguments;
         i += 1;
         if (i >= args.len) return ConformanceError.InvalidArguments;
-        try suite_paths.append(alloc, try alloc.dupe(u8, args[i]));
+        const suite_path = try alloc.dupe(u8, args[i]);
+        errdefer alloc.free(suite_path);
+        try suite_paths.append(alloc, suite_path);
     }
 
     if (suite_paths.items.len == 0) {
@@ -59,6 +61,7 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
 
     for (suite_paths.items) |suite_path| {
         const summary = try runSuiteFile(io, alloc, suite_path);
+        errdefer alloc.free(summary.suite_name);
         if (summary.failed != 0) failed_total += summary.failed;
         try summaries.append(alloc, summary);
     }
@@ -88,6 +91,7 @@ fn appendSuitesFromDir(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".json")) continue;
         const path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ base_dir, entry.name });
+        errdefer alloc.free(path);
         try out.append(alloc, path);
         count += 1;
     }
@@ -114,6 +118,7 @@ fn runSuiteFile(io: std.Io, alloc: std.mem.Allocator, suite_path: []const u8) !S
     if (cases_val != .array) return ConformanceError.InvalidSuiteFormat;
 
     const suite_name_owned = try alloc.dupe(u8, suite_name);
+    errdefer alloc.free(suite_name_owned);
 
     var total: usize = 0;
     var passed: usize = 0;
@@ -158,6 +163,14 @@ const CaseResult = struct {
 fn runCase(alloc: std.mem.Allocator, obj: std.json.ObjectMap, case_idx: usize) !CaseResult {
     const case_name = valueString(obj, "name") orelse "unnamed-case";
     _ = case_idx;
+
+    if (invalidCaseFieldType(obj)) |problem| {
+        return .{
+            .case_name = case_name,
+            .pass = false,
+            .reason = try std.fmt.allocPrint(alloc, "field {s} must be {s}", .{ problem.key, problem.expected }),
+        };
+    }
 
     const xml = valueString(obj, "xml") orelse return .{
         .case_name = case_name,
@@ -677,6 +690,7 @@ fn profileWantsDecodedValues(profile: []const u8) bool {
 
 fn mapDecodeError(err: anyerror) zxml.ParseError {
     return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
         error.InvalidNumericCharacterEntity => error.InvalidNumericCharacterEntity,
         error.UnterminatedEntity => error.UnterminatedEntity,
         else => unreachable,
@@ -829,12 +843,28 @@ fn isIsoDate(text: []const u8) bool {
         if (!std.ascii.isDigit(text[i])) return false;
     }
 
+    const year = std.fmt.parseUnsigned(u16, text[0..4], 10) catch return false;
     const month = std.fmt.parseUnsigned(u8, text[5..7], 10) catch return false;
     const day = std.fmt.parseUnsigned(u8, text[8..10], 10) catch return false;
 
     if (month < 1 or month > 12) return false;
-    if (day < 1 or day > 31) return false;
+    const leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0);
+    const max_day: u8 = switch (month) {
+        2 => if (leap) 29 else 28,
+        4, 6, 9, 11 => 30,
+        else => 31,
+    };
+    if (day < 1 or day > max_day) return false;
     return true;
+}
+
+test "isIsoDate validates month lengths and leap years" {
+    try std.testing.expect(isIsoDate("2024-02-29"));
+    try std.testing.expect(!isIsoDate("2023-02-29"));
+    try std.testing.expect(!isIsoDate("2024-02-30"));
+    try std.testing.expect(!isIsoDate("2024-04-31"));
+    try std.testing.expect(!isIsoDate("2024-13-01"));
+    try std.testing.expect(!isIsoDate("2024-00-01"));
 }
 
 fn regexSubsetMatch(text: []const u8, pattern: []const u8) bool {
@@ -935,6 +965,93 @@ fn valueBoolOpt(obj: std.json.ObjectMap, key: []const u8) ?bool {
 
 fn valueInt(obj: std.json.ObjectMap, key: []const u8) ?usize {
     const v = obj.get(key) orelse return null;
-    if (v == .integer and v.integer >= 0) return @intCast(v.integer);
+    if (v == .integer and v.integer >= 0) return std.math.cast(usize, v.integer);
     return null;
+}
+
+const FieldTypeProblem = struct {
+    key: []const u8,
+    expected: []const u8,
+};
+
+fn invalidCaseFieldType(obj: std.json.ObjectMap) ?FieldTypeProblem {
+    const string_fields = [_][]const u8{
+        "name",
+        "xml",
+        "profile",
+        "expect_error",
+        "expect_root_name",
+        "expect_first_text",
+        "expect_root_attr_name",
+        "expect_root_attr_value",
+        "expect_element_name",
+        "expect_field_name",
+        "expect_field_text",
+        "expect_field_type",
+        "expect_field_pattern",
+        "expect_date_before_left",
+        "expect_date_before_right",
+    };
+    inline for (string_fields) |key| {
+        if (obj.get(key)) |value| {
+            if (value != .string) return .{ .key = key, .expected = "a string" };
+        }
+    }
+
+    const bool_fields = [_][]const u8{
+        "expect_ok",
+        "expect_unique_root_attrs",
+        "expect_cardinality_valid",
+        "expect_field_type_valid",
+        "expect_field_pattern_valid",
+        "expect_date_before_valid",
+    };
+    inline for (bool_fields) |key| {
+        if (obj.get(key)) |value| {
+            if (value != .bool) return .{ .key = key, .expected = "a boolean" };
+        }
+    }
+
+    const int_fields = [_][]const u8{
+        "expect_nodes",
+        "expect_elements",
+        "expect_misc_nodes",
+        "expect_element_min",
+        "expect_element_max",
+    };
+    inline for (int_fields) |key| {
+        if (obj.get(key)) |value| {
+            if (value != .integer or value.integer < 0 or std.math.cast(usize, value.integer) == null) {
+                return .{ .key = key, .expected = "a non-negative integer" };
+            }
+        }
+    }
+
+    return null;
+}
+
+test "runCase rejects wrong-typed optional fields" {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"bad","xml":"<r/>","expect_ok":"yes"}
+    , .{});
+    defer parsed.deinit();
+
+    const result = try runCase(alloc, parsed.value.object, 0);
+    defer if (result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(!result.pass);
+    try std.testing.expectEqualStrings("field expect_ok must be a boolean", result.reason.?);
+}
+
+test "runCase rejects negative and overflowing count fields" {
+    const alloc = std.testing.allocator;
+
+    const negative = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"negative","xml":"<r/>","expect_nodes":-1}
+    , .{});
+    defer negative.deinit();
+    const negative_result = try runCase(alloc, negative.value.object, 0);
+    defer if (negative_result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(!negative_result.pass);
+    try std.testing.expectEqualStrings("field expect_nodes must be a non-negative integer", negative_result.reason.?);
 }

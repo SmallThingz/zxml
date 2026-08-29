@@ -93,7 +93,7 @@ pub fn build(b: *std.Build) void {
         compare_cmd.addArgs(args);
         conformance_cmd.addArgs(args);
     } else {
-        bench_cmd.addArg("bench/fixtures/note.xml");
+        bench_cmd.addArg("bench/smoke.xml");
         bench_cmd.addArg("1");
         tools_cmd.addArg("--help");
     }
@@ -107,6 +107,78 @@ pub fn build(b: *std.Build) void {
         run_mod_tests.addArgs(args);
     }
 
+    const example_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("examples/basic_parse.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxml", .module = mod },
+            },
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_example_tests = b.addRunArtifact(example_tests);
+    if (b.args) |args| run_example_tests.addArgs(args);
+
+    const bench_runner_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench/runners/run_parse.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxml", .module = mod },
+            },
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_bench_runner_tests = b.addRunArtifact(bench_runner_tests);
+    if (b.args) |args| run_bench_runner_tests.addArgs(args);
+
+    const tools_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/scripts.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxml", .module = mod },
+            },
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_tools_tests = b.addRunArtifact(tools_tests);
+    if (b.args) |args| run_tools_tests.addArgs(args);
+
+    const tools_common_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/common.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_tools_common_tests = b.addRunArtifact(tools_common_tests);
+    if (b.args) |args| run_tools_common_tests.addArgs(args);
+
+    const conformance_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/conformance.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxml", .module = mod },
+            },
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_conformance_tests = b.addRunArtifact(conformance_tests);
+    if (b.args) |args| run_conformance_tests.addArgs(args);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
+    test_step.dependOn(&run_example_tests.step);
+    test_step.dependOn(&run_bench_runner_tests.step);
+    test_step.dependOn(&run_tools_tests.step);
+    test_step.dependOn(&run_tools_common_tests.step);
+    test_step.dependOn(&run_conformance_tests.step);
 }

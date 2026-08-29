@@ -1,3 +1,4 @@
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,7 +50,18 @@ int main(int argc, char **argv) {
         return 2;
     }
 
-    const size_t iterations = (size_t)strtoull(argv[2], nullptr, 10);
+    if (argv[2][0] < '0' || argv[2][0] > '9') {
+        fprintf(stderr, "invalid iterations: %s\n", argv[2]);
+        return 2;
+    }
+    errno = 0;
+    char *end = nullptr;
+    const unsigned long long parsed_iterations = strtoull(argv[2], &end, 10);
+    if (errno == ERANGE || end == argv[2] || *end != '\0' || parsed_iterations == 0 || parsed_iterations > SIZE_MAX) {
+        fprintf(stderr, "invalid iterations: %s\n", argv[2]);
+        return 2;
+    }
+    const size_t iterations = (size_t)parsed_iterations;
 
     size_t len = 0;
     char *input = read_file(argv[1], &len);

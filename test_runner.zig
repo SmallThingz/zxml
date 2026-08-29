@@ -43,7 +43,7 @@ fn fuzzBuiltin(
         var ctx: Ctx = undefined;
         pub fn testOneC() callconv(.c) void {
             var smith: Smith = .{ .in = null };
-            testOne(ctx, &smith) catch {};
+            testOne(ctx, &smith) catch |err| std.debug.panic("fuzz test failed: {s}", .{@errorName(err)});
         }
     };
 
@@ -91,9 +91,14 @@ pub fn main(init: std.process.Init) !void {
     defer init.gpa.free(argv0);
 
     var child_test_name: ?[]const u8 = null;
+    defer if (child_test_name) |name| init.gpa.free(name);
     var filter: ?[]const u8 = null;
+    defer if (filter) |f| init.gpa.free(f);
     var exclude_filters: std.ArrayList([]const u8) = .empty;
-    defer exclude_filters.deinit(init.gpa);
+    defer {
+        for (exclude_filters.items) |f| init.gpa.free(f);
+        exclude_filters.deinit(init.gpa);
+    }
     var jobs: ?usize = null;
     var seed: ?u32 = null;
 
@@ -101,13 +106,19 @@ pub fn main(init: std.process.Init) !void {
         const arg = arg_z[0..arg_z.len];
         if (std.mem.eql(u8, arg, "--run-test")) {
             const name_z = arg_it.next() orelse return error.MissingTestName;
-            child_test_name = try init.gpa.dupe(u8, name_z[0..name_z.len]);
+            const owned = try init.gpa.dupe(u8, name_z[0..name_z.len]);
+            if (child_test_name) |old| init.gpa.free(old);
+            child_test_name = owned;
         } else if (std.mem.eql(u8, arg, "--test-filter")) {
             const f_z = arg_it.next() orelse return error.MissingFilter;
-            filter = try init.gpa.dupe(u8, f_z[0..f_z.len]);
+            const owned = try init.gpa.dupe(u8, f_z[0..f_z.len]);
+            if (filter) |old| init.gpa.free(old);
+            filter = owned;
         } else if (std.mem.eql(u8, arg, "--test-skip")) {
             const f_z = arg_it.next() orelse return error.MissingFilter;
-            try exclude_filters.append(init.gpa, try init.gpa.dupe(u8, f_z[0..f_z.len]));
+            const owned = try init.gpa.dupe(u8, f_z[0..f_z.len]);
+            errdefer init.gpa.free(owned);
+            try exclude_filters.append(init.gpa, owned);
         } else if (std.mem.eql(u8, arg, "--jobs")) {
             const j_z = arg_it.next() orelse return error.MissingJobs;
             jobs = try parseUsize(j_z[0..j_z.len]);
@@ -121,10 +132,6 @@ pub fn main(init: std.process.Init) !void {
             // Ignore unknown args to stay compatible with Zig's test flags.
         }
     }
-
-    defer if (child_test_name) |name| init.gpa.free(name);
-    defer if (filter) |f| init.gpa.free(f);
-    defer for (exclude_filters.items) |f| init.gpa.free(f);
 
     if (child_test_name) |name| {
         is_child_mode = true;
@@ -329,8 +336,10 @@ fn runAllTests(
     } else {
         const threads = try gpa.alloc(std.Thread, job_count);
         defer gpa.free(threads);
-        for (threads, 0..) |*t, i| {
-            t.* = try std.Thread.spawn(.{}, worker, .{ &ctx, i });
+        var spawned: usize = 0;
+        errdefer for (threads[0..spawned]) |t| t.join();
+        while (spawned < threads.len) : (spawned += 1) {
+            threads[spawned] = try std.Thread.spawn(.{}, worker, .{ &ctx, spawned });
         }
         for (threads) |t| t.join();
     }
@@ -453,13 +462,13 @@ fn runChildTest(ctx: *WorkerCtx, test_name: []const u8) !ChildResult {
     try argv.append(ctx.gpa, test_name);
 
     var seed_buf: ?[]u8 = null;
+    defer if (seed_buf) |b| ctx.gpa.free(b);
     if (ctx.seed) |s| {
         const seed_str = try std.fmt.allocPrint(ctx.gpa, "{d}", .{s});
         seed_buf = seed_str;
         try argv.append(ctx.gpa, "--seed");
         try argv.append(ctx.gpa, seed_str);
     }
-    defer if (seed_buf) |b| ctx.gpa.free(b);
 
     const run_result = try std.process.run(ctx.gpa, ctx.io, .{
         .argv = argv.items,

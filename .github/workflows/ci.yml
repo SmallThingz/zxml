@@ -27,5 +27,14 @@ jobs:
             -not -path './bench/build/*')
           zig fmt --check $files
 
+      - name: Build artifacts
+        run: zig build
+
       - name: Unit tests
         run: zig build test
+
+      - name: Benchmark smoke
+        run: zig build bench
+
+      - name: Conformance
+        run: zig build conformance

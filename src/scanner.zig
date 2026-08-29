@@ -6,7 +6,7 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
         @branchHint(.unlikely);
         return null;
     }
-    const probe_end = @min(haystack.len, start + 32);
+    const probe_end = start + @min(haystack.len - start, 32);
     var i = start;
     while (i + 8 <= probe_end) : (i += 8) {
         if (haystack[i] == needle) return i;
@@ -175,8 +175,8 @@ noinline fn scanWhitespaceTextRun(hay: []const u8, start: usize) TextRun {
 }
 
 pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: []const u8) ?usize {
+    if (needle.len == 0) return if (start <= haystack.len) start else null;
     if (start >= haystack.len) return null;
-    if (needle.len == 0) return start;
     if (needle.len == 1) return findByte(haystack, start, needle[0]);
 
     if (needle.len == 2) {
@@ -201,7 +201,7 @@ pub fn findSequence(noalias haystack: []const u8, start: usize, noalias needle: 
 }
 
 pub inline fn isDoctype(input: []const u8, start: usize) bool {
-    return start + 9 <= input.len and
+    return start <= input.len and input.len - start >= 9 and
         input[start] == '<' and
         input[start + 1] == '!' and
         ((input[start + 2] | 0x20) == 'd') and
@@ -211,6 +211,11 @@ pub inline fn isDoctype(input: []const u8, start: usize) bool {
         ((input[start + 6] | 0x20) == 'y') and
         ((input[start + 7] | 0x20) == 'p') and
         ((input[start + 8] | 0x20) == 'e');
+}
+
+pub inline fn isDoctypeExact(input: []const u8, start: usize) bool {
+    return start <= input.len and input.len - start >= 9 and
+        std.mem.eql(u8, input[start .. start + 9], "<!DOCTYPE");
 }
 
 /// Finds the terminal `>` of a doctype while ignoring quoted text and the
@@ -223,6 +228,16 @@ pub fn findDoctypeEnd(input: []const u8, start: usize) ?usize {
         const c = input[i];
         if (quote != 0) {
             if (c == quote) quote = 0;
+            continue;
+        }
+        if (i + 3 < input.len and std.mem.eql(u8, input[i .. i + 4], "<!--")) {
+            const end = findSequence(input, i + 4, "-->") orelse return null;
+            i = end + 2;
+            continue;
+        }
+        if (i + 1 < input.len and input[i] == '<' and input[i + 1] == '?') {
+            const end = findSequence(input, i + 2, "?>") orelse return null;
+            i = end + 1;
             continue;
         }
         if (c == '\'' or c == '"') {
@@ -252,14 +267,19 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, 3), findSequence("abcqrstdef", 0, "qrst"));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 0, "?>"));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
+    try std.testing.expectEqual(@as(?usize, 6), findSequence("abcdef", 6, ""));
+    try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
 }
 
-test "doctype scanner ignores quotes and internal subsets" {
-    const src = "<!DOCTYPE r [<!ENTITY x 'a>b'>]><r/>";
+test "doctype scanner ignores quotes comments processing instructions and internal subsets" {
+    const src = "<!DOCTYPE r [<!ENTITY x 'a>b'><!-- ] > --><?pi ] >?>]><r/>";
     try std.testing.expect(isDoctype(src, 0));
+    try std.testing.expect(isDoctypeExact(src, 0));
+    try std.testing.expect(!isDoctypeExact("<!doctype r>", 0));
     const end = findDoctypeEnd(src, 9) orelse return error.TestUnexpectedResult;
-    try std.testing.expectEqual(@as(usize, 31), end);
+    try std.testing.expectEqual(@as(usize, 53), end);
     try std.testing.expectEqual(@as(?usize, null), findDoctypeEnd("<!DOCTYPE r [", 9));
+    try std.testing.expectEqual(@as(?usize, null), findDoctypeEnd("<!DOCTYPE r [<!--", 9));
 }
 
 test "name and attribute scanners stop at the right boundary" {

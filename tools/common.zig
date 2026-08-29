@@ -66,8 +66,10 @@ pub fn runCaptureStdout(io: std.Io, alloc: std.mem.Allocator, argv: []const []co
         else => return error.ChildProcessFailed,
     }
 
-    if (res.stdout.len != 0) return alloc.dupe(u8, std.mem.trim(u8, res.stdout, " \r\n\t"));
-    return alloc.dupe(u8, std.mem.trim(u8, res.stderr, " \r\n\t"));
+    // Successful benchmark runners communicate their measurement on stdout.
+    // Never substitute stderr: a warning containing digits could otherwise be
+    // misread as a valid timing result.
+    return alloc.dupe(u8, std.mem.trim(u8, res.stdout, " \r\n\t"));
 }
 
 pub fn parseLastInt(text: []const u8) !u64 {

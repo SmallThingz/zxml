@@ -650,7 +650,10 @@ fn findThroughput(rows: []const ParseResult, parser_name: []const u8, fixture: [
 
 fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]GateRow {
     var out = std.ArrayList(GateRow).empty;
-    errdefer out.deinit(alloc);
+    errdefer {
+        for (out.items) |r| alloc.free(r.fixture);
+        out.deinit(alloc);
+    }
 
     for (profile.fixtures) |fx| {
         const ours = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
@@ -661,8 +664,10 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
         const best_external_parser = if (pugixml >= rapidxml) "pugixml" else "rapidxml";
         const ratio = if (best_external_mb_s == 0) 0 else ours / best_external_mb_s;
 
+        const fixture = try alloc.dupe(u8, fx.name);
+        errdefer alloc.free(fixture);
         try out.append(alloc, .{
-            .fixture = try alloc.dupe(u8, fx.name),
+            .fixture = fixture,
             .is_real = fx.is_real,
             .ours_turbo_mb_s = ours,
             .pugixml_mb_s = pugixml,
@@ -684,7 +689,10 @@ fn freeGateRows(alloc: std.mem.Allocator, rows: []GateRow) void {
 
 fn evaluateStreamGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]StreamGateRow {
     var out = std.ArrayList(StreamGateRow).empty;
-    errdefer out.deinit(alloc);
+    errdefer {
+        for (out.items) |r| alloc.free(r.fixture);
+        out.deinit(alloc);
+    }
 
     for (profile.fixtures) |fx| {
         const dom_turbo = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
@@ -694,8 +702,10 @@ fn evaluateStreamGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []co
 
         const turbo_ratio = if (dom_turbo == 0) 0 else stream_turbo / dom_turbo;
         const strict_ratio = if (dom_strict == 0) 0 else stream_strict / dom_strict;
+        const fixture = try alloc.dupe(u8, fx.name);
+        errdefer alloc.free(fixture);
         try out.append(alloc, .{
-            .fixture = try alloc.dupe(u8, fx.name),
+            .fixture = fixture,
             .is_real = fx.is_real,
             .dom_turbo_mb_s = dom_turbo,
             .stream_turbo_mb_s = stream_turbo,
@@ -758,10 +768,13 @@ test "evaluateGateRows records best external parser" {
             .{ .name = "x.xml", .iterations = 1, .is_real = true },
         },
     };
+    var sample_a = [_]u64{1};
+    var sample_b = [_]u64{1};
+    var sample_c = [_]u64{1};
     const rows = [_]ParseResult{
-        .{ .parser = "ours-turbo", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 120.0 },
-        .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 110.0 },
-        .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &[_]u64{1}, .median_ns = 1, .throughput_mb_s = 100.0 },
+        .{ .parser = "ours-turbo", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_a, .median_ns = 1, .throughput_mb_s = 120.0 },
+        .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_b, .median_ns = 1, .throughput_mb_s = 110.0 },
+        .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_c, .median_ns = 1, .throughput_mb_s = 100.0 },
     };
 
     const gates = try evaluateGateRows(alloc, profile, &rows);
@@ -1465,14 +1478,17 @@ fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap
     defer parsed.deinit();
 
     const root = parsed.value;
-    const parse_results = root.object.get("parse_results") orelse return map;
+    if (root != .object) return error.InvalidBaseline;
+    const parse_results = root.object.get("parse_results") orelse return error.InvalidBaseline;
+    if (parse_results != .array) return error.InvalidBaseline;
     for (parse_results.array.items) |item| {
+        if (item != .object) return error.InvalidBaseline;
         const obj = item.object;
-        const parser_name = obj.get("parser") orelse continue;
-        const fixture_name = obj.get("fixture") orelse continue;
-        const throughput = obj.get("throughput_mb_s") orelse continue;
-        if (parser_name != .string or fixture_name != .string) continue;
-        if (throughput != .float and throughput != .integer) continue;
+        const parser_name = obj.get("parser") orelse return error.InvalidBaseline;
+        const fixture_name = obj.get("fixture") orelse return error.InvalidBaseline;
+        const throughput = obj.get("throughput_mb_s") orelse return error.InvalidBaseline;
+        if (parser_name != .string or fixture_name != .string) return error.InvalidBaseline;
+        if (throughput != .float and throughput != .integer) return error.InvalidBaseline;
 
         const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parser_name.string, fixture_name.string });
         const val: f64 = switch (throughput) {
@@ -1480,10 +1496,36 @@ fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap
             .integer => @floatFromInt(throughput.integer),
             else => unreachable,
         };
-        try map.put(key, val);
+        if (!std.math.isFinite(val) or val < 0) {
+            alloc.free(key);
+            return error.InvalidBaseline;
+        }
+        errdefer alloc.free(key);
+        const gop = try map.getOrPut(key);
+        if (gop.found_existing) {
+            alloc.free(key);
+        } else {
+            gop.key_ptr.* = key;
+        }
+        gop.value_ptr.* = val;
     }
 
     return map;
+}
+
+test "parseBaseline validates shape and replaces duplicate measurements" {
+    const alloc = std.testing.allocator;
+    var map = try parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5},{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":2}]}");
+    defer freeBaselineMap(alloc, &map);
+    try std.testing.expectEqual(@as(usize, 1), map.count());
+    try std.testing.expectEqual(@as(f64, 2.0), map.get("ours-turbo|x.xml").?);
+
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "[]"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{}"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":{}}"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\"}]}"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":1,\"fixture\":\"x.xml\",\"throughput_mb_s\":1}]}"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":-1}]}"));
 }
 
 fn freeBaselineMap(alloc: std.mem.Allocator, map: *std.StringHashMap(f64)) void {
@@ -1534,7 +1576,9 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     for (profile.fixtures) |fx| {
         for (parse_parsers) |p| {
             std.debug.print("running parse: parser={s} fixture={s} iterations={d}\n", .{ p, fx.name, fx.iterations });
-            try parse_results.append(alloc, try runParseBench(io, alloc, p, fx));
+            var result = try runParseBench(io, alloc, p, fx);
+            errdefer freeParseResult(alloc, &result);
+            try parse_results.append(alloc, result);
         }
     }
 
@@ -1606,7 +1650,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             if (!std.mem.startsWith(u8, r.parser, "ours-")) continue;
             const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ r.parser, r.fixture });
             defer alloc.free(key);
-            const base = base_map.get(key) orelse continue;
+            const base = base_map.get(key) orelse return error.InvalidBaseline;
             if (r.throughput_mb_s < base * 0.97) {
                 failed = true;
                 std.debug.print(

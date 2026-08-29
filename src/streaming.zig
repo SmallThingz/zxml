@@ -86,10 +86,12 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             pub fn valueRawSlice(self: @This()) []const u8 {
+                if (self.kind == .element or self.kind == .document) return "";
                 return self.data.slice(self.source);
             }
 
             pub fn attributes(self: @This()) AttributeIterator {
+                if (self.kind != .element) return .{ .input = "", .i = 0 };
                 return .{
                     .input = self.data.slice(self.source),
                     .i = 0,
@@ -117,7 +119,7 @@ pub fn Types(comptime options: ParseOptions) type {
             /// Computes the raw text directly following this node's subtree.
             /// This scans ahead from the current node, so call it only when needed.
             pub fn followingTextRaw(self: @This()) ParseError![]const u8 {
-                const end = try subtreeEndOffset(self.source, self.kind, self.token_end, self.self_closing);
+                const end = try subtreeEndOffset(self.source, self.kind, self.token_end, self.self_closing, options.mode == .strict);
                 if (end >= self.source.len or self.source[end] == '<') return "";
                 const lt = scanner.findByte(self.source, end, '<') orelse self.source.len;
                 return self.source[end..lt];
@@ -137,6 +139,12 @@ pub fn Types(comptime options: ParseOptions) type {
             skip_stack: Stack = if (options.validate_closing_tags) .empty else 0,
             offset: usize = 0,
             needs_more: bool = false,
+            state_tracking: bool = false,
+            stack_generation: u64 = 0,
+            restore_pending: bool = false,
+            restore_stack_len: usize = 0,
+            restore_skip_stack_len: usize = 0,
+            restore_generation: u64 = 0,
 
             const Self = @This();
             const strict_mode = options.mode == .strict;
@@ -146,6 +154,14 @@ pub fn Types(comptime options: ParseOptions) type {
             const include_misc_nodes = options.include_misc_nodes;
 
             pub const State = struct {
+                offset: usize,
+                stack_len: usize,
+                skip_stack_len: usize,
+                needs_more: bool,
+                stack_generation: u64,
+            };
+
+            const Checkpoint = struct {
                 offset: usize,
                 stack_len: usize,
                 skip_stack_len: usize,
@@ -186,6 +202,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                         if (comptime strict_mode) {
                             const run = scanner.scanTextRun(input, i);
+                            try validateCharacterDataRange(input, i, run.lt_index);
                             if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                                 const node: Node = .{
                                     .source = input,
@@ -235,7 +252,53 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
             }
 
-            pub fn save(self: *const Self) State {
+            /// Saves the logical incremental-parser state. A saved state may be
+            /// restored after parsing a different continuation of the same
+            /// cumulative input prefix.
+            pub fn save(self: *Self) State {
+                self.state_tracking = true;
+                return .{
+                    .offset = self.offset,
+                    .stack_len = self.stackLen(),
+                    .skip_stack_len = self.skipStackLen(),
+                    .needs_more = self.needs_more,
+                    .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
+                };
+            }
+
+            /// Restores a state produced by `save`. Stack contents are rebuilt
+            /// lazily from the cumulative input on the next `parseAvailable`
+            /// call when the parser has taken a divergent branch since `save`.
+            pub fn restore(self: *Self, state: State) void {
+                self.offset = state.offset;
+                self.needs_more = state.needs_more;
+                self.state_tracking = true;
+
+                if (comptime validate_closing_tags) {
+                    if (!self.restore_pending and state.stack_generation == self.stack_generation) {
+                        // No stack mutation happened since this state was saved.
+                        std.debug.assert(state.stack_len == self.stack.items.len);
+                        std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                        return;
+                    }
+                    if (self.restore_pending and
+                        state.stack_generation == self.restore_generation and
+                        state.stack_len == self.restore_stack_len and
+                        state.skip_stack_len == self.restore_skip_stack_len)
+                    {
+                        return;
+                    }
+                    self.restore_pending = true;
+                    self.restore_stack_len = state.stack_len;
+                    self.restore_skip_stack_len = state.skip_stack_len;
+                    self.restore_generation = state.stack_generation;
+                } else {
+                    self.stack = state.stack_len;
+                    self.skip_stack = state.skip_stack_len;
+                }
+            }
+
+            inline fn checkpoint(self: *const Self) Checkpoint {
                 return .{
                     .offset = self.offset,
                     .stack_len = self.stackLen(),
@@ -244,17 +307,24 @@ pub fn Types(comptime options: ParseOptions) type {
                 };
             }
 
-            pub fn restore(self: *Self, state: State) void {
+            inline fn restoreCheckpoint(self: *Self, state: Checkpoint) void {
                 self.offset = state.offset;
-                self.restoreStackLen(state.stack_len);
-                self.restoreSkipStackLen(state.skip_stack_len);
                 self.needs_more = state.needs_more;
+                if (comptime validate_closing_tags) {
+                    std.debug.assert(!self.restore_pending);
+                    std.debug.assert(state.stack_len == self.stack.items.len);
+                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                } else {
+                    self.stack = state.stack_len;
+                    self.skip_stack = state.skip_stack_len;
+                }
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
-                try self.reserveForInput(input.len);
                 if (self.offset > input.len) return error.UnexpectedEndOfData;
+                try self.materializeRestoredStacks(input);
+                try self.reserveForInput(input.len);
                 self.needs_more = false;
 
                 while (self.offset < input.len) {
@@ -281,10 +351,10 @@ pub fn Types(comptime options: ParseOptions) type {
                             continue;
                         }
                     }
-                    const checkpoint = self.save();
+                    const saved = self.checkpoint();
                     const next = self.parseOne(input, self.offset, ctx, callback, true) catch |err| switch (err) {
                         error.UnexpectedEndOfData => {
-                            self.restore(checkpoint);
+                            self.restoreCheckpoint(saved);
                             self.needs_more = true;
                             return false;
                         },
@@ -310,6 +380,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     if (comptime strict_mode) {
                         const run = scanner.scanTextRun(input, i);
+                        try validateCharacterDataRange(input, i, run.lt_index);
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const node: Node = .{
                                 .source = input,
@@ -347,7 +418,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
                 if (comptime validate_closing_tags) {
-                    const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
+                    const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
                     if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
                 }
             }
@@ -421,11 +492,13 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
                         const quote = input[attr_i + 1];
                         if (quote == '\'' or quote == '"') {
-                            i = (scanner.findByte(input, attr_i + 2, quote) orelse {
+                            const quote_pos = scanner.findByte(input, attr_i + 2, quote) orelse {
                                 if (incremental) return error.UnexpectedEndOfData;
                                 if (strict_mode) return error.ExpectedQuote;
                                 return input.len;
-                            }) + 1;
+                            };
+                            if (comptime strict_mode) try validateAttributeValue(input[attr_i + 2 .. quote_pos]);
+                            i = quote_pos + 1;
                             continue;
                         }
                     }
@@ -445,11 +518,13 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     const quote = input[attr_i];
                     if (quote == '\'' or quote == '"') {
-                        i = (scanner.findByte(input, attr_i + 1, quote) orelse {
+                        const quote_pos = scanner.findByte(input, attr_i + 1, quote) orelse {
                             if (incremental) return error.UnexpectedEndOfData;
                             if (strict_mode) return error.ExpectedQuote;
                             return input.len;
-                        }) + 1;
+                        };
+                        if (comptime strict_mode) try validateAttributeValue(input[attr_i + 1 .. quote_pos]);
+                        i = quote_pos + 1;
                         continue;
                     }
                     if (strict_mode) return error.ExpectedQuote;
@@ -493,6 +568,17 @@ pub fn Types(comptime options: ParseOptions) type {
 
             fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!usize {
                 if (!validate_closing_tags) {
+                    if (comptime strict_mode) {
+                        var i = start + 2;
+                        if (i >= input.len) return error.UnexpectedEndOfData;
+                        if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
+                        i = scanner.findNameEndAfterStart(input, i);
+                        if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, true);
+                        if (i >= input.len) return error.UnexpectedEndOfData;
+                        if (input[i] != '>') return error.InvalidClosingTagName;
+                        if (self.stackLen() != 0) self.popStack();
+                        return i + 1;
+                    }
                     const gt = scanner.findByte(input, start + 2, '>') orelse {
                         if (incremental) return error.UnexpectedEndOfData;
                         return input.len;
@@ -576,6 +662,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 const target_start = i;
                 i = scanner.findNameEnd(input, i);
                 const target_end = i;
+                const xml_target = target_end - target_start == 3 and std.ascii.eqlIgnoreCase(input[target_start..target_end], "xml");
+                if (comptime strict_mode) {
+                    if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
+                }
                 i = skipWsMode(input, i, strict_mode);
                 const value_start = i;
                 const end = scanner.findSequence(input, i, "?>") orelse {
@@ -583,10 +673,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return input.len;
                 };
                 if (include_misc_nodes) {
-                    const decl = target_end - target_start == 3 and
-                        ((input[target_start] | 0x20) == 'x') and
-                        ((input[target_start + 1] | 0x20) == 'm') and
-                        ((input[target_start + 2] | 0x20) == 'l');
+                    const decl = xml_target;
                     const node: Node = .{
                         .source = input,
                         .kind = if (decl) .declaration else .pi,
@@ -607,6 +694,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
+                    if (comptime strict_mode) try validateComment(input[value_start..end]);
                     if (include_misc_nodes) {
                         const node: Node = .{
                             .source = input,
@@ -638,6 +726,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     return end + 3;
                 }
                 if (scanner.isDoctype(input, start)) {
+                    if (comptime strict_mode) {
+                        if (!scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
+                    }
                     const end = scanner.findDoctypeEnd(input, start + 9) orelse {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
@@ -680,9 +771,11 @@ pub fn Types(comptime options: ParseOptions) type {
                 var i = start;
                 while (i < input.len) {
                     const lt = scanner.findByte(input, i, '<') orelse {
+                        if (comptime strict_mode) try validateCharacterDataRange(input, i, input.len);
                         if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     };
+                    if (comptime strict_mode) try validateCharacterDataRange(input, i, lt);
                     if (lt + 1 >= input.len) {
                         if (incremental) return .{ .next = lt, .needs_more = true };
                         if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
@@ -691,7 +784,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                     switch (input[lt + 1]) {
                         '/' => {
-                            if (validate_closing_tags) {
+                            if (comptime strict_mode or validate_closing_tags) {
                                 const close = scanClosingTag(input, lt, strict_mode) catch |err| switch (err) {
                                     error.UnexpectedEndOfData => {
                                         if (incremental) return .{ .next = lt, .needs_more = true };
@@ -700,10 +793,12 @@ pub fn Types(comptime options: ParseOptions) type {
                                     },
                                     else => return err,
                                 };
-                                const top = self.topSkip();
-                                const close_len = close.name.len();
-                                if (top.name.len() != close_len or top.key != close.key) return error.InvalidClosingTagName;
-                                if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], close.name.slice(input)[8..])) return error.InvalidClosingTagName;
+                                if (comptime validate_closing_tags) {
+                                    const top = self.topSkip();
+                                    const close_len = close.name.len();
+                                    if (top.name.len() != close_len or top.key != close.key) return error.InvalidClosingTagName;
+                                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], close.name.slice(input)[8..])) return error.InvalidClosingTagName;
+                                }
                                 i = close.next;
                             } else {
                                 const gt = scanner.findByte(input, lt + 2, '>') orelse {
@@ -811,6 +906,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const raw = input[content_start..lt];
+                if (comptime strict_mode) try validateCharacterDataRange(input, content_start, lt);
                 if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
 
                 const node: Node = .{
@@ -824,18 +920,65 @@ pub fn Types(comptime options: ParseOptions) type {
                 return j;
             }
 
+            fn materializeRestoredStacks(self: *Self, input: []const u8) ParseError!void {
+                if (comptime !validate_closing_tags) return;
+                if (!self.restore_pending) return;
+
+                const expected_main = self.restore_stack_len;
+                const expected_skip = self.restore_skip_stack_len;
+                const expected_total = std.math.add(usize, expected_main, expected_skip) catch return error.InputTooLarge;
+
+                const RebuildCtx = struct {
+                    fn onNode(_: *@This(), _: *const Node) bool {
+                        return true;
+                    }
+                };
+
+                var rebuilt = Self.init(self.allocator);
+                defer rebuilt.deinit();
+                var rebuild_ctx: RebuildCtx = .{};
+                _ = try rebuilt.parseAvailable(input[0..self.offset], &rebuild_ctx, RebuildCtx.onNode);
+
+                if (rebuilt.stack.items.len != expected_total or rebuilt.skip_stack.items.len != 0) {
+                    return error.InvalidClosingTagName;
+                }
+
+                try self.stack.ensureTotalCapacity(self.allocator, expected_main);
+                try self.skip_stack.ensureTotalCapacity(self.allocator, expected_skip);
+                self.stack.items.len = 0;
+                self.skip_stack.items.len = 0;
+                self.stack.appendSliceAssumeCapacity(rebuilt.stack.items[0..expected_main]);
+                self.skip_stack.appendSliceAssumeCapacity(rebuilt.stack.items[expected_main..expected_total]);
+                self.restore_pending = false;
+                self.noteStackMutation();
+            }
+
             inline fn stackLen(self: *const Self) usize {
-                return if (comptime validate_closing_tags) self.stack.items.len else self.stack;
+                if (comptime validate_closing_tags) {
+                    return if (self.restore_pending) self.restore_stack_len else self.stack.items.len;
+                }
+                return self.stack;
             }
 
             inline fn skipStackLen(self: *const Self) usize {
-                return if (comptime validate_closing_tags) self.skip_stack.items.len else self.skip_stack;
+                if (comptime validate_closing_tags) {
+                    return if (self.restore_pending) self.restore_skip_stack_len else self.skip_stack.items.len;
+                }
+                return self.skip_stack;
+            }
+
+            inline fn noteStackMutation(self: *Self) void {
+                if (comptime validate_closing_tags) {
+                    if (self.state_tracking) self.stack_generation +%= 1;
+                }
             }
 
             inline fn clearStacks(self: *Self) void {
                 if (comptime validate_closing_tags) {
+                    if (self.stack.items.len != 0 or self.skip_stack.items.len != 0 or self.restore_pending) self.noteStackMutation();
                     self.stack.items.len = 0;
                     self.skip_stack.items.len = 0;
+                    self.restore_pending = false;
                 } else {
                     self.stack = 0;
                     self.skip_stack = 0;
@@ -843,29 +986,28 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn clearSkipStack(self: *Self) void {
-                if (comptime validate_closing_tags) self.skip_stack.items.len = 0 else self.skip_stack = 0;
-            }
-
-            inline fn restoreStackLen(self: *Self, len: usize) void {
-                if (comptime validate_closing_tags) self.stack.items.len = @min(len, self.stack.items.len) else self.stack = len;
-            }
-
-            inline fn restoreSkipStackLen(self: *Self, len: usize) void {
-                if (comptime validate_closing_tags) self.skip_stack.items.len = @min(len, self.skip_stack.items.len) else self.skip_stack = len;
+                if (comptime validate_closing_tags) {
+                    if (self.skip_stack.items.len != 0) self.noteStackMutation();
+                    self.skip_stack.items.len = 0;
+                } else self.skip_stack = 0;
             }
 
             inline fn pushStack(noalias self: *Self, name: Span, key: u64) ParseError!void {
                 if (comptime validate_closing_tags) {
                     const len = self.stack.items.len;
-                    if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                    if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
                     self.stack.appendAssumeCapacity(.{ .name = name, .key = key });
+                    self.noteStackMutation();
                 } else {
                     self.stack += 1;
                 }
             }
 
             inline fn popStack(self: *Self) void {
-                if (comptime validate_closing_tags) self.stack.items.len -= 1 else self.stack -= 1;
+                if (comptime validate_closing_tags) {
+                    self.stack.items.len -= 1;
+                    self.noteStackMutation();
+                } else self.stack -= 1;
             }
 
             inline fn topStack(self: *const Self) StackEntry {
@@ -876,13 +1018,17 @@ pub fn Types(comptime options: ParseOptions) type {
             inline fn pushSkip(noalias self: *Self, name: Span, key: u64) ParseError!void {
                 if (comptime validate_closing_tags) {
                     try self.skip_stack.append(self.allocator, .{ .name = name, .key = key });
+                    self.noteStackMutation();
                 } else {
                     self.skip_stack += 1;
                 }
             }
 
             inline fn popSkip(self: *Self) void {
-                if (comptime validate_closing_tags) self.skip_stack.items.len -= 1 else self.skip_stack -= 1;
+                if (comptime validate_closing_tags) {
+                    self.skip_stack.items.len -= 1;
+                    self.noteStackMutation();
+                } else self.skip_stack -= 1;
             }
 
             inline fn topSkip(self: *const Self) StackEntry {
@@ -959,31 +1105,47 @@ inline fn skipWsMode(input: []const u8, start: usize, comptime strict: bool) usi
     return skipWs(input, start);
 }
 
-fn subtreeEndOffset(input: []const u8, kind: NodeType, token_end: IndexInt, self_closing: bool) ParseError!usize {
+fn subtreeEndOffset(input: []const u8, kind: NodeType, token_end: IndexInt, self_closing: bool, comptime strict: bool) ParseError!usize {
     const end: usize = token_end;
     return switch (kind) {
         .text, .comment, .cdata, .pi, .declaration, .doctype, .document => end,
-        .element => if (self_closing) end else skipSubtreeStateless(input, end),
+        .element => if (self_closing) end else skipSubtreeStateless(input, end, strict),
     };
 }
 
-fn skipSubtreeStateless(input: []const u8, start: usize) ParseError!usize {
+fn skipSubtreeStateless(input: []const u8, start: usize, comptime strict: bool) ParseError!usize {
     var depth: usize = 1;
     var i = start;
     while (i < input.len) {
-        const lt = scanner.findByte(input, i, '<') orelse return error.UnexpectedEndOfData;
+        const lt = scanner.findByte(input, i, '<') orelse {
+            if (comptime strict) try validateCharacterDataRange(input, i, input.len);
+            return error.UnexpectedEndOfData;
+        };
+        if (comptime strict) try validateCharacterDataRange(input, i, lt);
         i = lt;
         if (i + 1 >= input.len) return error.UnexpectedEndOfData;
         switch (input[i + 1]) {
             '/' => {
-                i = (try scanClosingTag(input, i, true)).next;
+                if (comptime strict) {
+                    i = (try scanClosingTag(input, i, true)).next;
+                } else {
+                    const gt = scanner.findByte(input, i + 2, '>') orelse return error.UnexpectedEndOfData;
+                    i = gt + 1;
+                }
                 depth -= 1;
                 if (depth == 0) return i;
             },
-            '?' => i = try skipPi(input, i, true, true),
-            '!' => i = try skipBang(input, i, true, true),
+            '?' => i = try skipPi(input, i, strict, true),
+            '!' => i = try skipBang(input, i, strict, true),
             else => {
-                const open = try scanOpeningTagToken(input, i, true);
+                if (comptime !strict) {
+                    if (!tables.isNameStart(input[i + 1])) {
+                        const gt = scanner.findByte(input, i + 1, '>') orelse return error.UnexpectedEndOfData;
+                        i = gt + 1;
+                        continue;
+                    }
+                }
+                const open = try scanOpeningTagToken(input, i, strict);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
@@ -1047,7 +1209,9 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
         if (i >= input.len) return error.UnexpectedEndOfData;
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
-            i = (scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData) + 1;
+            const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
+            if (comptime strict) try validateAttributeValue(input[i + 1 .. quote_pos]);
+            i = quote_pos + 1;
         } else {
             if (strict) return error.ExpectedQuote;
             const raw_end = scanner.findAttrUnquotedEnd(input, i);
@@ -1080,6 +1244,21 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseE
 }
 
 fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {
+    if (comptime strict) {
+        var i = start + 2;
+        if (i >= input.len) {
+            if (incremental) return error.UnexpectedEndOfData;
+            return error.ExpectedPiTarget;
+        }
+        if (!tables.isNameStart(input[i])) return error.ExpectedPiTarget;
+        const target_start = i;
+        i = scanner.findNameEndAfterStart(input, i);
+        const target = input[target_start..i];
+        if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml") and !std.mem.eql(u8, target, "xml")) {
+            return error.ExpectedPiTarget;
+        }
+    }
+
     const end = scanner.findSequence(input, start + 2, "?>") orelse {
         if (strict or incremental) return error.UnexpectedEndOfData;
         return input.len;
@@ -1108,6 +1287,7 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
             if (strict or incremental) return error.UnexpectedEndOfData;
             return input.len;
         };
+        if (comptime strict) try validateComment(input[start + 4 .. end]);
         return end + 3;
     }
     if (start + 8 < input.len and input[start + 2] == '[' and input[start + 3] == 'C' and input[start + 4] == 'D' and input[start + 5] == 'A' and input[start + 6] == 'T' and input[start + 7] == 'A' and input[start + 8] == '[') {
@@ -1118,6 +1298,7 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
         return end + 3;
     }
     if (scanner.isDoctype(input, start)) {
+        if (strict and !scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
         const end = scanner.findDoctypeEnd(input, start + 9) orelse {
             if (strict or incremental) return error.UnexpectedEndOfData;
             return input.len;
@@ -1131,6 +1312,23 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
         return input.len;
     };
     return gt + 1;
+}
+
+inline fn validateAttributeValue(value: []const u8) ParseError!void {
+    if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
+}
+
+inline fn validateComment(value: []const u8) ParseError!void {
+    if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
+}
+
+inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize) ParseError!void {
+    std.debug.assert(start <= end and end <= input.len);
+    // Incremental parsing may already have committed character data ending at
+    // `start`. Look behind by the longest proper prefix of `]]>` so a forbidden
+    // sequence split across cumulative chunks is still detected.
+    const check_start = start - @min(start, 2);
+    if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
 }
 
 test "streaming parser self-test: order attributes and depths" {
@@ -1267,6 +1465,50 @@ test "streaming parseAvailable preserves whitespace when a later chunk extends t
     try std.testing.expect(ctx.saw_full_text);
 }
 
+test "streaming strict character-data validation crosses cumulative chunk boundaries" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r>a]]>b</r>";
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    inline for (.{ 5, 6 }) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+
+        try std.testing.expect(try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode));
+        try std.testing.expectError(error.InvalidCharacterData, parser.parseAvailable(source, &ctx, Ctx.onNode));
+    }
+}
+
+test "streaming skipped-subtree character-data validation crosses cumulative chunk boundaries" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r><skip>a]]>b</skip></r>";
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+
+    inline for (.{ 11, 12 }) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+
+        try std.testing.expect(try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode));
+        try std.testing.expectError(error.InvalidCharacterData, parser.parseAvailable(source, &ctx, Ctx.onNode));
+    }
+}
+
 test "streaming parseAvailable accepts every valid token prefix" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
@@ -1347,6 +1589,10 @@ test "streaming strict token errors match DOM parsing" {
         "<r a/>",
         "<r a='x'b='y'/>",
         "<r a='x>",
+        "<r a='x<y'/>",
+        "<r><!--a--b--></r>",
+        "<r><!--a---></r>",
+        "<r>x]]>y</r>",
         "<r></ r>",
         "<r></x>",
         "<r>",
@@ -1381,6 +1627,29 @@ test "streaming strict token errors match DOM parsing" {
         if (dom_err != stream_err) std.debug.print("mismatch {s}: dom={any} stream={any}\n", .{ input, dom_err, stream_err });
         try std.testing.expectEqual(dom_err, stream_err);
     }
+}
+
+test "streaming turbo followingTextRaw uses turbo token grammar" {
+    const opts: ParseOptions = .{ .mode = .turbo };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        saw_tail: bool = false,
+        fn onNode(self: *@This(), node: Event) bool {
+            if (node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip")) {
+                self.saw_tail = std.mem.eql(u8, node.followingTextRaw() catch return false, "tail");
+                return false;
+            }
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse("<r><skip><x a=1/></skip>tail</r>", &ctx, Ctx.onNode);
+    try std.testing.expect(ctx.saw_tail);
 }
 
 test "streaming strict start-tag grammar matches DOM strictness" {
@@ -1556,6 +1825,36 @@ test "streaming skipped subtrees remain strict-validated" {
     try std.testing.expectError(error.ExpectedQuote, parser.parseAvailable("<r><skip><x a=1/></skip></r>", &ctx, Ctx.onNode));
 }
 
+test "streaming skipped subtrees preserve strict token validation" {
+    const EventValidated = Types(.{ .mode = .strict, .validate_closing_tags = true }).Node;
+    const ValidatedParser = Types(.{ .mode = .strict, .validate_closing_tags = true }).Parser;
+    const ValidatedCtx = struct {
+        fn onNode(_: *@This(), node: EventValidated) bool {
+            return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+
+    var validated = ValidatedParser.init(std.testing.allocator);
+    defer validated.deinit();
+    var validated_ctx: ValidatedCtx = .{};
+    try std.testing.expectError(error.ExpectedPiTarget, validated.parse("<skip><? ?></skip>", &validated_ctx, ValidatedCtx.onNode));
+    validated.clear();
+    try std.testing.expectError(error.ExpectedPiTarget, validated.parse("<skip><?XML x?></skip>", &validated_ctx, ValidatedCtx.onNode));
+
+    const EventSyntaxOnly = Types(.{ .mode = .strict, .validate_closing_tags = false }).Node;
+    const SyntaxOnlyParser = Types(.{ .mode = .strict, .validate_closing_tags = false }).Parser;
+    const SyntaxOnlyCtx = struct {
+        fn onNode(_: *@This(), node: EventSyntaxOnly) bool {
+            return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+
+    var syntax_only = SyntaxOnlyParser.init(std.testing.allocator);
+    defer syntax_only.deinit();
+    var syntax_ctx: SyntaxOnlyCtx = .{};
+    try std.testing.expectError(error.InvalidClosingTagName, syntax_only.parse("<skip><x/></ ></skip>", &syntax_ctx, SyntaxOnlyCtx.onNode));
+}
+
 test "streaming turbo parseAvailable waits for an incomplete closing token" {
     const opts: ParseOptions = .{ .mode = .turbo, .require_closed_elements_on_eof = true };
     const ParserType = Types(opts).Parser;
@@ -1629,4 +1928,110 @@ test "streaming strict accepts mixed XML whitespace between attributes" {
     var ctx: Ctx = .{};
     try parser.parse("<r \n\t a='1' \r\n b=\"2\">x</r>", &ctx, Ctx.onNode);
     try std.testing.expectEqual(@as(usize, 2), ctx.count);
+}
+
+test "streaming public save restore preserves closing-tag stack across divergent continuations" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(try parser.parseAvailable("<a>", &ctx, Ctx.onNode));
+    const state = parser.save();
+
+    // Pop the saved <a> and then overwrite that stack slot with <b>.
+    try std.testing.expect(try parser.parseAvailable("<a><a></a><b>", &ctx, Ctx.onNode));
+
+    parser.restore(state);
+    try std.testing.expect(try parser.parseAvailable("<a><a></a></a>", &ctx, Ctx.onNode));
+    try parser.finish();
+}
+
+test "streaming public save restore preserves skipped-subtree stack across divergent continuations" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: *const Event) bool {
+            return !std.mem.eql(u8, node.nameSlice(), "skip");
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(try parser.parseAvailable("<r><skip><a>", &ctx, Ctx.onNode));
+    const state = parser.save();
+
+    try std.testing.expect(try parser.parseAvailable("<r><skip><a></a></skip><b>", &ctx, Ctx.onNode));
+
+    parser.restore(state);
+    try std.testing.expect(try parser.parseAvailable("<r><skip><a></a><c></c></skip></r>", &ctx, Ctx.onNode));
+    try parser.finish();
+}
+
+test "streaming cumulative strict parsing rejects malformed tokens at every split" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+    const cases = [_][]const u8{
+        "<r>",       "<r></x>",         "<r></ r>",           "<r></r x>",        "<r a=1/>",                          "<r a='x<y'/>",
+        "<r a='x>",  "<r a='x'b='y'/>", "<r><!--a--b--></r>", "<r><!--a---></r>", "<r>a]]>b</r>",                      "<? ?>",
+        "<?XML x?>", "<r><? ?></r>",    "<r><?XML x?></r>",   "<!doctype r><r/>", "<!DOCTYPE r [<!ELEMENT r ANY><r/>", "<r><!foo</r>",
+        "<r><x/",    "<r><x a='1'",     "<r><![CDATA[x</r>",  "<r><!--x</r>",     "<r><?pi x</r>",                     "<",
+    };
+
+    for (cases) |source| {
+        var full = ParserType.init(std.testing.allocator);
+        defer full.deinit();
+        var full_ctx: Ctx = .{};
+        var full_name: []const u8 = "OK";
+        full.parse(source, &full_ctx, Ctx.onNode) catch |err| {
+            full_name = @errorName(err);
+        };
+        try std.testing.expect(!std.mem.eql(u8, full_name, "OK"));
+
+        for (0..source.len + 1) |split| {
+            var inc = ParserType.init(std.testing.allocator);
+            defer inc.deinit();
+            var inc_ctx: Ctx = .{};
+            var inc_name: []const u8 = "OK";
+            var failed = false;
+            _ = inc.parseAvailable(source[0..split], &inc_ctx, Ctx.onNode) catch |err| {
+                inc_name = @errorName(err);
+                failed = true;
+            };
+            if (!failed) {
+                _ = inc.parseAvailable(source, &inc_ctx, Ctx.onNode) catch |err| {
+                    inc_name = @errorName(err);
+                    failed = true;
+                };
+            }
+            if (!failed) {
+                inc.finish() catch |err| {
+                    inc_name = @errorName(err);
+                };
+            }
+            if (std.mem.eql(u8, inc_name, "OK")) {
+                std.debug.print("incremental accepted malformed source={s} split={d}; full={s}\n", .{ source, split, full_name });
+                return error.TestExpectedError;
+            }
+        }
+    }
 }

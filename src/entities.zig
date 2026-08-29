@@ -141,7 +141,7 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
                 return null;
             }
 
-            const is_hex = text[0] == 'x' or text[0] == 'X';
+            const is_hex = text[0] == 'x' or (!strict and text[0] == 'X');
             const digits = if (is_hex) text[1..] else text;
             if (digits.len == 0) {
                 if (strict) return error.InvalidNumericCharacterEntity;
@@ -168,14 +168,15 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
                     if (strict) return error.InvalidNumericCharacterEntity;
                     return null;
                 }
-                value = if (is_hex) value * 16 + d else value * 10 + d;
-                if (value > 0x10FFFF) {
+                const base: u32 = if (is_hex) 16 else 10;
+                if (value > (0x10FFFF - @as(u32, d)) / base) {
                     if (strict) return error.InvalidNumericCharacterEntity;
                     return null;
                 }
+                value = value * base + d;
             }
 
-            if (value >= 0xD800 and value <= 0xDFFF) {
+            if (!isValidXmlChar(value)) {
                 if (strict) return error.InvalidNumericCharacterEntity;
                 return null;
             }
@@ -195,6 +196,13 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
     }
 
     return null;
+}
+
+inline fn isValidXmlChar(value: u32) bool {
+    return value == 0x9 or value == 0xA or value == 0xD or
+        (value >= 0x20 and value <= 0xD7FF) or
+        (value >= 0xE000 and value <= 0xFFFD) or
+        (value >= 0x10000 and value <= 0x10FFFF);
 }
 
 test "decodeAlloc decodes without mutating the source slice" {
@@ -243,4 +251,15 @@ test "decodeAllocWithEntityMap expands mapped named entities" {
 test "strict decode rejects unknown named entities without a DTD map" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAllocWithEntityMap(alloc, "&bogus;", true, null));
+}
+
+test "strict decode rejects XML-invalid character references" {
+    const alloc = std.testing.allocator;
+    inline for (.{ "&#0;", "&#x1f;", "&#xD800;", "&#xFFFE;", "&#X41;", "&#999999999999999999999999999999;", "&#xffffffffffffffffffffffffffffffff;" }) |input| {
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAllocWithEntityMap(alloc, input, true, null));
+    }
+
+    const turbo = try decodeAllocWithEntityMap(alloc, "&#X41;", false, null);
+    defer alloc.free(turbo);
+    try std.testing.expectEqualStrings("A", turbo);
 }

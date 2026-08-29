@@ -9,6 +9,7 @@ pub const BenchMode = enum {
 };
 
 pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iterations: usize, mode: BenchMode) !u64 {
+    if (iterations == 0) return error.InvalidIterations;
     const options: zxml.ParseOptions = .{};
     // Bench against the same concrete DOM type across all runs so the parser is
     // specialized once and the loop measures parse work instead of type setup.
@@ -116,4 +117,11 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
     std.mem.doNotOptimizeAway(final_count);
     const elapsed = start.durationTo(end);
     return @intCast(@max(elapsed.raw.nanoseconds, 0));
+}
+
+test "runParseFile rejects zero iterations before file access" {
+    try std.testing.expectError(
+        error.InvalidIterations,
+        runParseFile(std.testing.io, std.testing.allocator, "does-not-exist.xml", 0, .turbo),
+    );
 }

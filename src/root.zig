@@ -418,6 +418,32 @@ test "innerText allocates decoded subtree text" {
     try std.testing.expectEqualStrings("a&c!", text);
 }
 
+test "CDATA stays literal in value and contributes to innerText" {
+    var parsed = try parseTestDoc("<r>a&amp;<![CDATA[&bogus;<x>]]>c</r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    const cdata = findFirstKind(&parsed.doc, .cdata) orelse return error.TestUnexpectedResult;
+    const cdata_value = try cdata.value(std.testing.allocator);
+    defer std.testing.allocator.free(cdata_value);
+    try std.testing.expectEqualStrings("&bogus;<x>", cdata_value);
+
+    const text = try root.innerText(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("a&&bogus;<x>c", text);
+    try std.testing.expect(root.innerTextRaw() == null);
+}
+
+test "non-text node value does not decode entity-looking content" {
+    var parsed = try parseTestDoc("<r><!-- &bogus; --></r>", .{ .mode = .strict });
+    defer parsed.deinit();
+
+    const comment = findFirstKind(&parsed.doc, .comment) orelse return error.TestUnexpectedResult;
+    const value = try comment.value(std.testing.allocator);
+    defer std.testing.allocator.free(value);
+    try std.testing.expectEqualStrings(" &bogus; ", value);
+}
+
 test "innerText helpers return empty content for textless elements" {
     var parsed = try parseTestDoc("<r><a/></r>", .{ .mode = .strict });
     defer parsed.deinit();

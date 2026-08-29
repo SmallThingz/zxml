@@ -2,7 +2,7 @@
 
 Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an in-tree benchmark/conformance harness.
 
-![zig](https://img.shields.io/badge/zig-0.15.2-f7a41d?logo=zig&logoColor=111)
+![zig](https://img.shields.io/badge/zig-0.16.0-f7a41d?logo=zig&logoColor=111)
 ![format](https://img.shields.io/badge/format-xml-0f766e)
 
 ## Features

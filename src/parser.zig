@@ -54,6 +54,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (self.input[self.i] != '<') {
                     const run = if (comptime strict_mode) scanner.scanTextRunStrict(self.input, self.i) else scanner.scanTextRun(self.input, self.i);
                     if (run.lt_index > self.i) {
+                        if (comptime strict_mode) try validateCharacterData(self.input[self.i..run.lt_index]);
                         if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
                             const parent_idx = self.topIndex();
                             _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
@@ -200,6 +201,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             value_start = self.i + 2;
                             if (scanner.findByte(input, value_start, quote)) |quote_pos| {
                                 value_end = quote_pos;
+                                if (comptime strict_mode) try validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
                                 if (strict_mode) return error.ExpectedQuote;
@@ -222,6 +224,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             value_start = self.i;
                             if (scanner.findByte(input, self.i, quote)) |quote_pos| {
                                 value_end = quote_pos;
+                                if (comptime strict_mode) try validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
                                 if (strict_mode) return error.ExpectedQuote;
@@ -253,7 +256,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const attr_len = self.doc.attrs.items.len;
                 if (attr_len == self.doc.attrs.capacity) {
                     @branchHint(.unlikely);
-                    self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, attr_len + attr_len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+                    self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, attr_len +| attr_len / 2 +| @as(usize, 8)) catch return error.OutOfMemory;
                 }
                 const attr_out = self.doc.attrs.addOneAssumeCapacity();
                 attr_out.* = .{
@@ -268,11 +271,21 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         inline fn parseClosingTag(noalias self: *Self) ParseError!void {
             if (!validate_closing_tags) {
                 self.i += 2; // </
-                const gt = scanner.findByte(self.input, self.i, '>') orelse {
-                    self.i = self.input.len;
-                    return;
-                };
-                self.i = gt + 1;
+                if (comptime strict_mode) {
+                    if (self.i >= self.input.len) return error.UnexpectedEndOfData;
+                    if (!tables.isNameStart(self.input[self.i])) return error.InvalidClosingTagName;
+                    self.i = scanner.findNameEndAfterStart(self.input, self.i);
+                    if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) self.skipWhitespace();
+                    if (self.i >= self.input.len) return error.UnexpectedEndOfData;
+                    if (self.input[self.i] != '>') return error.InvalidClosingTagName;
+                    self.i += 1;
+                } else {
+                    const gt = scanner.findByte(self.input, self.i, '>') orelse {
+                        self.i = self.input.len;
+                        return;
+                    };
+                    self.i = gt + 1;
+                }
                 if (self.stackLen() > 1) self.finishNode(self.popStack());
                 return;
             }
@@ -353,6 +366,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.i = scanner.findNameEnd(self.input, self.i);
             }
             const target_end = self.i;
+            const xml_target = target_end - target_start == 3 and
+                std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
+            if (comptime strict_mode) {
+                if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
+            }
 
             self.skipWhitespace();
             const value_start = self.i;
@@ -374,10 +392,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (!opts.include_misc_nodes) return;
 
-            const decl = target_end - target_start == 3 and
-                ((self.input[target_start] | 0x20) == 'x') and
-                ((self.input[target_start + 1] | 0x20) == 'm') and
-                ((self.input[target_start + 2] | 0x20) == 'l');
+            const decl = xml_target;
             const kind: NodeType = if (decl) .declaration else .pi;
 
             const parent_idx = self.topIndex();
@@ -396,6 +411,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i = self.input.len;
                     return;
                 };
+                if (comptime strict_mode) try validateComment(self.input[value_start..end]);
                 self.i = end + 3;
 
                 if (!opts.include_misc_nodes) return;
@@ -436,6 +452,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             if (scanner.isDoctype(self.input, self.i)) {
+                if (comptime strict_mode) {
+                    if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
+                }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (strict_mode) return error.UnexpectedEndOfData;
                     self.i = self.input.len;
@@ -469,7 +488,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
             }
             var parent = &self.doc.nodes.items[parent_idx];
             const idx: IndexInt = @intCast(len);
@@ -489,7 +508,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
             }
             var parent = &self.doc.nodes.items[parent_idx];
             const idx: IndexInt = @intCast(len);
@@ -510,7 +529,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
             }
             var parent = &self.doc.nodes.items[parent_idx];
             const idx: IndexInt = @intCast(len);
@@ -530,7 +549,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const len = self.doc.nodes.items.len;
             if (len == self.doc.nodes.capacity) {
                 @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + 8) catch return error.OutOfMemory;
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
             }
 
             var parent = &self.doc.nodes.items[parent_idx];
@@ -549,7 +568,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const len = self.doc.parse_validate_stack.items.len;
                 if (len == self.doc.parse_validate_stack.capacity) {
                     @branchHint(.unlikely);
-                    self.doc.parse_validate_stack.ensureTotalCapacityPrecise(self.doc.allocator, len + len / 2 + @as(usize, 8)) catch return error.OutOfMemory;
+                    self.doc.parse_validate_stack.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| @as(usize, 8)) catch return error.OutOfMemory;
                 }
                 self.doc.parse_validate_stack.appendAssumeCapacity(.{ .idx = idx, .tag_key = tag_key, .tag_len = @intCast(tag_len) });
             } else {
@@ -658,6 +677,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const raw = self.input[text_start..lt];
+            if (comptime strict_mode) try validateCharacterData(raw);
             if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0])) {
                 const whitespace_only = blk: {
                     if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
@@ -674,6 +694,18 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const text_idx = try self.appendTextNodeTo(idx, text_start, lt);
             self.doc.nodes.items[idx].subtree_end = text_idx;
             return true;
+        }
+
+        inline fn validateAttributeValue(value: []const u8) ParseError!void {
+            if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
+        }
+
+        inline fn validateComment(value: []const u8) ParseError!void {
+            if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
+        }
+
+        inline fn validateCharacterData(value: []const u8) ParseError!void {
+            if (std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
         }
     };
 }
@@ -712,6 +744,10 @@ test "strict start-tag grammar rejects malformed attributes" {
         .{ .input = "<r !a='1'/>", .err = error.ExpectedAttributeName },
         .{ .input = "<r a='1'b='2'/>", .err = error.ExpectedAttributeName },
         .{ .input = "<r a='1' b/>", .err = error.ExpectedEq },
+        .{ .input = "<r a='x<y'/>", .err = error.InvalidAttributeValue },
+        .{ .input = "<r><!--a--b--></r>", .err = error.InvalidComment },
+        .{ .input = "<r><!--a---></r>", .err = error.InvalidComment },
+        .{ .input = "<r>x]]>y</r>", .err = error.InvalidCharacterData },
     };
 
     for (cases) |case| {
@@ -723,6 +759,17 @@ test "strict start-tag grammar rejects malformed attributes" {
     doc.clear();
     doc.source = "<r></ r>";
     try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_closing_tags = true }));
+
+    inline for (.{ "<r></ r>", "<r></>", "<r></r x>", "<r></r" }) |input| {
+        doc.clear();
+        doc.source = input;
+        const result = parseInto(&doc, input, .{ .mode = .strict, .validate_closing_tags = false });
+        if (std.mem.eql(u8, input, "<r></r")) {
+            try std.testing.expectError(error.UnexpectedEndOfData, result);
+        } else {
+            try std.testing.expectError(error.InvalidClosingTagName, result);
+        }
+    }
 }
 
 test "strict closing validation supports tag names longer than u16" {

@@ -8,10 +8,9 @@
 ## Local Development Workflow
 
 ```bash
+zig fmt --check build.zig src/*.zig tools/*.zig examples/*.zig test_runner.zig bench/*.zig bench/runners/*.zig
 zig build test
-zig build docs-check
-zig build examples-check
-zig build ship-check
+zig build conformance
 ```
 
 Use these additional commands when touching performance/conformance code:
@@ -26,7 +25,7 @@ zig build conformance
 - Format Zig code before pushing:
 
 ```bash
-zig fmt src/**/*.zig examples/*.zig build.zig
+zig fmt build.zig src/*.zig tools/*.zig examples/*.zig test_runner.zig bench/*.zig bench/runners/*.zig
 ```
 
 - Keep public behavior changes covered by tests in `src/root.zig` test graph.
@@ -36,7 +35,7 @@ zig fmt src/**/*.zig examples/*.zig build.zig
 
 - User-facing snippets in `README.md` must match canonical code in `examples/`.
 - Every example file must contain executable tests.
-- Run `zig build examples-check` before merging doc/example changes.
+- Compile and run changed examples before merging doc/example changes.
 
 ## Commit Expectations
 

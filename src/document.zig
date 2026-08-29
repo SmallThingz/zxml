@@ -59,6 +59,9 @@ pub const ParseError = error{
     ExpectedAttributeName,
     ExpectedEq,
     ExpectedQuote,
+    InvalidAttributeValue,
+    InvalidComment,
+    InvalidCharacterData,
     ExpectedPiTarget,
     InvalidClosingTagName,
     InvalidNumericCharacterEntity,
@@ -82,7 +85,11 @@ pub const ParseDiagnostic = struct {
         var i: usize = 0;
         const end = @min(self.offset, self.source.len);
         while (i < end) : (i += 1) {
-            if (self.source[i] == '\n') {
+            if (self.source[i] == '\r') {
+                line += 1;
+                column = 1;
+                if (i + 1 < end and self.source[i + 1] == '\n') i += 1;
+            } else if (self.source[i] == '\n') {
                 line += 1;
                 column = 1;
             } else {
@@ -95,7 +102,7 @@ pub const ParseDiagnostic = struct {
     pub fn context(self: @This(), radius: usize) []const u8 {
         const center = @min(self.offset, self.source.len);
         const start = center - @min(center, radius);
-        const end = @min(self.source.len, center + radius);
+        const end = center + @min(self.source.len - center, radius);
         return self.source[start..end];
     }
 };
@@ -201,7 +208,7 @@ pub const Attribute = struct {
     pub fn write(self: @This(), writer: anytype) !void {
         try writer.writeAll(self.nameSlice());
         try writer.writeAll("=\"");
-        try writer.writeAll(self.valueRawSlice());
+        try writeDoubleQuotedAttributeValue(writer, self.valueRawSlice());
         try writer.writeAll("\"");
     }
 };
@@ -216,6 +223,7 @@ pub const Node = struct {
     }
 
     inline fn findAttributeIndex(self: @This(), name: []const u8) ?IndexInt {
+        if (self.kind != .element) return null;
         const node_raw = self.raw();
         const range = node_raw.attributeSpan();
         var i = range.start;
@@ -245,7 +253,11 @@ pub const Node = struct {
     }
 
     pub fn namespaceUri(self: @This()) ?[]const u8 {
+        if (self.kind != .element) return null;
         const prefix = self.namespacePrefix();
+        if (prefix) |p| {
+            if (std.mem.eql(u8, p, "xml")) return "http://www.w3.org/XML/1998/namespace";
+        }
         var cur: ?Node = self;
         while (cur) |node| : (cur = node.parentNode()) {
             const node_raw = node.raw();
@@ -256,19 +268,28 @@ pub const Node = struct {
                 const attr = node.doc.attrs.items[i];
                 const name = attr.name.slice(node.doc.source);
                 if (prefix) |p| {
-                    if (std.mem.startsWith(u8, name, "xmlns:") and std.mem.eql(u8, name["xmlns:".len..], p)) return attr.value.slice(node.doc.source);
-                } else if (std.mem.eql(u8, name, "xmlns")) return attr.value.slice(node.doc.source);
+                    if (std.mem.startsWith(u8, name, "xmlns:") and std.mem.eql(u8, name["xmlns:".len..], p)) {
+                        const uri = attr.value.slice(node.doc.source);
+                        return if (uri.len == 0) null else uri;
+                    }
+                } else if (std.mem.eql(u8, name, "xmlns")) {
+                    const uri = attr.value.slice(node.doc.source);
+                    return if (uri.len == 0) null else uri;
+                }
             }
         }
         return null;
     }
 
     pub fn valueRawSlice(self: @This()) []const u8 {
+        if (self.kind == .element or self.kind == .document) return "";
         return self.raw().valueSpan().slice(self.doc.source);
     }
 
     pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
-        return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
+        const raw_value = self.valueRawSlice();
+        if (self.kind == .text) return self.doc.decodeValueAlloc(alloc, raw_value);
+        return alloc.dupe(u8, raw_value);
     }
 
     pub fn firstChild(self: @This()) ?Node {
@@ -307,6 +328,7 @@ pub const Node = struct {
     }
 
     pub fn firstAttribute(self: @This()) ?Attribute {
+        if (self.kind != .element) return null;
         const node_raw = self.raw();
         const range = node_raw.attributeSpan();
         if (range.start == range.end) return null;
@@ -316,14 +338,14 @@ pub const Node = struct {
     /// Returns a borrowed raw text slice when the subtree's text content is
     /// exactly one contiguous text node; otherwise returns null.
     pub fn innerTextRaw(self: @This()) ?[]const u8 {
-        if (self.kind == .text) return self.valueRawSlice();
+        if (self.kind == .text or self.kind == .cdata) return self.valueRawSlice();
 
         const node_raw = self.raw();
         var first: ?[]const u8 = null;
         var idx = self.index + 1;
         while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodes.items[idx];
-            if (child.kind != .text) continue;
+            if (child.kind != .text and child.kind != .cdata) continue;
             if (first != null) return null;
             first = child.valueSpan().slice(self.doc.source);
         }
@@ -332,7 +354,7 @@ pub const Node = struct {
 
     /// Materializes subtree text into a dedicated decoded allocation.
     pub fn innerText(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
-        if (self.kind == .text) return self.value(alloc);
+        if (self.kind == .text or self.kind == .cdata) return self.value(alloc);
 
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(alloc);
@@ -341,8 +363,11 @@ pub const Node = struct {
         var idx = self.index + 1;
         while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodes.items[idx];
-            if (child.kind != .text) continue;
-            try self.doc.appendDecodedValue(&out, alloc, child.valueSpan().slice(self.doc.source));
+            switch (child.kind) {
+                .text => try self.doc.appendDecodedValue(&out, alloc, child.valueSpan().slice(self.doc.source)),
+                .cdata => try out.appendSlice(alloc, child.valueSpan().slice(self.doc.source)),
+                else => {},
+            }
         }
         return out.toOwnedSlice(alloc);
     }
@@ -472,15 +497,37 @@ pub const Document = struct {
     /// Scans the internal subset for simple general-entity declarations and
     /// stores owned decoded values for later decoded text/attribute access.
     pub fn registerDoctypeEntities(self: *Document, doctype_value: []const u8) ParseError!void {
-        const subset_start = std.mem.indexOfScalar(u8, doctype_value, '[') orelse return;
-        const subset_end = std.mem.lastIndexOfScalar(u8, doctype_value, ']') orelse return;
-        if (subset_end <= subset_start + 1) return;
-
-        const subset = doctype_value[subset_start + 1 .. subset_end];
+        const subset_range = try findInternalSubset(doctype_value) orelse return;
+        const subset = doctype_value[subset_range.start..subset_range.end];
         var i: usize = 0;
         while (i < subset.len) {
-            const decl_rel = std.mem.indexOfPos(u8, subset, i, "<!ENTITY") orelse break;
-            i = decl_rel + "<!ENTITY".len;
+            if (std.mem.startsWith(u8, subset[i..], "<!--")) {
+                const end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.UnexpectedEndOfData;
+                i = end + 3;
+                continue;
+            }
+            if (std.mem.startsWith(u8, subset[i..], "<?")) {
+                const end = std.mem.indexOfPos(u8, subset, i + 2, "?>") orelse return error.UnexpectedEndOfData;
+                i = end + 2;
+                continue;
+            }
+            if (subset[i] != '<') {
+                i += 1;
+                continue;
+            }
+            if (!std.mem.startsWith(u8, subset[i..], "<!ENTITY")) {
+                const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+
+            const after_keyword = i + "<!ENTITY".len;
+            if (after_keyword >= subset.len or !tables.isWhitespace(subset[after_keyword])) {
+                const end = findMarkupDeclEnd(subset, after_keyword) orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+            i = after_keyword;
 
             while (i < subset.len and tables.isWhitespace(subset[i])) : (i += 1) {}
             if (i >= subset.len) return error.UnexpectedEndOfData;
@@ -518,6 +565,7 @@ pub const Document = struct {
             if (i >= subset.len) return error.UnexpectedEndOfData;
 
             const raw_value = subset[value_start..i];
+            const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
             const expanded = if (self.expand_dtd_entities)
                 try entities.decodeAllocWithEntityMap(self.allocator, raw_value, self.parse_mode == .strict, &self.entity_map)
             else
@@ -531,13 +579,13 @@ pub const Document = struct {
 
             const gop = try self.entity_map.getOrPut(owned_name);
             if (gop.found_existing) {
-                self.allocator.free(gop.key_ptr.*);
-                self.allocator.free(gop.value_ptr.*);
+                self.allocator.free(owned_name);
+                self.allocator.free(expanded);
+            } else {
+                gop.key_ptr.* = owned_name;
+                gop.value_ptr.* = expanded;
             }
-            gop.key_ptr.* = owned_name;
-            gop.value_ptr.* = expanded;
 
-            const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
             i = end + 1;
         }
     }
@@ -640,7 +688,7 @@ pub const Document = struct {
             try writer.writeAll(" ");
             try writer.writeAll(self.attrs.items[attr_i].name.slice(self.source));
             try writer.writeAll("=\"");
-            try writer.writeAll(self.attrs.items[attr_i].value.slice(self.source));
+            try writeDoubleQuotedAttributeValue(writer, self.attrs.items[attr_i].value.slice(self.source));
             try writer.writeAll("\"");
         }
     }
@@ -652,18 +700,85 @@ pub const Document = struct {
     }
 
     pub fn reserveForInput(self: *Document, input_len: usize) !void {
-        if (input_len <= self.reserved_input_hint_len) return;
+        const est_nodes = @max(@as(usize, 16), input_len / 14 +| 8);
+        const est_attrs = @max(@as(usize, 16), input_len / 32 +| 8);
+        const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
 
-        const est_nodes = @max(@as(usize, 16), input_len / 14 + 8);
-        const est_attrs = @max(@as(usize, 16), input_len / 32 + 8);
-        const est_stack = @max(@as(usize, 8), input_len / 512 + 8);
+        if (input_len <= self.reserved_input_hint_len and
+            self.nodes.capacity >= est_nodes and
+            self.attrs.capacity >= est_attrs and
+            self.parse_stack.capacity >= est_stack) return;
 
         if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
         if (est_attrs > self.attrs.capacity) try self.attrs.ensureTotalCapacity(self.allocator, est_attrs);
         if (est_stack > self.parse_stack.capacity) try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
-        self.reserved_input_hint_len = input_len;
+        self.reserved_input_hint_len = @max(self.reserved_input_hint_len, input_len);
     }
 };
+
+fn writeDoubleQuotedAttributeValue(writer: anytype, value: []const u8) !void {
+    var start: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, value, start, '"')) |quote| {
+        try writer.writeAll(value[start..quote]);
+        try writer.writeAll("&quot;");
+        start = quote + 1;
+    }
+    try writer.writeAll(value[start..]);
+}
+
+const SubsetRange = struct { start: usize, end: usize };
+
+fn findInternalSubset(input: []const u8) ParseError!?SubsetRange {
+    var i: usize = 0;
+    var quote: u8 = 0;
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (quote != 0) {
+            if (c == quote) quote = 0;
+            continue;
+        }
+        if (c == '\'' or c == '"') {
+            quote = c;
+            continue;
+        }
+        if (c != '[') continue;
+
+        const start = i + 1;
+        var depth: usize = 1;
+        i = start;
+        while (i < input.len) : (i += 1) {
+            const inner = input[i];
+            if (quote != 0) {
+                if (inner == quote) quote = 0;
+                continue;
+            }
+            if (i + 3 < input.len and std.mem.eql(u8, input[i .. i + 4], "<!--")) {
+                const end = std.mem.indexOfPos(u8, input, i + 4, "-->") orelse return error.UnexpectedEndOfData;
+                i = end + 2;
+                continue;
+            }
+            if (i + 1 < input.len and input[i] == '<' and input[i + 1] == '?') {
+                const end = std.mem.indexOfPos(u8, input, i + 2, "?>") orelse return error.UnexpectedEndOfData;
+                i = end + 1;
+                continue;
+            }
+            if (inner == '\'' or inner == '"') {
+                quote = inner;
+                continue;
+            }
+            if (inner == '[') {
+                depth += 1;
+                continue;
+            }
+            if (inner == ']') {
+                depth -= 1;
+                if (depth == 0) return .{ .start = start, .end = i };
+            }
+        }
+        return error.UnexpectedEndOfData;
+    }
+    return null;
+}
 
 fn findMarkupDeclEnd(input: []const u8, start: usize) ?usize {
     var i = start;
@@ -830,6 +945,15 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     try std.testing.expectEqual(@as(usize, 0), doc.attrs.items.len);
 }
 
+test "empty input reserves parser scratch capacity" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    try doc.parse("", .{});
+    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
+    try std.testing.expectEqual(NodeType.document, doc.root().?.kind);
+}
+
 test "lazy namespace helpers split names and resolve inherited xmlns" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
@@ -847,6 +971,26 @@ test "lazy namespace helpers split names and resolve inherited xmlns" {
     try std.testing.expectEqualStrings("urn:x", item.namespaceUri().?);
     try std.testing.expectEqualStrings("x", attr.namespacePrefix().?);
     try std.testing.expectEqualStrings("id", attr.localName());
+
+    try doc.parse("<r xmlns='urn:outer'><inner xmlns=''><leaf/></inner></r>", .{ .mode = .strict, .validate_closing_tags = true });
+    const inner = doc.nodeAt(2).?;
+    const leaf = doc.nodeAt(3).?;
+    try std.testing.expect(inner.namespaceUri() == null);
+    try std.testing.expect(leaf.namespaceUri() == null);
+}
+
+test "node helpers are safe on non-elements and resolve the predefined xml prefix" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<xml:r>text</xml:r>", .{ .mode = .strict });
+
+    const root = doc.nodeAt(1).?;
+    const text = root.firstChild().?;
+    try std.testing.expectEqualStrings("http://www.w3.org/XML/1998/namespace", root.namespaceUri().?);
+    try std.testing.expect(text.namespaceUri() == null);
+    try std.testing.expect(text.firstAttribute() == null);
+    try std.testing.expect(text.getAttributeValueRaw("x") == null);
+    try std.testing.expectEqualStrings("", root.valueRawSlice());
 }
 
 test "selector query helpers match tag id class and attributes" {
@@ -877,15 +1021,24 @@ test "parse diagnostics report offset location and context lazily" {
     try std.testing.expect(std.mem.indexOf(u8, diag.context(8), "<1") != null);
 }
 
-test "registerDoctypeEntities handles double-quoted values and replacements" {
+test "registerDoctypeEntities finds the real subset and ignores non-declarations" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     doc.expand_dtd_entities = true;
     doc.parse_mode = .strict;
 
-    try doc.registerDoctypeEntities("[<!ENTITY a \"one\"><!ENTITY a 'two'>]");
+    try doc.registerDoctypeEntities(
+        " r SYSTEM \"[<!ENTITY quoted 'bad'>]\" [<!-- <!ENTITY hidden 'bad'> --><?pi <!ENTITY pi 'bad'>?><!ENTITY a \"one\"><!ENTITY a 'two'>]",
+    );
     try std.testing.expectEqual(@as(usize, 1), doc.entity_map.count());
-    try std.testing.expectEqualStrings("two", doc.entity_map.get("a").?);
+    try std.testing.expectEqualStrings("one", doc.entity_map.get("a").?);
+    try std.testing.expect(doc.entity_map.get("quoted") == null);
+    try std.testing.expect(doc.entity_map.get("hidden") == null);
+    try std.testing.expect(doc.entity_map.get("pi") == null);
+
+    doc.clearEntityMap();
+    try doc.registerDoctypeEntities(" r SYSTEM \"[<!ENTITY fake 'bad'>]\"");
+    try std.testing.expectEqual(@as(usize, 0), doc.entity_map.count());
 }
 
 test "Document.write serializes parsed tree without reparsing" {
@@ -899,4 +1052,28 @@ test "Document.write serializes parsed tree without reparsing" {
     try doc.write(&out.writer);
 
     try std.testing.expectEqualStrings("<?xml version='1.0'?><!DOCTYPE r [<!ENTITY x 'y'>]><r a=\"1\"><c>t&amp;x</c><!--ok--><![CDATA[raw<]]></r>", out.written());
+}
+
+test "serialization escapes double quotes from single-quoted attributes" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<r a='say &quot;hi&quot; and \"raw\"'/>", .{ .mode = .strict });
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try doc.write(&out.writer);
+    try std.testing.expectEqualStrings("<r a=\"say &quot;hi&quot; and &quot;raw&quot;\"/>", out.written());
+
+    var attr_out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer attr_out.deinit();
+    try doc.nodeAt(1).?.firstAttribute().?.write(&attr_out.writer);
+    try std.testing.expectEqualStrings("a=\"say &quot;hi&quot; and &quot;raw&quot;\"", attr_out.written());
+}
+
+test "parse diagnostics treat CRLF and CR as line endings" {
+    const crlf = ParseDiagnostic{ .err = error.ExpectedGt, .offset = 5, .source = "a\r\nb\nc" };
+    try std.testing.expectEqual(ParseDiagnostic.Location{ .line = 3, .column = 1 }, crlf.location());
+
+    const cr = ParseDiagnostic{ .err = error.ExpectedGt, .offset = 4, .source = "a\rb\rc" };
+    try std.testing.expectEqual(ParseDiagnostic.Location{ .line = 3, .column = 1 }, cr.location());
 }

@@ -5,10 +5,12 @@
     .minimum_zig_version = "0.16.0",
     .paths = .{
         ".gitignore",
+        "LICENSE",
         "README.md",
         "build.zig",
         "build.zig.zon",
         "bench",
+        "examples",
         "src",
         "test_runner.zig",
         "tools",
