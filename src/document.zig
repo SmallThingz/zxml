@@ -89,6 +89,27 @@ pub fn validateXmlReferences(
     doctype_value: ?[]const u8,
     require_declared_entities: bool,
 ) ParseError!void {
+    return validateXmlReferencesInContext(value, allow_trailing_partial, doctype_value, require_declared_entities, .content);
+}
+
+pub fn validateXmlAttributeReferences(
+    value: []const u8,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+) ParseError!void {
+    return validateXmlReferencesInContext(value, false, doctype_value, require_declared_entities, .attribute);
+}
+
+const XmlReferenceContext = enum { content, attribute };
+const GeneralEntityKind = enum { internal, external_parsed, unparsed };
+
+fn validateXmlReferencesInContext(
+    value: []const u8,
+    allow_trailing_partial: bool,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+    context: XmlReferenceContext,
+) ParseError!void {
     var search_from: usize = 0;
     while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
         const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
@@ -97,9 +118,15 @@ pub fn validateXmlReferences(
         };
         const body = value[amp + 1 .. semi];
         if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
-        if (require_declared_entities and body[0] != '#' and !isPredefinedEntityName(body)) {
-            const declared = if (doctype_value) |doctype| try doctypeDeclaresParsedGeneralEntity(doctype, body) else false;
-            if (!declared) return error.InvalidNumericCharacterEntity;
+        if (body[0] != '#' and !isPredefinedEntityName(body)) {
+            const kind = if (doctype_value) |doctype| try doctypeGeneralEntityKind(doctype, body) else null;
+            if (kind) |entity_kind| switch (entity_kind) {
+                .internal => {},
+                .external_parsed => if (context == .attribute) return error.InvalidAttributeValue,
+                .unparsed => return error.InvalidNumericCharacterEntity,
+            } else if (require_declared_entities) {
+                return error.InvalidNumericCharacterEntity;
+            }
         }
         search_from = semi + 1;
     }
@@ -111,8 +138,8 @@ inline fn isPredefinedEntityName(name: []const u8) bool {
         std.mem.eql(u8, name, "quot");
 }
 
-fn doctypeDeclaresParsedGeneralEntity(doctype_value: []const u8, target: []const u8) ParseError!bool {
-    const subset_range = try findInternalSubset(doctype_value) orelse return false;
+fn doctypeGeneralEntityKind(doctype_value: []const u8, target: []const u8) ParseError!?GeneralEntityKind {
+    const subset_range = try findInternalSubset(doctype_value) orelse return null;
     const subset = doctype_value[subset_range.start..subset_range.end];
     var i: usize = 0;
     while (i < subset.len) {
@@ -160,15 +187,15 @@ fn doctypeDeclaresParsedGeneralEntity(doctype_value: []const u8, target: []const
             try consumeDtdName(body, &j);
             if (std.mem.eql(u8, body[name_start..j], target)) {
                 if (!skipRequiredXmlWhitespace(body, &j)) return error.InvalidDoctype;
-                if (j < body.len and (body[j] == '\'' or body[j] == '"')) return true;
+                if (j < body.len and (body[j] == '\'' or body[j] == '"')) return .internal;
                 try consumeExternalId(body, &j);
-                if (skipRequiredXmlWhitespace(body, &j) and std.mem.startsWith(u8, body[j..], "NDATA")) return false;
-                return true;
+                if (skipRequiredXmlWhitespace(body, &j) and std.mem.startsWith(u8, body[j..], "NDATA")) return .unparsed;
+                return .external_parsed;
             }
         }
         i = decl_end + 1;
     }
-    return false;
+    return null;
 }
 
 fn isValidXmlReferenceBody(body: []const u8) bool {

@@ -756,7 +756,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateAttributeValue(self: *const Self, value: []const u8) ParseError!void {
             if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-            try document.validateXmlReferences(value, false, self.doctypeValue(), self.require_declared_entities);
+            try document.validateXmlAttributeReferences(value, self.doctypeValue(), self.require_declared_entities);
         }
 
         inline fn validateComment(value: []const u8) ParseError!void {

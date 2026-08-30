@@ -839,6 +839,22 @@ test "strict enforces declared parsed general entities" {
         const source = "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>";
         try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
     }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        const source = "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r a='&external;'/>";
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+    }
+    {
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>", .{ .mode = .strict });
+        defer parsed.deinit();
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        const source = "<!DOCTYPE r SYSTEM 'urn:subset' [<!NOTATION n SYSTEM 'urn:n'><!ENTITY raw SYSTEM 'urn:x' NDATA n>]><r>&raw;</r>";
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
 }
 
 test "turbo invalid numeric entity stays literal in raw and decoded access" {

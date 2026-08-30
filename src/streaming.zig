@@ -533,7 +533,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
             inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
                 if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-                try document.validateXmlReferences(value, false, self.doctypeValue(input), self.require_declared_entities);
+                try document.validateXmlAttributeReferences(value, self.doctypeValue(input), self.require_declared_entities);
             }
 
             inline fn validateCharacterDataRange(self: *const Self, input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
@@ -1473,7 +1473,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, d
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
-            if (comptime strict) try document.validateXmlReferences(input[i + 1 .. quote_pos], false, doctype_value, require_declared_entities);
+            if (comptime strict) try document.validateXmlAttributeReferences(input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
             i = quote_pos + 1;
         } else {
             if (strict) return error.ExpectedQuote;
@@ -1630,7 +1630,7 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
 
 inline fn validateAttributeValue(value: []const u8) ParseError!void {
     if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-    try document.validateXmlReferences(value, false, null, false);
+    try document.validateXmlAttributeReferences(value, null, false);
 }
 
 inline fn validateComment(value: []const u8) ParseError!void {
@@ -1884,22 +1884,32 @@ test "streaming strict enforces declared parsed general entities" {
         }
     };
 
-    const invalid = [_][]const u8{
+    const invalid_entities = [_][]const u8{
         "<r>&custom;</r>",
         "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>",
         "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
         "<!DOCTYPE r><r><skip><x a='&custom;'/></skip></r>",
+        "<!DOCTYPE r SYSTEM 'urn:subset' [<!NOTATION n SYSTEM 'urn:n'><!ENTITY raw SYSTEM 'urn:x' NDATA n>]><r>&raw;</r>",
     };
-    inline for (invalid) |source| {
+    inline for (invalid_entities) |source| {
         var parser = ParserType.init(std.testing.allocator);
         defer parser.deinit();
         var ctx: Ctx = .{};
         try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source, &ctx, Ctx.onNode));
     }
 
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        const source = "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r a='&external;'/>";
+        try std.testing.expectError(error.InvalidAttributeValue, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
     const valid = [_][]const u8{
         "<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>",
         "<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
+        "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>",
     };
     inline for (valid) |source| {
         var parser = ParserType.init(std.testing.allocator);
