@@ -1681,10 +1681,21 @@ inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
 noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) u64 {
     var filter: u64 = 0;
     const first_start = skipWsStrict(input, start);
-    const first_end = scanner.findNameEndAfterStart(input, first_start);
-    addAttributeNameFilter(&filter, input[first_start..first_end]);
+    const first = scanner.scanNameAndKeyAfterStart(input, first_start);
+    addAttributeNameFilterKey(&filter, first.key, first.end - first_start);
     addAttributeNameFilter(&filter, input[second_start..second_end]);
     return filter;
+}
+
+inline fn addAttributeNameFilterKey(filter: *u64, key: u64, name_len: usize) void {
+    var mixed = key ^ (@as(u64, name_len) << 56);
+    mixed *%= 0x9e3779b97f4a7c15;
+    mixed ^= mixed >> 32;
+    var bucket: u6 = @intCast(mixed >> 58);
+    if (bucket == 63) bucket = 62;
+    const bit = @as(u64, 1) << bucket;
+    if (filter.* & bit != 0) filter.* |= attribute_filter_collision;
+    filter.* |= bit;
 }
 
 inline fn attributeNameHash(name: []const u8) u64 {
