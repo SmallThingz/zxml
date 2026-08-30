@@ -168,6 +168,7 @@ pub fn Types(comptime options: ParseOptions) type {
             doctype_value_end: usize = 0,
             require_declared_entities: bool = true,
             xml_validated_offset: usize = 0,
+            attribute_name_filter: u64 = 0,
 
             const Self = @This();
             const strict_mode = options.mode == .strict;
@@ -669,6 +670,9 @@ pub fn Types(comptime options: ParseOptions) type {
                                 @branchHint(.unlikely);
                                 return error.DuplicateAttribute;
                             }
+                        } else {
+                            if (attr_count == 2) self.attribute_name_filter = try initAttributeNameFilter(input, attr_start, attr_name_start);
+                            addAttributeNameFilter(&self.attribute_name_filter, input[attr_name_start..attr_i]);
                         }
                         attr_count += 1;
                     }
@@ -720,7 +724,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (!closed) return error.UnexpectedEndOfData;
                 if (comptime strict_mode) {
-                    if (attr_count > 2) try validateUniqueAttributesRaw(input, attr_start, attr_end);
+                    if (attr_count > 2 and self.attribute_name_filter & attribute_filter_collision != 0) {
+                        try validateUniqueAttributesRaw(input, attr_start, attr_end);
+                    }
                 }
 
                 if (comptime strict_mode) {
@@ -1657,6 +1663,29 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     }
     const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse return error.ExpectedQuote;
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+}
+
+const attribute_filter_collision = @as(u64, 1) << 63;
+
+inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
+    const hash = attributeNameHash(name);
+    var bucket: u6 = @intCast(hash >> 58);
+    if (bucket == 63) bucket = 62;
+    const bit = @as(u64, 1) << bucket;
+    if (filter.* & bit != 0) filter.* |= attribute_filter_collision;
+    filter.* |= bit;
+}
+
+noinline fn initAttributeNameFilter(input: []const u8, start: usize, end: usize) ParseError!u64 {
+    var filter: u64 = 0;
+    var i = start;
+    var count: usize = 0;
+    while (count < 2) : (count += 1) {
+        const attr = (try scanValidatedAttributeToken(input, i, end)) orelse break;
+        addAttributeNameFilter(&filter, input[attr.name_start..attr.name_end]);
+        i = attr.next;
+    }
+    return filter;
 }
 
 inline fn attributeNameHash(name: []const u8) u64 {
