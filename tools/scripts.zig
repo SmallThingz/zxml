@@ -1559,7 +1559,7 @@ fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap
             .integer => @floatFromInt(throughput.integer),
             else => unreachable,
         };
-        if (!std.math.isFinite(val) or val < 0) {
+        if (!std.math.isFinite(val) or val <= 0) {
             alloc.free(key);
             return error.InvalidBaseline;
         }
@@ -1589,6 +1589,7 @@ test "parseBaseline validates shape and replaces duplicate measurements" {
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\"}]}"));
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":1,\"fixture\":\"x.xml\",\"throughput_mb_s\":1}]}"));
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":-1}]}"));
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":0}]}"));
 }
 
 fn freeBaselineMap(alloc: std.mem.Allocator, map: *std.StringHashMap(f64)) void {
