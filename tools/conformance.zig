@@ -806,21 +806,18 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
 
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(alloc);
-        try appendRawElementText(&out, alloc, element);
+
+        const raw_element = doc.nodes.items[element.index];
+        var child_index = element.index + 1;
+        while (child_index <= raw_element.subtree_end and child_index < doc.nodes.items.len) : (child_index += 1) {
+            const child = doc.nodes.items[child_index];
+            if (child.kind == .text or child.kind == .cdata) {
+                try out.appendSlice(alloc, child.valueSpan().slice(doc.source));
+            }
+        }
         return try out.toOwnedSlice(alloc);
     }
     return null;
-}
-
-fn appendRawElementText(out: *std.ArrayList(u8), alloc: std.mem.Allocator, element: anytype) std.mem.Allocator.Error!void {
-    var child = element.firstChild();
-    while (child) |node| : (child = node.nextSibling()) {
-        switch (node.kind) {
-            .text, .cdata => try out.appendSlice(alloc, node.valueRawSlice()),
-            .element => try appendRawElementText(out, alloc, node),
-            else => {},
-        }
-    }
 }
 
 fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
@@ -1283,6 +1280,28 @@ test "field text checks concatenate text, CDATA, and descendant text" {
     const decoded_result = try runCase(alloc, decoded.value.object, 0);
     defer if (decoded_result.reason) |reason| alloc.free(reason);
     try std.testing.expect(decoded_result.pass);
+}
+
+test "raw field text extraction handles deeply nested elements iteratively" {
+    const alloc = std.testing.allocator;
+    const depth = 20_000;
+
+    var xml = std.ArrayList(u8).empty;
+    defer xml.deinit(alloc);
+    try xml.appendSlice(alloc, "<r><Code>");
+    for (0..depth) |_| try xml.appendSlice(alloc, "<x>");
+    try xml.appendSlice(alloc, "value");
+    for (0..depth) |_| try xml.appendSlice(alloc, "</x>");
+    try xml.appendSlice(alloc, "</Code></r>");
+
+    const Types = zxml.Types(.{ .mode = .strict });
+    var doc = Types.Document.init(alloc);
+    defer doc.deinit();
+    try doc.parse(xml.items, .{ .mode = .strict });
+
+    const text = (try elementTextByName(alloc, &doc, "strict", "Code")).?;
+    defer alloc.free(text);
+    try std.testing.expectEqualStrings("value", text);
 }
 
 test "field text checks distinguish an empty field from a missing field" {
