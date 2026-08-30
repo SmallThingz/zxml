@@ -57,6 +57,78 @@ pub inline fn bytePairPresence(noalias haystack: []const u8, comptime first: u8,
     return result;
 }
 
+pub const QuotedValueScan = struct {
+    end: usize,
+    has_lt: bool = false,
+    has_ampersand: bool = false,
+};
+
+/// Finds a quoted attribute value's closing quote while collecting the two
+/// strict-mode sentinels that otherwise require a second pass over the value.
+pub inline fn scanQuotedValueSpecials(noalias hay: []const u8, start: usize, quote: u8) QuotedValueScan {
+    std.debug.assert(quote == '\'' or quote == '"');
+    if (start >= hay.len) return .{ .end = hay.len };
+
+    var result: QuotedValueScan = .{ .end = hay.len };
+    const probe_end = start + @min(hay.len - start, 32);
+    var i = start;
+    while (i + 8 <= probe_end) : (i += 8) {
+        inline for (0..8) |n| {
+            const c = hay[i + n];
+            if (c == quote) {
+                result.end = i + n;
+                return result;
+            }
+            result.has_lt = result.has_lt or c == '<';
+            result.has_ampersand = result.has_ampersand or c == '&';
+        }
+    }
+    while (i < probe_end) : (i += 1) {
+        const c = hay[i];
+        if (c == quote) {
+            result.end = i;
+            return result;
+        }
+        result.has_lt = result.has_lt or c == '<';
+        result.has_ampersand = result.has_ampersand or c == '&';
+    }
+    if (probe_end == hay.len) return result;
+
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const quote_vec: Vec = @splat(quote);
+    const lt_vec: Vec = @splat('<');
+    const amp_vec: Vec = @splat('&');
+    i = probe_end;
+    while (i + @sizeOf(Vec) <= hay.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = hay[i..][0..@sizeOf(Vec)].*;
+        if (@reduce(.Or, bytes == quote_vec)) {
+            const end = i + @sizeOf(Vec);
+            while (i < end) : (i += 1) {
+                const c = hay[i];
+                if (c == quote) {
+                    result.end = i;
+                    return result;
+                }
+                result.has_lt = result.has_lt or c == '<';
+                result.has_ampersand = result.has_ampersand or c == '&';
+            }
+            unreachable;
+        }
+        result.has_lt = result.has_lt or @reduce(.Or, bytes == lt_vec);
+        result.has_ampersand = result.has_ampersand or @reduce(.Or, bytes == amp_vec);
+    }
+    while (i < hay.len) : (i += 1) {
+        const c = hay[i];
+        if (c == quote) {
+            result.end = i;
+            return result;
+        }
+        result.has_lt = result.has_lt or c == '<';
+        result.has_ampersand = result.has_ampersand or c == '&';
+    }
+    return result;
+}
+
 pub const NameScan = struct {
     end: usize,
     key: u64,
@@ -439,6 +511,31 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
     try std.testing.expectEqual(@as(?usize, 6), findSequence("abcdef", 6, ""));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
+}
+
+test "scanQuotedValueSpecials finds quote and strict sentinels in one pass" {
+    const plain = scanQuotedValueSpecials("alpha'ignored<&", 0, '\'');
+    try std.testing.expectEqual(@as(usize, 5), plain.end);
+    try std.testing.expect(!plain.has_lt);
+    try std.testing.expect(!plain.has_ampersand);
+
+    const special = scanQuotedValueSpecials("a<&amp;'tail", 0, '\'');
+    try std.testing.expectEqual(@as(usize, 7), special.end);
+    try std.testing.expect(special.has_lt);
+    try std.testing.expect(special.has_ampersand);
+
+    var long: [160]u8 = @splat('x');
+    long[70] = '&';
+    long[100] = '<';
+    long[140] = '"';
+    const vector = scanQuotedValueSpecials(&long, 0, '"');
+    try std.testing.expectEqual(@as(usize, 140), vector.end);
+    try std.testing.expect(vector.has_lt);
+    try std.testing.expect(vector.has_ampersand);
+
+    const missing = scanQuotedValueSpecials("abc&def", 0, '"');
+    try std.testing.expectEqual(@as(usize, 7), missing.end);
+    try std.testing.expect(missing.has_ampersand);
 }
 
 test "scanTextSpecials finds markup and strict sentinels in short and vector runs" {

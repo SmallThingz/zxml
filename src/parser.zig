@@ -299,12 +299,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         const quote = input[self.i + 1];
                         if (quote == '\'' or quote == '"') {
                             value_start = self.i + 2;
-                            if (scanner.findByte(input, value_start, quote)) |quote_pos| {
+                            if (comptime strict_mode) {
+                                const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
+                                if (scan.end == input_len) return error.ExpectedQuote;
+                                value_end = scan.end;
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
+                                self.i = scan.end + 1;
+                            } else if (scanner.findByte(input, value_start, quote)) |quote_pos| {
                                 value_end = quote_pos;
-                                if (comptime strict_mode) try self.validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
-                                if (strict_mode) return error.ExpectedQuote;
                                 value_end = input_len;
                                 self.i = input_len;
                             }
@@ -322,12 +326,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             const quote = value_first;
                             self.i += 1;
                             value_start = self.i;
-                            if (scanner.findByte(input, self.i, quote)) |quote_pos| {
+                            if (comptime strict_mode) {
+                                const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
+                                if (scan.end == input_len) return error.ExpectedQuote;
+                                value_end = scan.end;
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
+                                self.i = scan.end + 1;
+                            } else if (scanner.findByte(input, self.i, quote)) |quote_pos| {
                                 value_end = quote_pos;
-                                if (comptime strict_mode) try self.validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
-                                if (strict_mode) return error.ExpectedQuote;
                                 value_end = input_len;
                                 self.i = input_len;
                             }
@@ -848,10 +856,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        inline fn validateAttributeValue(self: *const Self, value: []const u8) ParseError!void {
-            const specials = scanner.bytePairPresence(value, '<', '&');
-            if (specials.first) return error.InvalidAttributeValue;
-            if (specials.second) {
+        inline fn validateAttributeValueSpecials(self: *const Self, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
+            if (has_lt) return error.InvalidAttributeValue;
+            if (has_ampersand) {
                 try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities);
             }
         }
