@@ -633,7 +633,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (i >= input.len) {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
-                    return input.len;
+                    return error.InvalidClosingTagName;
                 }
                 if (input[i] != '>') {
                     @branchHint(.unlikely);
@@ -2229,6 +2229,29 @@ test "streaming turbo closing validation rejects truncated closing tags" {
     defer parser.deinit();
     var ctx: Ctx = .{};
     try std.testing.expectError(error.InvalidClosingTagName, parser.parse("text</X", &ctx, Ctx.onNode));
+}
+
+test "streaming turbo closing validation rejects a named close missing gt" {
+    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const cases = [_][]const u8{
+        "<a></a",
+        "<a></a ",
+        "<a></b",
+    };
+    for (cases) |input| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidClosingTagName, parser.parse(input, &ctx, Ctx.onNode));
+    }
 }
 
 test "streaming skipped turbo subtree preserves required-closure errors" {
