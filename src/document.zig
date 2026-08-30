@@ -362,6 +362,11 @@ fn pushGeneralEntity(
     require_declared_entities: bool,
     context: XmlReferenceContext,
 ) ParseError!void {
+    if (states.get(name)) |state| switch (state) {
+        .visiting => return error.RecursiveEntity,
+        .done => return,
+    };
+
     const entry = catalog.map.getEntry(name) orelse {
         if (require_declared_entities) return error.InvalidNumericCharacterEntity;
         return;
@@ -377,10 +382,6 @@ fn pushGeneralEntity(
         .internal => {},
     }
 
-    if (states.get(canonical_name)) |state| switch (state) {
-        .visiting => return error.RecursiveEntity,
-        .done => return,
-    };
     try states.put(canonical_name, .visiting);
     try frames.append(catalog.allocator, .{
         .name = canonical_name,
