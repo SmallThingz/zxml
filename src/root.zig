@@ -1129,3 +1129,23 @@ test "refAllDeclsRecursive: every zxml module compiles all declarations" {
     refAllDeclsRecursive(entities_mod);
     refAllDeclsRecursive(streaming_mod);
 }
+
+test "strict enforces document-level well-formedness" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    try std.testing.expectError(error.ExpectedDocumentElement, doc.parse("", opts));
+    try std.testing.expectError(error.ExpectedDocumentElement, doc.parse("<!--only misc-->", opts));
+    try std.testing.expectError(error.MultipleDocumentElements, doc.parse("<a/><b/>", opts));
+    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("text<a/>", opts));
+    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("<a/>text", opts));
+    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("<![CDATA[x]]><a/>", opts));
+    try std.testing.expectError(error.InvalidDoctype, doc.parse("<!DOCTYPE a><!DOCTYPE a><a/>", opts));
+    try std.testing.expectError(error.InvalidDoctype, doc.parse("<a/><!DOCTYPE a>", opts));
+    try std.testing.expectError(error.InvalidDoctype, doc.parse("<a><!DOCTYPE a></a>", opts));
+    try std.testing.expectError(error.InvalidDeclaration, doc.parse(" <?xml version='1.0'?><a/>", opts));
+    try std.testing.expectError(error.InvalidDeclaration, doc.parse("<?pi x?><?xml version='1.0'?><a/>", opts));
+
+    try doc.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", opts);
+}

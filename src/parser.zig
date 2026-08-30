@@ -26,6 +26,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         input: []const u8,
         i: usize,
         current_parent: IndexInt = 0,
+        root_seen: bool = false,
+        doctype_seen: bool = false,
 
         const Self = @This();
 
@@ -54,7 +56,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (self.input[self.i] != '<') {
                     const run = if (comptime strict_mode) scanner.scanTextRunStrict(self.input, self.i) else scanner.scanTextRun(self.input, self.i);
                     if (run.lt_index > self.i) {
-                        if (comptime strict_mode) try validateCharacterData(self.input[self.i..run.lt_index]);
+                        if (comptime strict_mode) {
+                            try validateCharacterData(self.input[self.i..run.lt_index]);
+                            if (self.topIndex() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
+                        }
                         if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
                             const parent_idx = self.topIndex();
                             _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
@@ -80,6 +85,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (require_closed_elements_on_eof and self.stackLen() > 1) {
                 return error.UnexpectedEndOfData;
+            }
+            if (comptime strict_mode) {
+                if (!self.root_seen) return error.ExpectedDocumentElement;
             }
 
             while (self.stackLen() > 1) {
@@ -110,6 +118,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i = name_end;
 
             const parent_idx = self.topIndex();
+            if (comptime strict_mode) {
+                if (parent_idx == 0) {
+                    if (self.root_seen) return error.MultipleDocumentElements;
+                    self.root_seen = true;
+                }
+            }
             const idx: IndexInt = if (comptime validate_closing_tags)
                 InvalidIndex
             else
@@ -342,6 +356,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         fn parsePiOrDeclaration(noalias self: *Self) ParseError!void {
+            const markup_start = self.i;
             self.i += 2; // <?
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
@@ -370,6 +385,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
             if (comptime strict_mode) {
                 if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
+                if (xml_target and markup_start != 0) return error.InvalidDeclaration;
             }
 
             self.skipWhitespace();
@@ -441,6 +457,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 self.i = end + 3;
 
+                if (comptime strict_mode) {
+                    if (self.topIndex() == 0) return error.InvalidDocumentContent;
+                }
+
                 if (!opts.include_misc_nodes) return;
 
                 const parent_idx = self.topIndex();
@@ -454,6 +474,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (scanner.isDoctype(self.input, self.i)) {
                 if (comptime strict_mode) {
                     if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
+                    if (self.topIndex() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
                 }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (strict_mode) return error.UnexpectedEndOfData;
@@ -464,6 +485,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const value_start = self.i + 9;
                 const value_end = j;
                 self.i = j + 1;
+
+                if (comptime strict_mode) self.doctype_seen = true;
 
                 if (expand_dtd_entities) {
                     try self.doc.registerDoctypeEntities(self.input[value_start..value_end]);

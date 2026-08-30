@@ -65,8 +65,15 @@
       "expect_root_name": "r"
     },
     {
-      "name": "text-around-root",
-      "profiles": ["strict", "turbo_default"],
+      "name": "strict-text-around-root-rejected",
+      "profile": "strict",
+      "xml": "pre<r>t</r>post",
+      "expect_ok": false,
+      "expect_error": "InvalidDocumentContent"
+    },
+    {
+      "name": "turbo-text-around-root-tolerated",
+      "profile": "turbo_default",
       "xml": "pre<r>t</r>post",
       "expect_ok": true,
       "expect_elements": 1,

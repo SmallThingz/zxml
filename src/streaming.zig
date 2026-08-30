@@ -161,6 +161,8 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_stack_len: usize = 0,
             restore_skip_stack_len: usize = 0,
             restore_generation: u64 = 0,
+            root_seen: bool = false,
+            doctype_seen: bool = false,
 
             const Self = @This();
             const strict_mode = options.mode == .strict;
@@ -175,6 +177,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 skip_stack_len: usize,
                 needs_more: bool,
                 stack_generation: u64,
+                root_seen: bool,
+                doctype_seen: bool,
             };
 
             const Checkpoint = struct {
@@ -182,6 +186,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 stack_len: usize,
                 skip_stack_len: usize,
                 needs_more: bool,
+                root_seen: bool,
+                doctype_seen: bool,
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
@@ -200,6 +206,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.clearStacks();
                 self.offset = 0;
                 self.needs_more = false;
+                self.root_seen = false;
+                self.doctype_seen = false;
                 try self.reserveForInput(input.len);
 
                 var i: usize = self.offset;
@@ -219,6 +227,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (comptime strict_mode) {
                             const run = scanner.scanTextRun(input, i);
                             try validateCharacterDataRange(input, i, run.lt_index);
+                            if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                             if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                                 const node: Node = .{
                                     .source = input,
@@ -259,6 +268,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 if (require_closed_elements_on_eof and self.stackLen() != 0) return error.UnexpectedEndOfData;
+                if (comptime strict_mode) {
+                    if (!self.root_seen) return error.ExpectedDocumentElement;
+                }
                 self.offset = i;
             }
 
@@ -266,6 +278,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.clearStacks();
                 self.offset = 0;
                 self.needs_more = false;
+                self.root_seen = false;
+                self.doctype_seen = false;
             }
 
             /// Saves the logical incremental-parser state. A saved state may be
@@ -279,6 +293,8 @@ pub fn Types(comptime options: ParseOptions) type {
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
                     .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
+                    .root_seen = self.root_seen,
+                    .doctype_seen = self.doctype_seen,
                 };
             }
 
@@ -288,6 +304,8 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn restore(self: *Self, state: State) void {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
+                self.root_seen = state.root_seen;
+                self.doctype_seen = state.doctype_seen;
                 self.state_tracking = true;
 
                 if (comptime validate_closing_tags) {
@@ -320,12 +338,16 @@ pub fn Types(comptime options: ParseOptions) type {
                     .stack_len = self.stackLen(),
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
+                    .root_seen = self.root_seen,
+                    .doctype_seen = self.doctype_seen,
                 };
             }
 
             inline fn restoreCheckpoint(self: *Self, state: Checkpoint) void {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
+                self.root_seen = state.root_seen;
+                self.doctype_seen = state.doctype_seen;
                 if (comptime validate_closing_tags) {
                     std.debug.assert(!self.restore_pending);
                     std.debug.assert(state.stack_len == self.stack.items.len);
@@ -384,6 +406,9 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn finish(self: *Self) ParseError!void {
                 if (self.needs_more) return error.UnexpectedEndOfData;
                 if (require_closed_elements_on_eof and (self.stackLen() != 0 or self.skipStackLen() != 0)) return error.UnexpectedEndOfData;
+                if (comptime strict_mode) {
+                    if (!self.root_seen) return error.ExpectedDocumentElement;
+                }
             }
 
             inline fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
@@ -397,6 +422,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (comptime strict_mode) {
                         const run = scanner.scanTextRun(input, i);
                         try validateCharacterDataRange(input, i, run.lt_index);
+                        if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const node: Node = .{
                                 .source = input,
@@ -553,6 +579,13 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (!closed) return error.UnexpectedEndOfData;
 
+                if (comptime strict_mode) {
+                    if (self.stackLen() == 0) {
+                        if (self.root_seen) return error.MultipleDocumentElements;
+                        self.root_seen = true;
+                    }
+                }
+
                 const node: Node = .{
                     .source = input,
                     .kind = .element,
@@ -679,6 +712,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const xml_target = target_end - target_start == 3 and std.ascii.eqlIgnoreCase(input[target_start..target_end], "xml");
                 if (comptime strict_mode) {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
+                    if (xml_target and start != 0) return error.InvalidDeclaration;
                 }
                 i = skipWsMode(input, i, strict_mode);
                 const value_start = i;
@@ -727,6 +761,9 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
+                    if (comptime strict_mode) {
+                        if (self.stackLen() == 0) return error.InvalidDocumentContent;
+                    }
                     if (include_misc_nodes) {
                         const node: Node = .{
                             .source = input,
@@ -742,11 +779,13 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (scanner.isDoctype(input, start)) {
                     if (comptime strict_mode) {
                         if (!scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
+                        if (self.stackLen() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
                     }
                     const end = scanner.findDoctypeEnd(input, start + 9) orelse {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
+                    if (comptime strict_mode) self.doctype_seen = true;
                     if (include_misc_nodes) {
                         const node: Node = .{
                             .source = input,
@@ -836,6 +875,9 @@ pub fn Types(comptime options: ParseOptions) type {
                             };
                         },
                         '!' => {
+                            if (comptime strict_mode) {
+                                if (scanner.isDoctype(input, lt)) return error.InvalidDoctype;
+                            }
                             i = skipBang(input, lt, strict_mode, incremental) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
@@ -1349,8 +1391,9 @@ fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incre
         const target_start = i;
         i = scanner.findNameEndAfterStart(input, i);
         const target = input[target_start..i];
-        if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml") and !std.mem.eql(u8, target, "xml")) {
-            return error.ExpectedPiTarget;
+        if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml")) {
+            if (!std.mem.eql(u8, target, "xml")) return error.ExpectedPiTarget;
+            return error.InvalidDeclaration;
         }
     }
 
@@ -1394,6 +1437,7 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
     }
     if (scanner.isDoctype(input, start)) {
         if (strict and !scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
+        if (strict) return error.InvalidDoctype;
         const end = scanner.findDoctypeEnd(input, start + 9) orelse {
             if (strict or incremental) return error.UnexpectedEndOfData;
             return input.len;
@@ -2286,4 +2330,55 @@ test "streaming skipped turbo subtree preserves required-closure errors" {
     defer parser.deinit();
     var ctx: Ctx = .{};
     try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<b>< unfinished", &ctx, Ctx.onNode));
+}
+
+test "streaming strict enforces document-level well-formedness" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expectError(error.ExpectedDocumentElement, parser.parse("", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.ExpectedDocumentElement, parser.parse("<!--only misc-->", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.MultipleDocumentElements, parser.parse("<a/><b/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDocumentContent, parser.parse("text<a/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDocumentContent, parser.parse("<a/>text", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDocumentContent, parser.parse("<![CDATA[x]]><a/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDoctype, parser.parse("<!DOCTYPE a><!DOCTYPE a><a/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDoctype, parser.parse("<a/><!DOCTYPE a>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDoctype, parser.parse("<a><!DOCTYPE a></a>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDeclaration, parser.parse(" <?xml version='1.0'?><a/>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidDeclaration, parser.parse("<?pi x?><?xml version='1.0'?><a/>", &ctx, Ctx.onNode));
+
+    try parser.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", &ctx, Ctx.onNode);
+}
+
+test "streaming strict save restore preserves document-level state" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try std.testing.expect(try parser.parseAvailable("<!DOCTYPE a>", &ctx, Ctx.onNode));
+    const state = parser.save();
+    try std.testing.expect(try parser.parseAvailable("<!DOCTYPE a><a/>", &ctx, Ctx.onNode));
+    parser.restore(state);
+    try std.testing.expect(try parser.parseAvailable("<!DOCTYPE a><b/>", &ctx, Ctx.onNode));
+    try parser.finish();
 }
