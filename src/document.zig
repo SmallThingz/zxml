@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common.zig");
 const parser = @import("parser.zig");
 const entities = @import("entities.zig");
@@ -6,6 +7,11 @@ const tables = @import("tables.zig");
 
 pub const IndexInt = common.IndexInt;
 pub const InvalidIndex: IndexInt = common.InvalidIndex;
+
+const xml_scan_vector_len: comptime_int = switch (builtin.cpu.arch) {
+    .x86, .x86_64 => if (std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) 32 else 16,
+    else => 16,
+};
 
 pub const ParseMode = enum {
     turbo,
@@ -78,7 +84,7 @@ pub const ParseError = error{
 };
 
 pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
-    const Vec = @Vector(16, u8);
+    const Vec = @Vector(xml_scan_vector_len, u8);
     const high_bit: Vec = @splat(0x80);
     const control_limit: Vec = @splat(0x20);
     const tab: Vec = @splat('\t');
