@@ -1,5 +1,11 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const tables = @import("tables.zig");
+
+const byte_scan_vector_len: comptime_int = switch (builtin.cpu.arch) {
+    .x86, .x86_64 => if (std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) 32 else 16,
+    else => 16,
+};
 
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
     if (start >= haystack.len) {
@@ -23,6 +29,33 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
     }
     if (probe_end == haystack.len) return null;
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
+}
+
+
+pub const BytePairPresence = struct {
+    first: bool = false,
+    second: bool = false,
+};
+
+pub inline fn bytePairPresence(noalias haystack: []const u8, comptime first: u8, comptime second: u8) BytePairPresence {
+    comptime std.debug.assert(first != second);
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const first_vec: Vec = @splat(first);
+    const second_vec: Vec = @splat(second);
+
+    var result: BytePairPresence = .{};
+    var i: usize = 0;
+    while (i + @sizeOf(Vec) <= haystack.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = haystack[i..][0..@sizeOf(Vec)].*;
+        result.first = result.first or @reduce(.Or, bytes == first_vec);
+        result.second = result.second or @reduce(.Or, bytes == second_vec);
+        if (result.first and result.second) return result;
+    }
+    for (haystack[i..]) |c| {
+        result.first = result.first or c == first;
+        result.second = result.second or c == second;
+    }
+    return result;
 }
 
 pub const NameScan = struct {
@@ -336,6 +369,23 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
     try std.testing.expectEqual(@as(?usize, 6), findSequence("abcdef", 6, ""));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
+}
+
+test "bytePairPresence finds either sentinel in short and vector-sized inputs" {
+    const none = bytePairPresence("alpha123", '<', '&');
+    try std.testing.expect(!none.first);
+    try std.testing.expect(!none.second);
+
+    const both = bytePairPresence("a&b<c", '<', '&');
+    try std.testing.expect(both.first);
+    try std.testing.expect(both.second);
+
+    var long = [_]u8{'x'} ** (byte_scan_vector_len * 2 + 3);
+    long[byte_scan_vector_len - 1] = ']';
+    long[byte_scan_vector_len * 2 + 1] = '&';
+    const vector = bytePairPresence(&long, ']', '&');
+    try std.testing.expect(vector.first);
+    try std.testing.expect(vector.second);
 }
 
 test "doctype scanner ignores quotes comments processing instructions and internal subsets" {

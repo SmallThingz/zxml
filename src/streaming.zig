@@ -532,15 +532,21 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
-                if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-                try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities);
+                const specials = scanner.bytePairPresence(value, '<', '&');
+                if (specials.first) return error.InvalidAttributeValue;
+                if (specials.second) {
+                    try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities);
+                }
             }
 
             inline fn validateCharacterDataRange(self: *const Self, input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
                 std.debug.assert(start <= end and end <= input.len);
-                const check_start = start - @min(start, 2);
-                if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
-                try document.validateXmlReferencesAlloc(self.allocator, input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
+                const value = input[start..end];
+                const specials = scanner.bytePairPresence(value, ']', '&');
+                if (containsForbiddenCdataClose(input, start, end, specials.first)) return error.InvalidCharacterData;
+                if (specials.second) {
+                    try document.validateXmlReferencesAlloc(self.allocator, value, incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
+                }
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
@@ -1527,11 +1533,14 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
             if (comptime strict) {
                 const value = input[i + 1 .. quote_pos];
-                if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-                if (entity_allocator) |allocator| {
-                    try document.validateXmlAttributeReferencesAlloc(allocator, value, doctype_value, require_declared_entities);
-                } else {
-                    try document.validateXmlAttributeReferences(value, doctype_value, require_declared_entities);
+                const specials = scanner.bytePairPresence(value, '<', '&');
+                if (specials.first) return error.InvalidAttributeValue;
+                if (specials.second) {
+                    if (entity_allocator) |allocator| {
+                        try document.validateXmlAttributeReferencesAlloc(allocator, value, doctype_value, require_declared_entities);
+                    } else {
+                        try document.validateXmlAttributeReferences(value, doctype_value, require_declared_entities);
+                    }
                 }
             }
             i = quote_pos + 1;
@@ -1721,9 +1730,22 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
     return gt + 1;
 }
 
+inline fn containsForbiddenCdataClose(input: []const u8, start: usize, end: usize, has_close_bracket: bool) bool {
+    // A cumulative range can begin in the middle of `]]>`. Check only the
+    // two possible cross-boundary starts, then scan the current range only if
+    // it actually contains `]`.
+    if (start != 0) {
+        const boundary_start = start - @min(start, 2);
+        const boundary_end = @min(end, start +| 2);
+        if (std.mem.indexOf(u8, input[boundary_start..boundary_end], "]]>") != null) return true;
+    }
+    return has_close_bracket and std.mem.indexOf(u8, input[start..end], "]]>") != null;
+}
+
 inline fn validateAttributeValue(value: []const u8) ParseError!void {
-    if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-    try document.validateXmlAttributeReferences(value, null, false);
+    const specials = scanner.bytePairPresence(value, '<', '&');
+    if (specials.first) return error.InvalidAttributeValue;
+    if (specials.second) try document.validateXmlAttributeReferences(value, null, false);
 }
 
 inline fn validateComment(value: []const u8) ParseError!void {
@@ -1732,12 +1754,10 @@ inline fn validateComment(value: []const u8) ParseError!void {
 
 inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
     std.debug.assert(start <= end and end <= input.len);
-    // Incremental parsing may already have committed character data ending at
-    // `start`. Look behind by the longest proper prefix of `]]>` so a forbidden
-    // sequence split across cumulative chunks is still detected.
-    const check_start = start - @min(start, 2);
-    if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
-    try document.validateXmlReferences(input[start..end], incremental and end == input.len, null, false);
+    const value = input[start..end];
+    const specials = scanner.bytePairPresence(value, ']', '&');
+    if (containsForbiddenCdataClose(input, start, end, specials.first)) return error.InvalidCharacterData;
+    if (specials.second) try document.validateXmlReferences(value, incremental and end == input.len, null, false);
 }
 
 test "streaming parser self-test: order attributes and depths" {

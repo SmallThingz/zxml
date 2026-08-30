@@ -786,8 +786,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn validateAttributeValue(self: *const Self, value: []const u8) ParseError!void {
-            if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-            try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities);
+            const specials = scanner.bytePairPresence(value, '<', '&');
+            if (specials.first) return error.InvalidAttributeValue;
+            if (specials.second) {
+                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities);
+            }
         }
 
         inline fn validateComment(value: []const u8) ParseError!void {
@@ -795,8 +798,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn validateCharacterData(self: *const Self, value: []const u8) ParseError!void {
-            if (std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
-            try document.validateXmlReferencesAlloc(self.doc.allocator, value, false, self.doctypeValue(), self.require_declared_entities);
+            const specials = scanner.bytePairPresence(value, ']', '&');
+            if (specials.first and std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
+            if (specials.second) {
+                try document.validateXmlReferencesAlloc(self.doc.allocator, value, false, self.doctypeValue(), self.require_declared_entities);
+            }
         }
 
         inline fn doctypeValue(self: *const Self) ?[]const u8 {
