@@ -1639,41 +1639,71 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
 }
 
+inline fn attributeNameHash(name: []const u8) u64 {
+    var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) *% 0x9e3779b97f4a7c15);
+    mixed ^= mixed >> 30;
+    mixed *%= 0xbf58476d1ce4e5b9;
+    mixed ^= mixed >> 27;
+    mixed *%= 0x94d049bb133111eb;
+    mixed ^= mixed >> 31;
+    return mixed;
+}
+
+noinline fn validateUniqueAttributesQuadratic(input: []const u8, start: usize, end: usize) ParseError!void {
+    var i = start;
+    while (try scanValidatedAttributeToken(input, i, end)) |current| {
+        const current_name = input[current.name_start..current.name_end];
+        var previous_i = start;
+        while (previous_i < current.name_start) {
+            const previous = (try scanValidatedAttributeToken(input, previous_i, end)) orelse break;
+            if (previous.name_start == current.name_start) break;
+            if (std.mem.eql(u8, input[previous.name_start..previous.name_end], current_name)) {
+                return error.DuplicateAttribute;
+            }
+            previous_i = previous.next;
+        }
+        i = current.next;
+    }
+}
+
 noinline fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: usize) ParseError!void {
-    const inline_capacity = 8;
-    const NameSpan = struct {
+    const table_capacity = 64;
+    const NameSlot = struct {
+        hash: u64,
         start: usize,
         end: usize,
     };
 
-    var seen: [inline_capacity]NameSpan = undefined;
+    var slots: [table_capacity]NameSlot = undefined;
+    var occupied: u64 = 0;
     var seen_count: usize = 0;
-    var overflow_start: usize = start;
     var i = start;
     while (try scanValidatedAttributeToken(input, i, end)) |current| {
+        if (seen_count == table_capacity) {
+            // Extremely attribute-heavy tags are outside the fast-path budget.
+            // Re-run the exact bounded-memory checker rather than allocating.
+            return validateUniqueAttributesQuadratic(input, start, end);
+        }
+
         const current_name = input[current.name_start..current.name_end];
-        const inline_count = @min(seen_count, inline_capacity);
-        for (seen[0..inline_count]) |previous| {
-            if (std.mem.eql(u8, input[previous.start..previous.end], current_name)) {
+        const hash = attributeNameHash(current_name);
+        var slot_index: usize = @intCast(hash & (table_capacity - 1));
+        while (occupied & (@as(u64, 1) << @as(u6, @intCast(slot_index))) != 0) {
+            const previous = slots[slot_index];
+            if (previous.hash == hash and
+                previous.end - previous.start == current.name_end - current.name_start and
+                std.mem.eql(u8, input[previous.start..previous.end], current_name))
+            {
                 return error.DuplicateAttribute;
             }
+            slot_index = (slot_index + 1) & (table_capacity - 1);
         }
-
-        if (seen_count < inline_capacity) {
-            seen[seen_count] = .{ .start = current.name_start, .end = current.name_end };
-            if (seen_count + 1 == inline_capacity) overflow_start = current.next;
-        } else {
-            var prev_i = overflow_start;
-            while (prev_i < current.name_start) {
-                const previous = (try scanValidatedAttributeToken(input, prev_i, end)) orelse break;
-                if (previous.name_start == current.name_start) break;
-                if (std.mem.eql(u8, input[previous.name_start..previous.name_end], current_name)) {
-                    return error.DuplicateAttribute;
-                }
-                prev_i = previous.next;
-            }
-        }
-
+        slots[slot_index] = .{
+            .hash = hash,
+            .start = current.name_start,
+            .end = current.name_end,
+        };
+        occupied |= @as(u64, 1) << @as(u6, @intCast(slot_index));
         seen_count += 1;
         i = current.next;
     }
@@ -3111,6 +3141,19 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     var ctx: Ctx = .{};
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r a='1' a='2'/>", &ctx, Ctx.onNode));
     try parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9'/>", &ctx, Ctx.onNode);
+    // Distinct names that land in the same hash-table bucket must probe rather
+    // than false-positive as duplicates.
+    try parser.parse("<r k1='1' k12='12' z='3'/>", &ctx, Ctx.onNode);
+
+    var many = std.ArrayList(u8).empty;
+    defer many.deinit(std.testing.allocator);
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..65) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a63='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
     try std.testing.expectError(
         error.DuplicateAttribute,
         parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/>", &ctx, Ctx.onNode),
