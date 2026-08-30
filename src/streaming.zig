@@ -1574,18 +1574,42 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
 }
 
-fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: usize) ParseError!void {
+noinline fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: usize) ParseError!void {
+    const inline_capacity = 8;
+    const NameSpan = struct {
+        start: usize,
+        end: usize,
+    };
+
+    var seen: [inline_capacity]NameSpan = undefined;
+    var seen_count: usize = 0;
+    var overflow_start: usize = start;
     var i = start;
     while (try scanValidatedAttributeToken(input, i, end)) |current| {
-        var prev_i = start;
-        while (prev_i < current.name_start) {
-            const previous = (try scanValidatedAttributeToken(input, prev_i, end)) orelse break;
-            if (previous.name_start == current.name_start) break;
-            if (std.mem.eql(u8, input[previous.name_start..previous.name_end], input[current.name_start..current.name_end])) {
+        const current_name = input[current.name_start..current.name_end];
+        const inline_count = @min(seen_count, inline_capacity);
+        for (seen[0..inline_count]) |previous| {
+            if (std.mem.eql(u8, input[previous.start..previous.end], current_name)) {
                 return error.DuplicateAttribute;
             }
-            prev_i = previous.next;
         }
+
+        if (seen_count < inline_capacity) {
+            seen[seen_count] = .{ .start = current.name_start, .end = current.name_end };
+            if (seen_count + 1 == inline_capacity) overflow_start = current.next;
+        } else {
+            var prev_i = overflow_start;
+            while (prev_i < current.name_start) {
+                const previous = (try scanValidatedAttributeToken(input, prev_i, end)) orelse break;
+                if (previous.name_start == current.name_start) break;
+                if (std.mem.eql(u8, input[previous.name_start..previous.name_end], current_name)) {
+                    return error.DuplicateAttribute;
+                }
+                prev_i = previous.next;
+            }
+        }
+
+        seen_count += 1;
         i = current.next;
     }
 }
@@ -2998,9 +3022,18 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     defer parser.deinit();
     var ctx: Ctx = .{};
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r a='1' a='2'/>", &ctx, Ctx.onNode));
+    try parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9'/>", &ctx, Ctx.onNode);
+    try std.testing.expectError(
+        error.DuplicateAttribute,
+        parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/>", &ctx, Ctx.onNode),
+    );
 
     ctx.skip_root = true;
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r><x a='1' a='2'/></r>", &ctx, Ctx.onNode));
+    try std.testing.expectError(
+        error.DuplicateAttribute,
+        parser.parse("<r><x a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/></r>", &ctx, Ctx.onNode),
+    );
 }
 
 test "streaming strict validates XML declaration grammar" {
