@@ -109,7 +109,7 @@ fn suiteMetadata(root: std.json.Value, suite_path: []const u8) ConformanceError!
     if (root != .object) return ConformanceError.InvalidSuiteFormat;
 
     const suite_name = if (root.object.get("suite")) |value| blk: {
-        if (value != .string) return ConformanceError.InvalidSuiteFormat;
+        if (value != .string or value.string.len == 0) return ConformanceError.InvalidSuiteFormat;
         break :blk value.string;
     } else suite_path;
 
@@ -184,6 +184,14 @@ fn runCase(alloc: std.mem.Allocator, obj: std.json.ObjectMap, case_idx: usize) !
             .case_name = case_name,
             .pass = false,
             .reason = try std.fmt.allocPrint(alloc, "field {s} must be {s}", .{ problem.key, problem.expected }),
+        };
+    }
+
+    if (invalidCaseFieldCombination(obj)) |reason| {
+        return .{
+            .case_name = case_name,
+            .pass = false,
+            .reason = try alloc.dupe(u8, reason),
         };
     }
 
@@ -396,7 +404,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
         }
     }
 
-    if (expect_root_name) |expected| {
+    if (expect_root_name != null or expect_root_attr_name != null or spec.expect_unique_root_attrs != null) {
         const root = firstElement(&doc) orelse {
             return .{
                 .case_name = case_name,
@@ -404,12 +412,15 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
                 .reason = try std.fmt.allocPrint(alloc, "[{s}] expected root element, found none", .{profile}),
             };
         };
-        if (!std.mem.eql(u8, root.nameSlice(), expected)) {
-            return .{
-                .case_name = case_name,
-                .pass = false,
-                .reason = try std.fmt.allocPrint(alloc, "[{s}] expect_root_name={s}, got {s}", .{ profile, expected, root.nameSlice() }),
-            };
+
+        if (expect_root_name) |expected| {
+            if (!std.mem.eql(u8, root.nameSlice(), expected)) {
+                return .{
+                    .case_name = case_name,
+                    .pass = false,
+                    .reason = try std.fmt.allocPrint(alloc, "[{s}] expect_root_name={s}, got {s}", .{ profile, expected, root.nameSlice() }),
+                };
+            }
         }
 
         if (expect_root_attr_name) |attr_name| {
@@ -1045,6 +1056,42 @@ fn invalidCaseFieldType(obj: std.json.ObjectMap) ?FieldTypeProblem {
     return null;
 }
 
+fn invalidCaseFieldCombination(obj: std.json.ObjectMap) ?[]const u8 {
+    if (obj.get("profile") != null and obj.get("profiles") != null) {
+        return "profile and profiles are mutually exclusive";
+    }
+
+    if (valueString(obj, "expect_root_attr_value") != null and valueString(obj, "expect_root_attr_name") == null) {
+        return "expect_root_attr_value requires expect_root_attr_name";
+    }
+
+    if (valueString(obj, "expect_error") != null and valueBool(obj, "expect_ok", true)) {
+        return "expect_error requires expect_ok=false";
+    }
+
+    if (valueBoolOpt(obj, "expect_cardinality_valid") != null and
+        valueInt(obj, "expect_element_min") == null and valueInt(obj, "expect_element_max") == null)
+    {
+        return "expect_cardinality_valid requires expect_element_min or expect_element_max";
+    }
+
+    if (valueBoolOpt(obj, "expect_field_type_valid") != null and valueString(obj, "expect_field_type") == null) {
+        return "expect_field_type_valid requires expect_field_type";
+    }
+
+    if (valueBoolOpt(obj, "expect_field_pattern_valid") != null and valueString(obj, "expect_field_pattern") == null) {
+        return "expect_field_pattern_valid requires expect_field_pattern";
+    }
+
+    if (valueBoolOpt(obj, "expect_date_before_valid") != null and
+        (valueString(obj, "expect_date_before_left") == null or valueString(obj, "expect_date_before_right") == null))
+    {
+        return "expect_date_before_valid requires expect_date_before_left and expect_date_before_right";
+    }
+
+    return null;
+}
+
 test "runCase rejects wrong-typed optional fields" {
     const alloc = std.testing.allocator;
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc,
@@ -1071,6 +1118,54 @@ test "runCase rejects negative and overflowing count fields" {
     try std.testing.expectEqualStrings("field expect_nodes must be a non-negative integer", negative_result.reason.?);
 }
 
+test "runCase rejects expectation fields that would otherwise be ignored" {
+    const alloc = std.testing.allocator;
+    const cases = [_]struct { json: []const u8, reason: []const u8 }{
+        .{ .json =
+        \\{"name":"profiles","xml":"<r/>","profile":"strict","profiles":["strict"]}
+        , .reason = "profile and profiles are mutually exclusive" },
+        .{ .json =
+        \\{"name":"attr","xml":"<r a='1'/>","expect_root_attr_value":"1"}
+        , .reason = "expect_root_attr_value requires expect_root_attr_name" },
+        .{ .json =
+        \\{"name":"error","xml":"<r/>","expect_error":"ExpectedGt"}
+        , .reason = "expect_error requires expect_ok=false" },
+        .{ .json =
+        \\{"name":"cardinality","xml":"<r/>","expect_cardinality_valid":true}
+        , .reason = "expect_cardinality_valid requires expect_element_min or expect_element_max" },
+        .{ .json =
+        \\{"name":"type","xml":"<r/>","expect_field_type_valid":true}
+        , .reason = "expect_field_type_valid requires expect_field_type" },
+        .{ .json =
+        \\{"name":"pattern","xml":"<r/>","expect_field_pattern_valid":true}
+        , .reason = "expect_field_pattern_valid requires expect_field_pattern" },
+        .{ .json =
+        \\{"name":"dates","xml":"<r/>","expect_date_before_valid":true}
+        , .reason = "expect_date_before_valid requires expect_date_before_left and expect_date_before_right" },
+    };
+
+    for (cases) |case| {
+        const parsed = try std.json.parseFromSlice(std.json.Value, alloc, case.json, .{});
+        defer parsed.deinit();
+        const result = try runCase(alloc, parsed.value.object, 0);
+        defer if (result.reason) |reason| alloc.free(reason);
+        try std.testing.expect(!result.pass);
+        try std.testing.expectEqualStrings(case.reason, result.reason.?);
+    }
+}
+
+test "root attribute expectations do not require a root-name expectation" {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"attr-only","xml":"<r a='1'/>","expect_root_attr_name":"a","expect_root_attr_value":"1"}
+    , .{});
+    defer parsed.deinit();
+
+    const result = try runCase(alloc, parsed.value.object, 0);
+    defer if (result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(result.pass);
+}
+
 test "suiteMetadata rejects malformed and empty suite metadata" {
     const alloc = std.testing.allocator;
 
@@ -1079,6 +1174,12 @@ test "suiteMetadata rejects malformed and empty suite metadata" {
     , .{});
     defer wrong_name.deinit();
     try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(wrong_name.value, "fallback.json"));
+
+    const empty_name = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"suite":"","cases":[{"xml":"<r/>"}]}
+    , .{});
+    defer empty_name.deinit();
+    try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(empty_name.value, "fallback.json"));
 
     const empty_cases = try std.json.parseFromSlice(std.json.Value, alloc,
         \\{"suite":"empty","cases":[]}
