@@ -1844,85 +1844,34 @@ pub const Document = struct {
         return entities.appendDecodedWithEntityMap(out, alloc, raw, self.parse_mode == .strict, &self.entity_map);
     }
 
-    /// Scans the internal subset for simple general-entity declarations and
-    /// stores owned decoded values for later decoded text/attribute access.
+    /// Scans the expanded internal subset for simple general-entity declarations
+    /// and stores owned decoded values for later decoded text/attribute access.
     pub fn registerDoctypeEntities(self: *Document, doctype_value: []const u8) ParseError!void {
         const subset_range = try findInternalSubset(doctype_value) orelse return;
         const subset = doctype_value[subset_range.start..subset_range.end];
         var declarations = std.StringHashMap([]const u8).init(self.allocator);
         defer declarations.deinit();
-        var i: usize = 0;
-        while (i < subset.len) {
-            if (std.mem.startsWith(u8, subset[i..], "<!--")) {
-                const end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.UnexpectedEndOfData;
-                i = end + 3;
-                continue;
-            }
-            if (std.mem.startsWith(u8, subset[i..], "<?")) {
-                const end = std.mem.indexOfPos(u8, subset, i + 2, "?>") orelse return error.UnexpectedEndOfData;
-                i = end + 2;
-                continue;
-            }
-            if (subset[i] != '<') {
-                i += 1;
-                continue;
-            }
-            if (!std.mem.startsWith(u8, subset[i..], "<!ENTITY")) {
-                const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
-                i = end + 1;
-                continue;
-            }
+        var iterator = try ExpandedDtdIterator.init(self.allocator, subset, false);
+        defer iterator.deinit();
 
-            const after_keyword = i + "<!ENTITY".len;
-            if (after_keyword >= subset.len or !tables.isWhitespace(subset[after_keyword])) {
-                const end = findMarkupDeclEnd(subset, after_keyword) orelse return error.UnexpectedEndOfData;
-                i = end + 1;
-                continue;
-            }
-            i = after_keyword;
-
-            while (i < subset.len and tables.isWhitespace(subset[i])) : (i += 1) {}
-            if (i >= subset.len) return error.UnexpectedEndOfData;
-
-            if (subset[i] == '%') {
-                const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
-                i = end + 1;
-                continue;
-            }
-
-            if (!tables.isNameStart(subset[i])) {
-                const end = findMarkupDeclEnd(subset, i) orelse return error.UnexpectedEndOfData;
-                i = end + 1;
-                continue;
-            }
+        while (try iterator.next()) |decl| {
+            if (decl.kind != .entity) continue;
+            var i: usize = 0;
+            if (!skipRequiredXmlWhitespace(decl.body, &i)) return error.InvalidDoctype;
+            if (i < decl.body.len and decl.body[i] == '%') continue;
 
             const name_start = i;
-            i += 1;
-            while (i < subset.len and tables.isNameChar(subset[i])) : (i += 1) {}
-            const name = subset[name_start..i];
+            try consumeDtdName(decl.body, &i);
+            const name = decl.body[name_start..i];
+            if (!skipRequiredXmlWhitespace(decl.body, &i)) return error.InvalidDoctype;
+            if (i >= decl.body.len or (decl.body[i] != '\'' and decl.body[i] != '"')) continue;
 
-            while (i < subset.len and tables.isWhitespace(subset[i])) : (i += 1) {}
-            if (i >= subset.len) return error.UnexpectedEndOfData;
-
-            const quote = subset[i];
-            if (quote != '\'' and quote != '"') {
-                const end = findMarkupDeclEnd(subset, i) orelse return error.UnexpectedEndOfData;
-                i = end + 1;
-                continue;
-            }
-
-            i += 1;
-            const value_start = i;
-            while (i < subset.len and subset[i] != quote) : (i += 1) {}
-            if (i >= subset.len) return error.UnexpectedEndOfData;
-
-            const raw_value = subset[value_start..i];
-            const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
+            const quote = decl.body[i];
+            const value_start = i + 1;
+            const value_end = std.mem.indexOfScalarPos(u8, decl.body, value_start, quote) orelse return error.InvalidDoctype;
             if (!self.entity_map.contains(name) and !declarations.contains(name)) {
-                try declarations.put(name, raw_value);
+                try declarations.put(name, decl.body[value_start..value_end]);
             }
-
-            i = end + 1;
         }
 
         if (self.expand_dtd_entities) {
@@ -2388,6 +2337,21 @@ test "registerDoctypeEntities finds the real subset and ignores non-declarations
     doc.clearEntityMap();
     try doc.registerDoctypeEntities(" r SYSTEM \"[<!ENTITY fake 'bad'>]\"");
     try std.testing.expectEqual(@as(usize, 0), doc.entity_map.count());
+}
+
+test "DTD entity expansion includes declarations from internal parameter entities" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(
+        "<!DOCTYPE r [<!ENTITY % q \"<!ENTITY e 'ok'>\"><!ENTITY % p '&#37;q;'>%p;<!ENTITY e 'later'>]><r>&e;</r>",
+        .{ .mode = .strict, .expand_dtd_entities = true },
+    );
+
+    try std.testing.expectEqualStrings("ok", doc.entity_map.get("e").?);
+    const root_node = doc.nodeAt(2) orelse return error.TestUnexpectedResult;
+    const text = try root_node.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("ok", text);
 }
 
 test "Document.write serializes parsed tree without reparsing" {
