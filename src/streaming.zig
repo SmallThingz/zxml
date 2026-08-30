@@ -714,6 +714,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (comptime strict_mode) {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                     if (xml_target and start != 0) return error.InvalidDeclaration;
+                    if (xml_target and (target_end >= input.len or !tables.isWhitespace(input[target_end]))) return error.InvalidDeclaration;
                 }
                 i = skipWsMode(input, i, strict_mode);
                 const value_start = i;
@@ -721,6 +722,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (strict_mode or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 };
+                if (comptime strict_mode) {
+                    if (xml_target) try document.validateXmlDeclaration(input[value_start..end]);
+                }
                 if (include_misc_nodes) {
                     const decl = xml_target;
                     const node: Node = .{
@@ -2450,4 +2454,29 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
 
     ctx.skip_root = true;
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r><x a='1' a='2'/></r>", &ctx, Ctx.onNode));
+}
+
+test "streaming strict validates XML declaration grammar" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    const invalid = [_][]const u8{
+        "<?xml?><r/>",
+        "<?xml encoding='UTF-8'?><r/>",
+        "<?xml version='2.0'?><r/>",
+        "<?xml version='1.0'encoding='UTF-8'?><r/>",
+        "<?xml version='1.0' standalone='maybe'?><r/>",
+        "<?xml version='1.0' extra='x'?><r/>",
+    };
+    for (invalid) |source| try std.testing.expectError(error.InvalidDeclaration, parser.parse(source, &ctx, Ctx.onNode));
+    try parser.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"yes\" ?><r/>", &ctx, Ctx.onNode);
 }

@@ -1162,3 +1162,24 @@ test "strict rejects duplicate attribute names" {
     defer turbo_doc.deinit();
     try turbo_doc.parse("<r a='1' a='2'/>", turbo_opts);
 }
+
+test "strict validates XML declaration grammar" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    const invalid = [_][]const u8{
+        "<?xml?><r/>",
+        "<?xml encoding='UTF-8'?><r/>",
+        "<?xml version='2.0'?><r/>",
+        "<?xml version='1.'?><r/>",
+        "<?xml version='1.0'encoding='UTF-8'?><r/>",
+        "<?xml version='1.0' standalone='maybe'?><r/>",
+        "<?xml version='1.0' extra='x'?><r/>",
+        "<?xml version=1.0?><r/>",
+    };
+    for (invalid) |source| try std.testing.expectError(error.InvalidDeclaration, doc.parse(source, opts));
+
+    try doc.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"no\" ?><r/>", opts);
+    try doc.parse("<?xml version='1.23'?><r/>", opts);
+}

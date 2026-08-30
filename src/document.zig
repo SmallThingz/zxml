@@ -114,6 +114,66 @@ pub const ParseDiagnostic = struct {
     }
 };
 
+pub fn validateXmlDeclaration(body: []const u8) ParseError!void {
+    var i: usize = 0;
+    try expectDeclarationPseudoAttribute(body, &i, "version", .version);
+
+    var had_separator = skipDeclarationWhitespace(body, &i);
+    if (i < body.len and std.mem.startsWith(u8, body[i..], "encoding")) {
+        if (!had_separator) return error.InvalidDeclaration;
+        try expectDeclarationPseudoAttribute(body, &i, "encoding", .encoding);
+        had_separator = skipDeclarationWhitespace(body, &i);
+    }
+    if (i < body.len and std.mem.startsWith(u8, body[i..], "standalone")) {
+        if (!had_separator) return error.InvalidDeclaration;
+        try expectDeclarationPseudoAttribute(body, &i, "standalone", .standalone);
+        _ = skipDeclarationWhitespace(body, &i);
+    }
+    if (i != body.len) return error.InvalidDeclaration;
+}
+
+const DeclarationValueKind = enum { version, encoding, standalone };
+
+fn expectDeclarationPseudoAttribute(body: []const u8, i: *usize, comptime name: []const u8, comptime kind: DeclarationValueKind) ParseError!void {
+    if (!std.mem.startsWith(u8, body[i.*..], name)) return error.InvalidDeclaration;
+    i.* += name.len;
+    _ = skipDeclarationWhitespace(body, i);
+    if (i.* >= body.len or body[i.*] != '=') return error.InvalidDeclaration;
+    i.* += 1;
+    _ = skipDeclarationWhitespace(body, i);
+    if (i.* >= body.len or (body[i.*] != '\'' and body[i.*] != '"')) return error.InvalidDeclaration;
+    const quote = body[i.*];
+    i.* += 1;
+    const value_start = i.*;
+    while (i.* < body.len and body[i.*] != quote) : (i.* += 1) {}
+    if (i.* >= body.len) return error.InvalidDeclaration;
+    const value = body[value_start..i.*];
+    i.* += 1;
+
+    const valid = switch (kind) {
+        .version => blk: {
+            if (value.len < 3 or value[0] != '1' or value[1] != '.') break :blk false;
+            for (value[2..]) |c| if (c < '0' or c > '9') break :blk false;
+            break :blk true;
+        },
+        .encoding => blk: {
+            if (value.len == 0 or !std.ascii.isAlphabetic(value[0])) break :blk false;
+            for (value[1..]) |c| {
+                if (!std.ascii.isAlphanumeric(c) and c != '.' and c != '_' and c != '-') break :blk false;
+            }
+            break :blk true;
+        },
+        .standalone => std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "no"),
+    };
+    if (!valid) return error.InvalidDeclaration;
+}
+
+fn skipDeclarationWhitespace(body: []const u8, i: *usize) bool {
+    const start = i.*;
+    while (i.* < body.len and tables.isWhitespace(body[i.*])) : (i.* += 1) {}
+    return i.* != start;
+}
+
 pub const ParseStackEntry = struct {
     idx: IndexInt,
     tag_key: u64 = 0,

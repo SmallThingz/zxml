@@ -393,6 +393,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime strict_mode) {
                 if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                 if (xml_target and markup_start != 0) return error.InvalidDeclaration;
+                if (xml_target and (target_end >= self.input.len or !tables.isWhitespace(self.input[target_end]))) return error.InvalidDeclaration;
             }
 
             self.skipWhitespace();
@@ -412,6 +413,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             };
             const value_end = end;
             self.i = end + 2;
+
+            if (comptime strict_mode) {
+                if (xml_target) try document.validateXmlDeclaration(self.input[value_start..value_end]);
+            }
 
             if (!opts.include_misc_nodes) return;
 
