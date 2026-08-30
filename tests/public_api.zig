@@ -6,6 +6,18 @@ fn contains(comptime names: []const []const u8, comptime needle: []const u8) boo
     return false;
 }
 
+fn assertDeclCoverage(comptime T: type, comptime expected: []const []const u8) void {
+    comptime {
+        const decls = std.meta.declarations(T);
+        for (decls) |decl| {
+            if (!contains(expected, decl.name)) {
+                @compileError("public API declaration is not covered: " ++ @typeName(T) ++ "." ++ decl.name);
+            }
+        }
+        if (decls.len != expected.len) @compileError("public API declaration coverage list contains a missing declaration for " ++ @typeName(T));
+    }
+}
+
 fn assertFnCoverage(comptime T: type, comptime expected: []const []const u8) void {
     comptime {
         var actual: usize = 0;
@@ -36,6 +48,28 @@ const Sink = struct {
 fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     const T = zxml.Types(opts);
 
+    assertDeclCoverage(T, &.{
+        "IndexInt",           "Span",                       "RawAttribute",   "Attribute",       "RawNode", "Node", "Document",
+        "StreamingAttribute", "StreamingAttributeIterator", "StreamingEvent", "StreamingParser",
+    });
+    assertDeclCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
+    assertDeclCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
+    assertDeclCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
+    assertDeclCoverage(T.Node, &.{
+        "nameSlice",         "namespacePrefix", "localName",    "namespaceUri", "valueRawSlice", "value",
+        "firstChild",        "lastChild",       "nextSibling",  "prevSibling",  "parentNode",    "getAttributeValueRaw",
+        "getAttributeValue", "firstAttribute",  "innerTextRaw", "innerText",    "querySelector", "querySelectorAll",
+        "write",
+    });
+    assertDeclCoverage(T.Document, &.{
+        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "nodeAt", "write", "reserveForInput",
+    });
+    assertDeclCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
+    assertDeclCoverage(T.StreamingAttributeIterator, &.{"next"});
+    assertDeclCoverage(T.StreamingEvent, &.{ "nameSlice", "valueRawSlice", "attributes", "getAttributeValueRaw", "leadingTextRaw", "followingTextRaw" });
+    assertDeclCoverage(T.StreamingParser, &.{ "State", "init", "deinit", "parse", "clear", "save", "restore", "parseAvailable", "finish" });
+    assertDeclCoverage(T.StreamingParser.State, &.{});
+
     assertFnCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
     assertFnCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
     assertFnCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
@@ -65,6 +99,10 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     _ = span.len();
     _ = span.isEmpty();
     _ = span.slice("abcd");
+    const index: T.IndexInt = 0;
+    _ = index;
+    const raw_attr: T.RawAttribute = .{ .name = span, .value = .{} };
+    _ = raw_attr;
 
     const root_doc = doc.root().?;
     _ = root_doc.nameSlice();
@@ -140,6 +178,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
 
 test "external package surface compiles and executes every public function" {
     std.testing.refAllDecls(zxml);
+    assertDeclCoverage(zxml, &.{ "MaxInputLen", "NodeType", "ParseMode", "ParseOptions", "ParseError", "ParseDiagnostic", "InvalidIndex", "Types" });
+    assertDeclCoverage(zxml.ParseDiagnostic, &.{ "Location", "location", "context" });
     _ = zxml.MaxInputLen;
     _ = zxml.InvalidIndex;
     const mode: zxml.ParseMode = .strict;
@@ -150,6 +190,7 @@ test "external package surface compiles and executes every public function" {
     try std.testing.expect(parse_err == error.ExpectedGt);
 
     assertFnCoverage(zxml, &.{"Types"});
+    assertDeclCoverage(zxml.ParseOptions, &.{ "parse", "Document" });
     assertFnCoverage(zxml.ParseOptions, &.{ "parse", "Document" });
     assertFnCoverage(zxml.ParseDiagnostic, &.{ "location", "context" });
 
