@@ -132,54 +132,101 @@ fn getProfile(name: []const u8) !Profile {
     return error.InvalidProfile;
 }
 
+const pugixml_required_files = [_][]const u8{
+    "CMakeLists.txt",
+    "src/pugixml.cpp",
+    "src/pugixml.hpp",
+    "docs/samples/tree.xml",
+    "docs/samples/character.xml",
+    "docs/samples/transitions.xml",
+    "docs/samples/xgconsole.xml",
+    "docs/samples/weekly-utf-8.xml",
+    "tests/data/large.xml",
+};
+
+const rapidxml_files = [_][]const u8{
+    "rapidxml.hpp",
+    "rapidxml_iterators.hpp",
+    "rapidxml_print.hpp",
+    "rapidxml_utils.hpp",
+    "license.txt",
+};
+
+fn allFilesExistUnder(io: std.Io, alloc: std.mem.Allocator, base: []const u8, files: []const []const u8) !bool {
+    for (files) |file| {
+        const path = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ base, file });
+        defer alloc.free(path);
+        if (!common.fileExists(io, path)) return false;
+    }
+    return true;
+}
+
 fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
     try common.ensureDir(io, PARSERS_DIR);
     try common.ensureDir(io, BUILD_DIR);
 
-    const pugixml_git = PARSERS_DIR ++ "/pugixml/.git";
+    const pugixml_dir = PARSERS_DIR ++ "/pugixml";
+    const pugixml_git = pugixml_dir ++ "/.git";
     if (!common.fileExists(io, pugixml_git)) {
-        const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", PARSERS_DIR ++ "/pugixml" };
+        const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", pugixml_dir };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
+    } else if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
+        // bench/parsers is generated/ignored state. Repair deleted or partially
+        // populated tracked files instead of treating the mere presence of
+        // `.git` as a complete checkout.
+        const repair = [_][]const u8{ "git", "-C", pugixml_dir, "reset", "--hard", "HEAD" };
+        try common.runInherit(io, alloc, &repair, REPO_ROOT);
+        if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
+            return error.IncompleteExternalParser;
+        }
     } else {
         std.debug.print("already present: pugixml\n", .{});
     }
 
-    try common.ensureDir(io, PARSERS_DIR ++ "/rapidxml");
-    if (!common.fileExists(io, "rapidxml-1.13/rapidxml.hpp") and !common.fileExists(io, PARSERS_DIR ++ "/rapidxml/rapidxml.hpp")) {
-        const zip_path = BUILD_DIR ++ "/rapidxml-1.13.zip";
-        const rapid_tmp = BUILD_DIR ++ "/rapidxml-src";
-        try common.ensureDir(io, rapid_tmp);
-        const curl = [_][]const u8{
-            "curl",
-            "-L",
-            "https://downloads.sourceforge.net/project/rapidxml/rapidxml/rapidxml%201.13/rapidxml-1.13.zip",
-            "-o",
-            zip_path,
-        };
-        try common.runInherit(io, alloc, &curl, REPO_ROOT);
-        const unzip = [_][]const u8{ "unzip", "-oq", zip_path, "-d", rapid_tmp };
-        try common.runInherit(io, alloc, &unzip, REPO_ROOT);
-    }
-    const rapid_files = [_][]const u8{
-        "rapidxml.hpp",
-        "rapidxml_iterators.hpp",
-        "rapidxml_print.hpp",
-        "rapidxml_utils.hpp",
-        "license.txt",
-    };
-    for (rapid_files) |f| {
-        const src = if (common.fileExists(io, "rapidxml-1.13/rapidxml.hpp"))
-            try std.fmt.allocPrint(alloc, "rapidxml-1.13/{s}", .{f})
-        else
-            try std.fmt.allocPrint(alloc, BUILD_DIR ++ "/rapidxml-src/rapidxml-1.13/{s}", .{f});
-        defer alloc.free(src);
-        const dst = try std.fmt.allocPrint(alloc, PARSERS_DIR ++ "/rapidxml/{s}", .{f});
-        defer alloc.free(dst);
-        if (common.fileExists(io, dst)) continue;
-        const cp = [_][]const u8{ "cp", src, dst };
-        try common.runInherit(io, alloc, &cp, REPO_ROOT);
+    const rapid_dst = PARSERS_DIR ++ "/rapidxml";
+    const rapid_local_src = "rapidxml-1.13";
+    const rapid_cached_src = BUILD_DIR ++ "/rapidxml-src/rapidxml-1.13";
+    try common.ensureDir(io, rapid_dst);
+
+    if (!try allFilesExistUnder(io, alloc, rapid_dst, &rapidxml_files)) {
+        var source_root: []const u8 = undefined;
+        if (try allFilesExistUnder(io, alloc, rapid_local_src, &rapidxml_files)) {
+            source_root = rapid_local_src;
+        } else if (try allFilesExistUnder(io, alloc, rapid_cached_src, &rapidxml_files)) {
+            source_root = rapid_cached_src;
+        } else {
+            const zip_path = BUILD_DIR ++ "/rapidxml-1.13.zip";
+            const rapid_tmp = BUILD_DIR ++ "/rapidxml-src";
+            try common.ensureDir(io, rapid_tmp);
+            const curl = [_][]const u8{
+                "curl",
+                "-L",
+                "--fail",
+                "https://downloads.sourceforge.net/project/rapidxml/rapidxml/rapidxml%201.13/rapidxml-1.13.zip",
+                "-o",
+                zip_path,
+            };
+            try common.runInherit(io, alloc, &curl, REPO_ROOT);
+            const unzip = [_][]const u8{ "unzip", "-oq", zip_path, "-d", rapid_tmp };
+            try common.runInherit(io, alloc, &unzip, REPO_ROOT);
+            if (!try allFilesExistUnder(io, alloc, rapid_cached_src, &rapidxml_files)) {
+                return error.IncompleteExternalParser;
+            }
+            source_root = rapid_cached_src;
+        }
+
+        for (rapidxml_files) |file| {
+            const dst = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ rapid_dst, file });
+            defer alloc.free(dst);
+            if (common.fileExists(io, dst)) continue;
+            const src = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ source_root, file });
+            defer alloc.free(src);
+            const cp = [_][]const u8{ "cp", src, dst };
+            try common.runInherit(io, alloc, &cp, REPO_ROOT);
+        }
     }
 
+    if (!try allFilesExistUnder(io, alloc, rapid_dst, &rapidxml_files)) return error.IncompleteExternalParser;
     std.debug.print("parsers ready\n", .{});
 }
 
