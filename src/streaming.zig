@@ -815,6 +815,14 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                     if (xml_target and start != 0) return error.InvalidDeclaration;
                     if (xml_target and (target_end >= input.len or !tables.isWhitespace(input[target_end]))) return error.InvalidDeclaration;
+                    if (!xml_target) {
+                        if (target_end >= input.len) return error.UnexpectedEndOfData;
+                        if (!tables.isWhitespace(input[target_end])) {
+                            if (input[target_end] != '?') return error.ExpectedGt;
+                            if (target_end + 1 >= input.len) return error.UnexpectedEndOfData;
+                            if (input[target_end + 1] != '>') return error.ExpectedGt;
+                        }
+                    }
                 }
                 i = skipWsMode(input, i, strict_mode);
                 const value_start = i;
@@ -1580,6 +1588,12 @@ fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incre
         if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml")) {
             if (!std.mem.eql(u8, target, "xml")) return error.ExpectedPiTarget;
             return error.InvalidDeclaration;
+        }
+        if (i >= input.len) return error.UnexpectedEndOfData;
+        if (!tables.isWhitespace(input[i])) {
+            if (input[i] != '?') return error.ExpectedGt;
+            if (i + 1 >= input.len) return error.UnexpectedEndOfData;
+            if (input[i + 1] != '>') return error.ExpectedGt;
         }
     }
 
@@ -2845,6 +2859,33 @@ test "streaming strict enforces document-level well-formedness" {
     try std.testing.expectError(error.InvalidDeclaration, parser.parse("<?pi x?><?xml version='1.0'?><a/>", &ctx, Ctx.onNode));
 
     try parser.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", &ctx, Ctx.onNode);
+}
+
+test "streaming strict validates processing instruction separators" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    const invalid = [_][]const u8{
+        "<?pi=data?><r/>",
+        "<?pi/data?><r/>",
+        "<r><?pi:data/x?></r>",
+    };
+    inline for (invalid) |source| {
+        try std.testing.expectError(error.ExpectedGt, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    try parser.parse("<?pi?><r/>", &ctx, Ctx.onNode);
+    try parser.parse("<?pi data?><r/>", &ctx, Ctx.onNode);
 }
 
 test "streaming strict save restore preserves document-level state" {

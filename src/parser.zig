@@ -408,6 +408,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                 if (xml_target and markup_start != 0) return error.InvalidDeclaration;
                 if (xml_target and (target_end >= self.input.len or !tables.isWhitespace(self.input[target_end]))) return error.InvalidDeclaration;
+                if (!xml_target) {
+                    if (target_end >= self.input.len) return error.UnexpectedEndOfData;
+                    if (!tables.isWhitespace(self.input[target_end])) {
+                        if (self.input[target_end] != '?') return error.ExpectedGt;
+                        if (target_end + 1 >= self.input.len) return error.UnexpectedEndOfData;
+                        if (self.input[target_end + 1] != '>') return error.ExpectedGt;
+                    }
+                }
             }
 
             self.skipWhitespace();

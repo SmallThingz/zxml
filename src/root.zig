@@ -1366,6 +1366,24 @@ test "strict enforces document-level well-formedness" {
     try doc.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", opts);
 }
 
+test "strict validates processing instruction separators" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    const invalid = [_][]const u8{
+        "<?pi=data?><r/>",
+        "<?pi/data?><r/>",
+        "<r><?pi:data/x?></r>",
+    };
+    inline for (invalid) |source| {
+        try std.testing.expectError(error.ExpectedGt, doc.parse(source, opts));
+    }
+
+    try doc.parse("<?pi?><r/>", opts);
+    try doc.parse("<?pi data?><r/>", opts);
+}
+
 test "strict rejects duplicate attribute names" {
     const strict_opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
     var strict_doc = initDoc(strict_opts);
