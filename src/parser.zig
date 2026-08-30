@@ -10,6 +10,35 @@ const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 
+inline fn attributeNameHash(name: []const u8) u64 {
+    var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) << 56);
+    mixed *%= 0x9e3779b97f4a7c15;
+    mixed ^= mixed >> 32;
+    return mixed;
+}
+
+noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) ?usize {
+    for (attrs, 0..) |current, i| {
+        const current_name = current.name.slice(input);
+        for (attrs[0..i]) |previous| {
+            if (std.mem.eql(u8, previous.name.slice(input), current_name)) return current.name.start;
+        }
+    }
+    return null;
+}
+
+noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) ?usize {
+    var buckets: u64 = 0;
+    for (attrs) |attr| {
+        const name = attr.name.slice(input);
+        const hash = attributeNameHash(name);
+        const bit = @as(u64, 1) << @as(u6, @intCast(hash >> 58));
+        if (buckets & bit != 0) return findDuplicateAttributeQuadratic(input, attrs);
+        buckets |= bit;
+    }
+    return null;
+}
+
 pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions) ParseError!void {
     doc.last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
@@ -124,8 +153,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     .key = 0,
                     .needs_unicode_validation = scan.needs_unicode_validation,
                 };
-            } else
-                scanner.NameScan{ .end = scanner.findNameEnd(self.input, self.i), .key = 0 };
+            } else scanner.NameScan{ .end = scanner.findNameEnd(self.input, self.i), .key = 0 };
             const name_end = name_scan.end;
             if (comptime strict_mode) {
                 if (name_scan.needs_unicode_validation and !document.isValidXmlName(self.input[name_start..name_end])) return error.ExpectedElementName;
@@ -176,6 +204,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 const c = self.input[self.i];
                 if (c == '>') {
+                    if (comptime strict_mode) {
+                        const attr_end_idx = self.doc.attrs.items.len;
+                        const attr_start_usize: usize = attr_start_idx;
+                        if (attr_end_idx - attr_start_usize > 2) {
+                            if (findDuplicateAttribute(self.input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                                self.i = duplicate_start;
+                                return error.DuplicateAttribute;
+                            }
+                        }
+                    }
                     self.i += 1;
                     const element_idx = if (comptime validate_closing_tags)
                         try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len))
@@ -191,6 +229,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 if (c == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
+                    if (comptime strict_mode) {
+                        const attr_end_idx = self.doc.attrs.items.len;
+                        const attr_start_usize: usize = attr_start_idx;
+                        if (attr_end_idx - attr_start_usize > 2) {
+                            if (findDuplicateAttribute(self.input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                                self.i = duplicate_start;
+                                return error.DuplicateAttribute;
+                            }
+                        }
+                    }
                     self.i += 2;
                     if (comptime validate_closing_tags) {
                         _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len));
@@ -226,10 +274,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const attr_name_end = self.i;
                 if (comptime strict_mode) {
                     if (attr_name_needs_unicode_validation and !document.isValidXmlName(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
-                    var prev_i: usize = attr_start_idx;
-                    while (prev_i < self.doc.attrs.items.len) : (prev_i += 1) {
-                        const prev_name = self.doc.attrs.items[prev_i].name.slice(self.input);
-                        if (std.mem.eql(u8, prev_name, self.input[attr_name_start..attr_name_end])) return error.DuplicateAttribute;
+                    const prior_count = self.doc.attrs.items.len - @as(usize, attr_start_idx);
+                    if (prior_count == 1) {
+                        const first_name = self.doc.attrs.items[@as(usize, attr_start_idx)].name.slice(self.input);
+                        if (std.mem.eql(u8, first_name, self.input[attr_name_start..attr_name_end])) return error.DuplicateAttribute;
                     }
                 }
                 const input = self.input;

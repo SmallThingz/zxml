@@ -1434,6 +1434,19 @@ test "strict rejects duplicate attribute names" {
     defer strict_doc.deinit();
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r a='1' a='2'/>", strict_opts));
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r><x a='1' b='2' a='3'/></r>", strict_opts));
+    // Distinct names sharing the lightweight uniqueness bucket must fall back
+    // to exact comparisons rather than false-positive as duplicates.
+    try strict_doc.parse("<r h='1' ab='2' z='3'/>", strict_opts);
+
+    var many = std.ArrayList(u8).empty;
+    defer many.deinit(std.testing.allocator);
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..65) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try strict_doc.parse(many.items, strict_opts);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a63='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
 
     const turbo_opts: ParseOptions = .{ .mode = .turbo };
     var turbo_doc = initDoc(turbo_opts);
