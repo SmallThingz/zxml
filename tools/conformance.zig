@@ -108,6 +108,14 @@ const SuiteMetadata = struct {
 fn suiteMetadata(root: std.json.Value, suite_path: []const u8) ConformanceError!SuiteMetadata {
     if (root != .object) return ConformanceError.InvalidSuiteFormat;
 
+    var fields = root.object.iterator();
+    while (fields.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!std.mem.eql(u8, key, "suite") and !std.mem.eql(u8, key, "cases")) {
+            return ConformanceError.InvalidSuiteFormat;
+        }
+    }
+
     const suite_name = if (root.object.get("suite")) |value| blk: {
         if (value != .string or value.string.len == 0) return ConformanceError.InvalidSuiteFormat;
         break :blk value.string;
@@ -1348,6 +1356,12 @@ test "suiteMetadata rejects malformed and empty suite metadata" {
     , .{});
     defer empty_cases.deinit();
     try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(empty_cases.value, "fallback.json"));
+
+    const unknown_field = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"suite":"typo","cases":[{"xml":"<r/>"}],"casess":[]}
+    , .{});
+    defer unknown_field.deinit();
+    try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(unknown_field.value, "fallback.json"));
 
     const valid = try std.json.parseFromSlice(std.json.Value, alloc,
         \\{"suite":"valid","cases":[{"xml":"<r/>"}]}
