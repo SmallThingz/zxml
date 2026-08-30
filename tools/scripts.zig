@@ -59,6 +59,14 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_namespace_mix.xml", .iterations = 120, .is_real = false },
     .{ .name = "synthetic_long_names.xml", .iterations = 120, .is_real = false },
     .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 120, .is_real = false },
+    .{ .name = "synthetic_tiny_text.xml", .iterations = 160, .is_real = false },
+    .{ .name = "synthetic_two_attr.xml", .iterations = 140, .is_real = false },
+    .{ .name = "synthetic_attrs8.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_unicode_text.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_pretty_indented.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_long_text.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_doctype_entities.xml", .iterations = 80, .is_real = false },
+    .{ .name = "synthetic_attr_count_mix.xml", .iterations = 90, .is_real = false },
 };
 
 const stable_fixtures = [_]FixtureCase{
@@ -87,6 +95,24 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 220, .is_real = false },
     .{ .name = "synthetic_mixed_content.xml", .iterations = 220, .is_real = false },
     .{ .name = "synthetic_small_records.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_tiny_empty.xml", .iterations = 360, .is_real = false },
+    .{ .name = "synthetic_tiny_text.xml", .iterations = 340, .is_real = false },
+    .{ .name = "synthetic_one_attr.xml", .iterations = 300, .is_real = false },
+    .{ .name = "synthetic_two_attr.xml", .iterations = 280, .is_real = false },
+    .{ .name = "synthetic_attrs4.xml", .iterations = 240, .is_real = false },
+    .{ .name = "synthetic_attrs8.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_attrs16.xml", .iterations = 150, .is_real = false },
+    .{ .name = "synthetic_attrs64.xml", .iterations = 70, .is_real = false },
+    .{ .name = "synthetic_long_attr_values.xml", .iterations = 180, .is_real = false },
+    .{ .name = "synthetic_single_quotes.xml", .iterations = 240, .is_real = false },
+    .{ .name = "synthetic_unicode_text.xml", .iterations = 180, .is_real = false },
+    .{ .name = "synthetic_unicode_names.xml", .iterations = 180, .is_real = false },
+    .{ .name = "synthetic_pretty_indented.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_crlf_pretty.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_token_whitespace_mix.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_long_text.xml", .iterations = 180, .is_real = false },
+    .{ .name = "synthetic_doctype_entities.xml", .iterations = 120, .is_real = false },
+    .{ .name = "synthetic_attr_count_mix.xml", .iterations = 160, .is_real = false },
 };
 
 const ParseResult = struct {
@@ -250,6 +276,100 @@ fn writeSyntheticFixtures(io: std.Io) !void {
     try writeSelfClosingSwarm(io, FIXTURES_DIR ++ "/synthetic_self_closing_swarm.xml");
     try writeMixedContent(io, FIXTURES_DIR ++ "/synthetic_mixed_content.xml");
     try writeSmallRecords(io, FIXTURES_DIR ++ "/synthetic_small_records.xml");
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_tiny_empty.xml", "<x/>", 220_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_tiny_text.xml", "<x>a</x>", 120_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_one_attr.xml", "<x a='1'/>", 90_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_two_attr.xml", "<x a='1' b='2'/>", 65_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_attrs4.xml", "<x a='1' b='2' c='3' d='4'/>", 38_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_attrs8.xml", "<x a='1' b='2' c='3' d='4' e='5' f='6' g='7' h='8'/>", 21_000);
+    try writeAttrs16(io, FIXTURES_DIR ++ "/synthetic_attrs16.xml");
+    try writeAttrs64(io, FIXTURES_DIR ++ "/synthetic_attrs64.xml");
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_long_attr_values.xml", "<item key='abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' value='The quick brown fox jumps over the lazy dog &amp; keeps running.'/>", 8_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_single_quotes.xml", "<item a='1' b='two' c='three four'/>", 28_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_unicode_text.xml", "<item>Καλημέρα κόσμε 日本語 中文 😀 café naïve résumé</item>", 18_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_unicode_names.xml", "<élément α='1' 日本語='値'>текст</élément>", 22_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_pretty_indented.xml", "\n  <group>\n    <item a='1'>value</item>\n    <item a='2'>value</item>\n  </group>", 12_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_crlf_pretty.xml", "\r\n\t<item a='1'>\r\n\t\tvalue\r\n\t</item>", 24_000);
+    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_token_whitespace_mix.xml", "<x\t a='1'\n b = '2'\r c\t=\t'3' />\n", 27_000);
+    try writeLongText(io, FIXTURES_DIR ++ "/synthetic_long_text.xml");
+    try writeDoctypeEntities(io, FIXTURES_DIR ++ "/synthetic_doctype_entities.xml");
+    try writeAttrCountMix(io, FIXTURES_DIR ++ "/synthetic_attr_count_mix.xml");
+}
+
+fn writeRepeatedSynthetic(io: std.Io, path: []const u8, row: []const u8, count: usize) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    for (0..count) |_| try out.writeAll(row);
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeAttrs16(io: std.Io, path: []const u8) !void {
+    const row = "<x a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a10='10' a11='11' a12='12' a13='13' a14='14' a15='15'/>";
+    try writeRepeatedSynthetic(io, path, row, 9_000);
+}
+
+fn writeAttrs64(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    for (0..2_500) |_| {
+        try out.writeAll("<x");
+        for (0..64) |i| try out.print(" a{d}='{d}'", .{ i, i });
+        try out.writeAll("/>");
+    }
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeLongText(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    const chunk = "abcdefghijklmnopqrstuvwxyz0123456789 ";
+    for (0..28_000) |_| try out.writeAll(chunk);
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeDoctypeEntities(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<!DOCTYPE root [<!ENTITY a 'alpha'><!ENTITY b '&a; beta'><!ELEMENT root (#PCDATA)>]><root>");
+    for (0..160_000) |_| try out.writeAll("&b; ");
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeAttrCountMix(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    for (0..4_000) |_| {
+        for (0..17) |count| {
+            try out.writeAll("<x");
+            for (0..count) |i| try out.print(" a{d}='{d}'", .{ i, i });
+            try out.writeAll("/>");
+        }
+    }
+    try out.writeAll("</root>");
+    try out.flush();
 }
 
 fn writeFlatAttrs(io: std.Io, path: []const u8) !void {
