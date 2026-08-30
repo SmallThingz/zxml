@@ -910,7 +910,7 @@ const ExpandedDtdIterator = struct {
             const frame_index = self.frames.items.len - 1;
             var frame = &self.frames.items[frame_index];
             if (frame.offset == frame.input.len) {
-                if (frame.entity_name) |name| self.states.getPtr(name).?.* = .done;
+                if (frame.entity_name) |name| _ = self.states.remove(name);
                 self.frames.items.len -= 1;
                 continue;
             }
@@ -936,10 +936,7 @@ const ExpandedDtdIterator = struct {
                 const canonical_name = entry.key_ptr.*;
                 const decl = entry.value_ptr.*;
                 if (decl.kind == .external) continue; // Non-validating parsers need not read external PEs.
-                if (self.states.get(canonical_name)) |state| switch (state) {
-                    .visiting => return error.RecursiveEntity,
-                    .done => continue,
-                };
+                if (self.states.contains(canonical_name)) return error.RecursiveEntity;
                 try self.states.put(canonical_name, .visiting);
                 try self.frames.append(self.allocator, .{ .input = decl.replacement.?, .entity_name = canonical_name });
                 continue;
@@ -2344,6 +2341,21 @@ test "DTD entity expansion includes declarations from internal parameter entitie
     defer doc.deinit();
     try doc.parse(
         "<!DOCTYPE r [<!ENTITY % q \"<!ENTITY e 'ok'>\"><!ENTITY % p '&#37;q;'>%p;<!ENTITY e 'later'>]><r>&e;</r>",
+        .{ .mode = .strict, .expand_dtd_entities = true },
+    );
+
+    try std.testing.expectEqualStrings("ok", doc.entity_map.get("e").?);
+    const root_node = doc.nodeAt(2) orelse return error.TestUnexpectedResult;
+    const text = try root_node.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("ok", text);
+}
+
+test "DTD entity expansion replays parameter entities after later declarations" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(
+        "<!DOCTYPE r [<!ENTITY % p '&#37;q;'>%p;<!ENTITY % q \"<!ENTITY e 'ok'>\">%p;]><r>&e;</r>",
         .{ .mode = .strict, .expand_dtd_entities = true },
     );
 
