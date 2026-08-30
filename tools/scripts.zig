@@ -580,7 +580,7 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
 
     const out = try common.runCaptureStdout(io, alloc, argv[0..argc], REPO_ROOT);
     defer alloc.free(out);
-    return common.parseLastInt(out);
+    return common.parseExactU64(out);
 }
 
 fn runParseBench(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture: FixtureCase) !ParseResult {

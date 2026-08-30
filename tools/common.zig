@@ -87,6 +87,14 @@ pub fn parseLastInt(text: []const u8) !u64 {
     return std.fmt.parseInt(u64, text[start..i], 10);
 }
 
+pub fn parseExactU64(text: []const u8) !u64 {
+    if (text.len == 0) return error.NoIntegerFound;
+    for (text) |c| {
+        if (c < '0' or c > '9') return error.InvalidInteger;
+    }
+    return std.fmt.parseInt(u64, text, 10);
+}
+
 pub fn medianU64(alloc: std.mem.Allocator, vals: []const u64) !u64 {
     if (vals.len == 0) return error.EmptyInput;
     const copy = try alloc.dupe(u64, vals);
@@ -123,6 +131,16 @@ test "parseLastInt extracts the final decimal run" {
     try std.testing.expectEqual(@as(u64, 42), try parseLastInt("iters=42"));
     try std.testing.expectEqual(@as(u64, 9001), try parseLastInt("time: 19 ms, total 9001"));
     try std.testing.expectError(error.NoIntegerFound, parseLastInt("no digits here"));
+}
+
+test "parseExactU64 rejects benchmark output noise" {
+    try std.testing.expectEqual(@as(u64, 42), try parseExactU64("42"));
+    try std.testing.expectEqual(@as(u64, 0), try parseExactU64("0"));
+    try std.testing.expectError(error.NoIntegerFound, parseExactU64(""));
+    try std.testing.expectError(error.InvalidInteger, parseExactU64("iters=42"));
+    try std.testing.expectError(error.InvalidInteger, parseExactU64("42 warning"));
+    try std.testing.expectError(error.InvalidInteger, parseExactU64("42\n43"));
+    try std.testing.expectError(error.Overflow, parseExactU64("18446744073709551616"));
 }
 
 test "medianU64 returns the upper median element" {
