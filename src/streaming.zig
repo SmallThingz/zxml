@@ -589,6 +589,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 const attr_start = i;
                 var attr_end = i;
                 var attr_count: usize = 0;
+                var first_attr_start: usize = 0;
+                var first_attr_end: usize = 0;
                 var self_closing = false;
                 var closed = false;
 
@@ -644,6 +646,17 @@ pub fn Types(comptime options: ParseOptions) type {
                     };
                     if (comptime strict_mode) {
                         if (attr_name_needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
+                        if (attr_count == 0) {
+                            first_attr_start = attr_name_start;
+                            first_attr_end = attr_i;
+                        } else if (attr_count == 1) {
+                            const first_len = first_attr_end - first_attr_start;
+                            const current_len = attr_i - attr_name_start;
+                            if (first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..attr_i])) {
+                                @branchHint(.unlikely);
+                                return error.DuplicateAttribute;
+                            }
+                        }
                         attr_count += 1;
                     }
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
@@ -694,7 +707,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (!closed) return error.UnexpectedEndOfData;
                 if (comptime strict_mode) {
-                    if (attr_count > 1) try validateUniqueAttributesRaw(input, attr_start, attr_end);
+                    if (attr_count > 2) try validateUniqueAttributesRaw(input, attr_start, attr_end);
                 }
 
                 if (comptime strict_mode) {
@@ -1478,6 +1491,8 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
     i = name_end;
     const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
     var attr_count: usize = 0;
+    var first_attr_start: usize = 0;
+    var first_attr_end: usize = 0;
     while (i < input.len) {
         const boundary = i;
         i = skipWsMode(input, i, strict);
@@ -1485,7 +1500,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
         const c = input[i];
         if (c == '>') {
             if (comptime strict) {
-                if (attr_count > 1) try validateUniqueAttributesRaw(input, name_end, i);
+                if (attr_count > 2) try validateUniqueAttributesRaw(input, name_end, i);
             }
             return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
         }
@@ -1493,7 +1508,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             if (i + 1 >= input.len) return error.UnexpectedEndOfData;
             if (input[i + 1] == '>') {
                 if (comptime strict) {
-                    if (attr_count > 1) try validateUniqueAttributesRaw(input, name_end, i);
+                    if (attr_count > 2) try validateUniqueAttributesRaw(input, name_end, i);
                 }
                 return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
             }
@@ -1512,6 +1527,17 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             const attr_name_scan = scanner.scanNameEnd(input, i);
             i = attr_name_scan.end;
             if (attr_name_scan.needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..i])) return error.ExpectedAttributeName;
+            if (attr_count == 0) {
+                first_attr_start = attr_name_start;
+                first_attr_end = i;
+            } else if (attr_count == 1) {
+                const first_len = first_attr_end - first_attr_start;
+                const current_len = i - attr_name_start;
+                if (first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..i])) {
+                    @branchHint(.unlikely);
+                    return error.DuplicateAttribute;
+                }
+            }
             attr_count += 1;
         } else {
             i = scanner.findNameEnd(input, i);
