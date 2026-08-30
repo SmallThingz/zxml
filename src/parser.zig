@@ -13,6 +13,7 @@ const InvalidIndex = document.InvalidIndex;
 pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions) ParseError!void {
     doc.last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
+    if (comptime opts.mode == .strict) try document.validateXmlCharacters(input);
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     p.parse() catch |err| {
         doc.last_error_offset = @min(p.i, input.len);
@@ -115,6 +116,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 .key = 0,
             };
             const name_end = name_scan.end;
+            if (comptime strict_mode) {
+                if (!document.isValidXmlName(self.input[name_start..name_end])) return error.ExpectedElementName;
+            }
             self.i = name_end;
 
             const parent_idx = self.topIndex();
@@ -203,6 +207,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.i = if (comptime strict_mode) scanner.findNameEndAfterStart(self.input, self.i) else scanner.findNameEnd(self.input, self.i);
                 const attr_name_end = self.i;
                 if (comptime strict_mode) {
+                    if (!document.isValidXmlName(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
                     var prev_i: usize = attr_start_idx;
                     while (prev_i < self.doc.attrs.items.len) : (prev_i += 1) {
                         const prev_name = self.doc.attrs.items[prev_i].name.slice(self.input);
@@ -295,7 +300,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (comptime strict_mode) {
                     if (self.i >= self.input.len) return error.UnexpectedEndOfData;
                     if (!tables.isNameStart(self.input[self.i])) return error.InvalidClosingTagName;
+                    const close_name_start = self.i;
                     self.i = scanner.findNameEndAfterStart(self.input, self.i);
+                    if (!document.isValidXmlName(self.input[close_name_start..self.i])) return error.InvalidClosingTagName;
                     if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) self.skipWhitespace();
                     if (self.i >= self.input.len) return error.UnexpectedEndOfData;
                     if (self.input[self.i] != '>') return error.InvalidClosingTagName;
@@ -388,6 +395,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.i = scanner.findNameEnd(self.input, self.i);
             }
             const target_end = self.i;
+            if (comptime strict_mode) {
+                if (!document.isValidXmlName(self.input[target_start..target_end])) return error.ExpectedPiTarget;
+            }
             const xml_target = target_end - target_start == 3 and
                 std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
             if (comptime strict_mode) {

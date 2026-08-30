@@ -63,6 +63,7 @@ pub const ParseError = error{
     InvalidAttributeValue,
     InvalidComment,
     InvalidCharacterData,
+    InvalidXmlCharacter,
     ExpectedDocumentElement,
     MultipleDocumentElements,
     InvalidDocumentContent,
@@ -75,6 +76,94 @@ pub const ParseError = error{
     EntityValueTooLarge,
     RecursiveEntity,
 };
+
+pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
+    var i: usize = 0;
+    while (i < input.len) {
+        const first = input[i];
+        if (first < 0x80) {
+            if (first != '\t' and first != '\n' and first != '\r' and first < 0x20) return error.InvalidXmlCharacter;
+            i += 1;
+            continue;
+        }
+
+        const sequence_len: usize = if (first >= 0xC2 and first <= 0xDF)
+            2
+        else if (first >= 0xE0 and first <= 0xEF)
+            3
+        else if (first >= 0xF0 and first <= 0xF4)
+            4
+        else
+            return error.InvalidXmlCharacter;
+
+        const available = @min(sequence_len, input.len - i);
+        var j: usize = 1;
+        while (j < available) : (j += 1) {
+            const continuation = input[i + j];
+            if (continuation < 0x80 or continuation > 0xBF) return error.InvalidXmlCharacter;
+            if (j == 1) {
+                if (first == 0xE0 and continuation < 0xA0) return error.InvalidXmlCharacter;
+                if (first == 0xED and continuation > 0x9F) return error.InvalidXmlCharacter;
+                if (first == 0xF0 and continuation < 0x90) return error.InvalidXmlCharacter;
+                if (first == 0xF4 and continuation > 0x8F) return error.InvalidXmlCharacter;
+            }
+        }
+        if (available < sequence_len) return i;
+
+        const codepoint = std.unicode.utf8Decode(input[i .. i + sequence_len]) catch return error.InvalidXmlCharacter;
+        if (!isXmlCharacter(codepoint)) return error.InvalidXmlCharacter;
+        i += sequence_len;
+    }
+    return input.len;
+}
+
+pub fn validateXmlCharacters(input: []const u8) ParseError!void {
+    if (try xmlValidPrefixLen(input) != input.len) return error.InvalidXmlCharacter;
+}
+
+pub fn isValidXmlName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    var view = std.unicode.Utf8View.init(name) catch return false;
+    var it = view.iterator();
+    const first = it.nextCodepoint() orelse return false;
+    if (!isXmlNameStart(first)) return false;
+    while (it.nextCodepoint()) |codepoint| {
+        if (!isXmlNameChar(codepoint)) return false;
+    }
+    return true;
+}
+
+inline fn isXmlCharacter(codepoint: u21) bool {
+    return codepoint == 0x9 or codepoint == 0xA or codepoint == 0xD or
+        (codepoint >= 0x20 and codepoint <= 0xD7FF) or
+        (codepoint >= 0xE000 and codepoint <= 0xFFFD) or
+        (codepoint >= 0x10000 and codepoint <= 0x10FFFF);
+}
+
+inline fn isXmlNameStart(codepoint: u21) bool {
+    return codepoint == ':' or codepoint == '_' or
+        (codepoint >= 'A' and codepoint <= 'Z') or
+        (codepoint >= 'a' and codepoint <= 'z') or
+        (codepoint >= 0xC0 and codepoint <= 0xD6) or
+        (codepoint >= 0xD8 and codepoint <= 0xF6) or
+        (codepoint >= 0xF8 and codepoint <= 0x2FF) or
+        (codepoint >= 0x370 and codepoint <= 0x37D) or
+        (codepoint >= 0x37F and codepoint <= 0x1FFF) or
+        (codepoint >= 0x200C and codepoint <= 0x200D) or
+        (codepoint >= 0x2070 and codepoint <= 0x218F) or
+        (codepoint >= 0x2C00 and codepoint <= 0x2FEF) or
+        (codepoint >= 0x3001 and codepoint <= 0xD7FF) or
+        (codepoint >= 0xF900 and codepoint <= 0xFDCF) or
+        (codepoint >= 0xFDF0 and codepoint <= 0xFFFD) or
+        (codepoint >= 0x10000 and codepoint <= 0xEFFFF);
+}
+
+inline fn isXmlNameChar(codepoint: u21) bool {
+    return isXmlNameStart(codepoint) or codepoint == '-' or codepoint == '.' or
+        (codepoint >= '0' and codepoint <= '9') or codepoint == 0xB7 or
+        (codepoint >= 0x0300 and codepoint <= 0x036F) or
+        (codepoint >= 0x203F and codepoint <= 0x2040);
+}
 
 pub const ParseDiagnostic = struct {
     err: ParseError,
@@ -1190,4 +1279,27 @@ test "DTD entity expansion rejects direct and indirect recursion" {
             doc.parse(xml, .{ .mode = .strict, .expand_dtd_entities = true }),
         );
     }
+}
+
+test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
+    const invalid = [_][]const u8{
+        "<r>\xC0\xAF</r>",
+        "<\xC0\xAF/>",
+        "<r \xC0\xAF='x'/>",
+        "<r a='\xC0\xAF'/>",
+        "<r><![CDATA[\xC0\xAF]]></r>",
+        "<r><!--\xC0\xAF--></r>",
+        "<?p \xC0\xAF?><r/>",
+        "<r>\x01</r>",
+    };
+
+    for (invalid) |input| {
+        var doc = Document.init(std.testing.allocator);
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidXmlCharacter, doc.parse(input, .{ .mode = .strict }));
+    }
+
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict });
 }
