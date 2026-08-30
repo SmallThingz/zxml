@@ -857,6 +857,70 @@ test "strict enforces declared parsed general entities" {
     }
 }
 
+test "strict validates used entity replacement graphs" {
+    const invalid_entity = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&missing;'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!NOTATION n SYSTEM 'n'><!ENTITY e SYSTEM 'x' NDATA n><!ENTITY a '&e;'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!ENTITY a '&#38;missing;'>]><r>&a;</r>",
+    };
+    inline for (invalid_entity) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const recursive = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&a;'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b '&a;'>]><r>&a;</r>",
+    };
+    inline for (recursive) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.RecursiveEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const invalid_attribute = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&e;'><!ENTITY e SYSTEM 'x'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '<'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b '<'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&#60;'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&#38;e;'><!ENTITY e SYSTEM 'x'>]><r x='&a;'/>",
+    };
+    inline for (invalid_attribute) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b 'ok'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!ENTITY a '&lt;'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&#38;lt;'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&amp;e;'><!ENTITY e SYSTEM 'x'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&a;'>]><r/>",
+    };
+    inline for (valid) |source| {
+        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        defer parsed.deinit();
+    }
+}
+
+test "strict entity graph validation is iterative for deep chains" {
+    var source = std.ArrayList(u8).empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "<!DOCTYPE r [<!ENTITY e0 'ok'>");
+    const depth: usize = 1024;
+    var i: usize = 1;
+    while (i < depth) : (i += 1) {
+        try source.print(std.testing.allocator, "<!ENTITY e{d} '&e{d};'>", .{ i, i - 1 });
+    }
+    try source.print(std.testing.allocator, "]><r>&e{d};</r>", .{depth - 1});
+
+    var doc = initDoc(.{});
+    defer doc.deinit();
+    try doc.parse(source.items, .{ .mode = .strict });
+}
+
 test "turbo invalid numeric entity stays literal in raw and decoded access" {
     var parsed = try parseTestDoc("<r a='&#x110000;'>&#x110000;</r>", .{ .mode = .turbo });
     defer parsed.deinit();

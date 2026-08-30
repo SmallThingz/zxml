@@ -533,14 +533,14 @@ pub fn Types(comptime options: ParseOptions) type {
 
             inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
                 if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-                try document.validateXmlAttributeReferences(value, self.doctypeValue(input), self.require_declared_entities);
+                try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities);
             }
 
             inline fn validateCharacterDataRange(self: *const Self, input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
                 std.debug.assert(start <= end and end <= input.len);
                 const check_start = start - @min(start, 2);
                 if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
-                try document.validateXmlReferences(input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
+                try document.validateXmlReferencesAlloc(self.allocator, input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
@@ -1018,7 +1018,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 continue;
                             }
 
-                            const open = scanOpeningTagToken(input, lt, strict_mode, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
+                            const open = scanOpeningTagToken(input, lt, strict_mode, if (comptime strict_mode) self.allocator else null, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -1350,7 +1350,7 @@ fn skipSubtreeStateless(
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict, null, false);
+                const open = try scanOpeningTagToken(input, i, strict, null, null, false);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
@@ -1395,7 +1395,7 @@ fn expectedOpenNameAtDepth(
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict, null, false);
+                const open = try scanOpeningTagToken(input, i, strict, null, null, false);
                 i = open.next;
                 if (!open.self_closing) {
                     depth += 1;
@@ -1421,7 +1421,7 @@ const CloseToken = struct {
     key: u64,
 };
 
-fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, doctype_value: ?[]const u8, require_declared_entities: bool) ParseError!OpenToken {
+fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, entity_allocator: ?std.mem.Allocator, doctype_value: ?[]const u8, require_declared_entities: bool) ParseError!OpenToken {
     var i = start + 1;
     if (i >= input.len or !tables.isNameStart(input[i])) return error.ExpectedElementName;
     const name_start = i;
@@ -1473,7 +1473,13 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, d
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
-            if (comptime strict) try document.validateXmlAttributeReferences(input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
+            if (comptime strict) {
+                if (entity_allocator) |allocator| {
+                    try document.validateXmlAttributeReferencesAlloc(allocator, input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
+                } else {
+                    try document.validateXmlAttributeReferences(input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
+                }
+            }
             i = quote_pos + 1;
         } else {
             if (strict) return error.ExpectedQuote;
@@ -1910,6 +1916,62 @@ test "streaming strict enforces declared parsed general entities" {
         "<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>",
         "<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
         "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>",
+    };
+    inline for (valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+}
+
+test "streaming strict validates used entity replacement graphs" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const invalid_entity = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&missing;'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!NOTATION n SYSTEM 'n'><!ENTITY e SYSTEM 'x' NDATA n><!ENTITY a '&e;'>]><r>&a;</r>",
+    };
+    inline for (invalid_entity) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        const source = "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b '&a;'>]><r>&a;</r>";
+        try std.testing.expectError(error.RecursiveEntity, parser.parse(source, &ctx, Ctx.onNode));
+    }
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        const source = "<!DOCTYPE r [<!ENTITY a '&e;'><!ENTITY e SYSTEM 'x'>]><r x='&a;'/>";
+        try std.testing.expectError(error.InvalidAttributeValue, parser.parse(source, &ctx, Ctx.onNode));
+    }
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        const source = "<!DOCTYPE r [<!ENTITY a '&#60;'>]><r x='&a;'/>";
+        try std.testing.expectError(error.InvalidAttributeValue, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b 'ok'>]><r>&a;</r>",
+        "<!DOCTYPE r [<!ENTITY a '&lt;'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY a '&#38;lt;'>]><r x='&a;'/>",
     };
     inline for (valid) |source| {
         var parser = ParserType.init(std.testing.allocator);

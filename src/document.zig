@@ -100,8 +100,56 @@ pub fn validateXmlAttributeReferences(
     return validateXmlReferencesInContext(value, false, doctype_value, require_declared_entities, .attribute);
 }
 
+pub fn validateXmlReferencesAlloc(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    allow_trailing_partial: bool,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+) ParseError!void {
+    return validateXmlReferencesInContextAlloc(allocator, value, allow_trailing_partial, doctype_value, require_declared_entities, .content);
+}
+
+pub fn validateXmlAttributeReferencesAlloc(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+) ParseError!void {
+    return validateXmlReferencesInContextAlloc(allocator, value, false, doctype_value, require_declared_entities, .attribute);
+}
+
 const XmlReferenceContext = enum { content, attribute };
 const GeneralEntityKind = enum { internal, external_parsed, unparsed };
+
+const GeneralEntityDecl = struct {
+    kind: GeneralEntityKind,
+    replacement: ?[]u8 = null,
+};
+
+const GeneralEntityCatalog = struct {
+    allocator: std.mem.Allocator,
+    map: std.StringHashMap(GeneralEntityDecl),
+
+    fn init(allocator: std.mem.Allocator) GeneralEntityCatalog {
+        return .{ .allocator = allocator, .map = std.StringHashMap(GeneralEntityDecl).init(allocator) };
+    }
+
+    fn deinit(self: *GeneralEntityCatalog) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.replacement) |replacement| self.allocator.free(replacement);
+        }
+        self.map.deinit();
+    }
+};
+
+const EntityValidationState = enum { visiting, done };
+const EntityValidationFrame = struct {
+    name: []const u8,
+    replacement: []const u8,
+    offset: usize = 0,
+};
 
 fn validateXmlReferencesInContext(
     value: []const u8,
@@ -130,6 +178,217 @@ fn validateXmlReferencesInContext(
         }
         search_from = semi + 1;
     }
+}
+
+fn validateXmlReferencesInContextAlloc(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    allow_trailing_partial: bool,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+    context: XmlReferenceContext,
+) ParseError!void {
+    var has_custom_reference = false;
+    var search_from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
+        const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
+            if (allow_trailing_partial) return error.UnexpectedEndOfData;
+            return error.UnterminatedEntity;
+        };
+        const body = value[amp + 1 .. semi];
+        if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
+        if (body[0] != '#' and !isPredefinedEntityName(body)) has_custom_reference = true;
+        search_from = semi + 1;
+    }
+    if (!has_custom_reference) return;
+
+    var catalog = GeneralEntityCatalog.init(allocator);
+    defer catalog.deinit();
+    if (doctype_value) |doctype| try buildGeneralEntityCatalog(&catalog, doctype);
+
+    var states = std.StringHashMap(EntityValidationState).init(allocator);
+    defer states.deinit();
+    var frames = std.ArrayList(EntityValidationFrame).empty;
+    defer frames.deinit(allocator);
+
+    search_from = 0;
+    while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
+        const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';').?;
+        const body = value[amp + 1 .. semi];
+        if (body[0] != '#' and !isPredefinedEntityName(body)) {
+            try validateGeneralEntityUse(
+                &catalog,
+                &states,
+                &frames,
+                body,
+                require_declared_entities,
+                context,
+            );
+        }
+        search_from = semi + 1;
+    }
+}
+
+fn buildGeneralEntityCatalog(catalog: *GeneralEntityCatalog, doctype_value: []const u8) ParseError!void {
+    const subset_range = try findInternalSubset(doctype_value) orelse return;
+    const subset = doctype_value[subset_range.start..subset_range.end];
+    var i: usize = 0;
+    while (i < subset.len) {
+        if (tables.isWhitespace(subset[i])) {
+            _ = skipXmlWhitespace(subset, &i);
+            continue;
+        }
+        if (subset[i] == '%') {
+            try consumePeReference(subset, &i);
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<!--")) {
+            const end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.InvalidDoctype;
+            i = end + 3;
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<?")) {
+            const end = std.mem.indexOfPos(u8, subset, i + 2, "?>") orelse return error.InvalidDoctype;
+            i = end + 2;
+            continue;
+        }
+        if (subset[i] != '<') return error.InvalidDoctype;
+
+        const entity_decl = std.mem.startsWith(u8, subset[i..], "<!ENTITY");
+        const keyword_len: usize = if (entity_decl)
+            "<!ENTITY".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!ELEMENT"))
+            "<!ELEMENT".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!ATTLIST"))
+            "<!ATTLIST".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!NOTATION"))
+            "<!NOTATION".len
+        else
+            return error.InvalidDoctype;
+        const decl_end = findMarkupDeclEnd(subset, i + keyword_len) orelse return error.InvalidDoctype;
+        if (!entity_decl) {
+            i = decl_end + 1;
+            continue;
+        }
+
+        const body = subset[i + keyword_len .. decl_end];
+        var j: usize = 0;
+        if (!skipRequiredXmlWhitespace(body, &j)) return error.InvalidDoctype;
+        if (j < body.len and body[j] == '%') {
+            i = decl_end + 1;
+            continue;
+        }
+        const name_start = j;
+        try consumeDtdName(body, &j);
+        const name = body[name_start..j];
+        if (!skipRequiredXmlWhitespace(body, &j)) return error.InvalidDoctype;
+
+        if (!catalog.map.contains(name)) {
+            if (j < body.len and (body[j] == '\'' or body[j] == '"')) {
+                const quote = body[j];
+                const value_start = j + 1;
+                const value_end = std.mem.indexOfScalarPos(u8, body, value_start, quote) orelse return error.InvalidDoctype;
+                const replacement = try normalizeEntityValueAlloc(catalog.allocator, body[value_start..value_end]);
+                errdefer catalog.allocator.free(replacement);
+                try catalog.map.put(name, .{ .kind = .internal, .replacement = replacement });
+            } else {
+                try consumeExternalId(body, &j);
+                const kind: GeneralEntityKind = if (skipRequiredXmlWhitespace(body, &j) and std.mem.startsWith(u8, body[j..], "NDATA"))
+                    .unparsed
+                else
+                    .external_parsed;
+                try catalog.map.put(name, .{ .kind = kind });
+            }
+        }
+        i = decl_end + 1;
+    }
+}
+
+fn normalizeEntityValueAlloc(allocator: std.mem.Allocator, raw: []const u8) ParseError![]u8 {
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(allocator);
+    var i: usize = 0;
+    while (std.mem.indexOf(u8, raw[i..], "&#")) |rel_amp| {
+        const amp = i + rel_amp;
+        try out.appendSlice(allocator, raw[i..amp]);
+        const semi = std.mem.indexOfScalarPos(u8, raw, amp + 2, ';') orelse return error.InvalidDoctype;
+        const body = raw[amp + 1 .. semi];
+        const cp = xmlNumericReferenceValue(body) orelse return error.InvalidDoctype;
+        var buf: [4]u8 = undefined;
+        const len = std.unicode.utf8Encode(cp, &buf) catch return error.InvalidDoctype;
+        try out.appendSlice(allocator, buf[0..len]);
+        i = semi + 1;
+    }
+    try out.appendSlice(allocator, raw[i..]);
+    return out.toOwnedSlice(allocator);
+}
+
+fn validateGeneralEntityUse(
+    catalog: *const GeneralEntityCatalog,
+    states: *std.StringHashMap(EntityValidationState),
+    frames: *std.ArrayList(EntityValidationFrame),
+    root_name: []const u8,
+    require_declared_entities: bool,
+    context: XmlReferenceContext,
+) ParseError!void {
+    try pushGeneralEntity(catalog, states, frames, root_name, require_declared_entities, context);
+    while (frames.items.len != 0) {
+        const frame_index = frames.items.len - 1;
+        const frame = &frames.items[frame_index];
+        const amp = std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '&') orelse {
+            if (context == .attribute and std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '<') != null) {
+                return error.InvalidAttributeValue;
+            }
+            states.getPtr(frame.name).?.* = .done;
+            frames.items.len -= 1;
+            continue;
+        };
+        if (context == .attribute) {
+            if (std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '<')) |lt| {
+                if (lt < amp) return error.InvalidAttributeValue;
+            }
+        }
+        const semi = std.mem.indexOfScalarPos(u8, frame.replacement, amp + 1, ';') orelse return error.UnterminatedEntity;
+        const body = frame.replacement[amp + 1 .. semi];
+        if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
+        frame.offset = semi + 1;
+        if (body[0] == '#' or isPredefinedEntityName(body)) continue;
+        try pushGeneralEntity(catalog, states, frames, body, require_declared_entities, context);
+    }
+}
+
+fn pushGeneralEntity(
+    catalog: *const GeneralEntityCatalog,
+    states: *std.StringHashMap(EntityValidationState),
+    frames: *std.ArrayList(EntityValidationFrame),
+    name: []const u8,
+    require_declared_entities: bool,
+    context: XmlReferenceContext,
+) ParseError!void {
+    const entry = catalog.map.getEntry(name) orelse {
+        if (require_declared_entities) return error.InvalidNumericCharacterEntity;
+        return;
+    };
+    const canonical_name = entry.key_ptr.*;
+    const decl = entry.value_ptr.*;
+    switch (decl.kind) {
+        .unparsed => return error.InvalidNumericCharacterEntity,
+        .external_parsed => {
+            if (context == .attribute) return error.InvalidAttributeValue;
+            return;
+        },
+        .internal => {},
+    }
+
+    if (states.get(canonical_name)) |state| switch (state) {
+        .visiting => return error.RecursiveEntity,
+        .done => return,
+    };
+    try states.put(canonical_name, .visiting);
+    try frames.append(catalog.allocator, .{
+        .name = canonical_name,
+        .replacement = decl.replacement.?,
+    });
 }
 
 inline fn isPredefinedEntityName(name: []const u8) bool {
@@ -201,14 +460,18 @@ fn doctypeGeneralEntityKind(doctype_value: []const u8, target: []const u8) Parse
 fn isValidXmlReferenceBody(body: []const u8) bool {
     if (body.len == 0) return false;
     if (body[0] != '#') return isValidXmlName(body);
+    return xmlNumericReferenceValue(body) != null;
+}
 
+fn xmlNumericReferenceValue(body: []const u8) ?u21 {
+    if (body.len < 2 or body[0] != '#') return null;
     var i: usize = 1;
     var base: u32 = 10;
     if (i < body.len and body[i] == 'x') {
         base = 16;
         i += 1;
     }
-    if (i == body.len) return false;
+    if (i == body.len) return null;
 
     var value: u32 = 0;
     while (i < body.len) : (i += 1) {
@@ -220,11 +483,12 @@ fn isValidXmlReferenceBody(body: []const u8) bool {
         else if (base == 16 and c >= 'A' and c <= 'F')
             c - 'A' + 10
         else
-            return false;
-        if (value > (0x10FFFF - @as(u32, digit)) / base) return false;
+            return null;
+        if (value > (0x10FFFF - @as(u32, digit)) / base) return null;
         value = value * base + @as(u32, digit);
     }
-    return value <= 0x10FFFF and isXmlCharacter(@intCast(value));
+    if (value > 0x10FFFF or !isXmlCharacter(@intCast(value))) return null;
+    return @intCast(value);
 }
 
 pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
