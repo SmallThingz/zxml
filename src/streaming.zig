@@ -1492,7 +1492,14 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             i += 1;
             continue;
         }
-        i = scanner.findNameEnd(input, i);
+        if (comptime strict) {
+            const attr_name_start = i;
+            const attr_name_scan = scanner.scanNameEnd(input, i);
+            i = attr_name_scan.end;
+            if (attr_name_scan.needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..i])) return error.ExpectedAttributeName;
+        } else {
+            i = scanner.findNameEnd(input, i);
+        }
         i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         if (input[i] != '=') {
@@ -1529,21 +1536,23 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
     return error.UnexpectedEndOfData;
 }
 
-const StrictAttrToken = struct {
+const ValidatedAttrToken = struct {
     name_start: usize,
     name_end: usize,
     next: usize,
 };
 
-fn scanStrictAttributeToken(input: []const u8, start: usize, end: usize) ParseError!?StrictAttrToken {
+fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
     var i = skipWsStrict(input, start);
     if (i >= end) return null;
+
+    // The opening-tag scanner has already validated the complete attribute
+    // grammar, XML Name, and value references. This pass exists only to find
+    // duplicate names, so do not repeat that work.
     if (!tables.isNameStart(input[i])) return error.ExpectedAttributeName;
     const name_start = i;
-    const name_scan = scanner.scanNameEndAfterStart(input, i);
-    i = name_scan.end;
+    i = scanner.findNameEndAfterStart(input, i);
     const name_end = i;
-    if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedAttributeName;
     i = skipWsStrict(input, i);
     if (i >= end or input[i] != '=') return error.ExpectedEq;
     i += 1;
@@ -1552,16 +1561,15 @@ fn scanStrictAttributeToken(input: []const u8, start: usize, end: usize) ParseEr
     const quote = input[i];
     if (quote != '\'' and quote != '"') return error.ExpectedQuote;
     const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse return error.ExpectedQuote;
-    try validateAttributeValue(input[i + 1 .. quote_pos]);
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
 }
 
 fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: usize) ParseError!void {
     var i = start;
-    while (try scanStrictAttributeToken(input, i, end)) |current| {
+    while (try scanValidatedAttributeToken(input, i, end)) |current| {
         var prev_i = start;
         while (prev_i < current.name_start) {
-            const previous = (try scanStrictAttributeToken(input, prev_i, end)) orelse break;
+            const previous = (try scanValidatedAttributeToken(input, prev_i, end)) orelse break;
             if (previous.name_start == current.name_start) break;
             if (std.mem.eql(u8, input[previous.name_start..previous.name_end], input[current.name_start..current.name_end])) {
                 return error.DuplicateAttribute;
