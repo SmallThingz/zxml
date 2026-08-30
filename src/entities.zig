@@ -41,6 +41,13 @@ pub fn resolveEntityDeclarationsBounded(
     }
 }
 
+const ResolveFrame = struct {
+    name: []const u8,
+    input: []const u8,
+    src: usize = 0,
+    out: std.ArrayList(u8) = .empty,
+};
+
 fn resolveEntityDeclaration(
     alloc: std.mem.Allocator,
     declarations: *const std.StringHashMap([]const u8),
@@ -57,108 +64,100 @@ fn resolveEntityDeclaration(
     };
 
     const raw = declarations.get(name) orelse unreachable;
+    var frames = std.ArrayList(ResolveFrame).empty;
+    defer {
+        for (frames.items) |*frame| frame.out.deinit(alloc);
+        frames.deinit(alloc);
+    }
+
     try states.put(name, .visiting);
-    errdefer _ = states.remove(name);
+    try frames.append(alloc, .{ .name = name, .input = raw });
 
-    var out = std.ArrayList(u8).empty;
-    errdefer out.deinit(alloc);
-    try appendDecodedResolvingDeclarations(
-        &out,
-        alloc,
-        raw,
-        strict,
-        declarations,
-        resolved,
-        states,
-        max_output_len,
-    );
-    const value = try out.toOwnedSlice(alloc);
-    errdefer alloc.free(value);
-    const owned_name = try alloc.dupe(u8, name);
-    errdefer alloc.free(owned_name);
+    while (frames.items.len != 0) {
+        const frame_idx = frames.items.len - 1;
+        var pushed_child = false;
 
-    const gop = try resolved.getOrPut(owned_name);
-    if (gop.found_existing) {
-        alloc.free(owned_name);
-        alloc.free(value);
-    } else {
-        gop.key_ptr.* = owned_name;
-        gop.value_ptr.* = value;
-    }
-    states.getPtr(name).?.* = .done;
-    return gop.value_ptr.*;
-}
+        while (frames.items[frame_idx].src < frames.items[frame_idx].input.len) {
+            const src = frames.items[frame_idx].src;
+            const input = frames.items[frame_idx].input;
 
-fn appendDecodedResolvingDeclarations(
-    out: *std.ArrayList(u8),
-    alloc: std.mem.Allocator,
-    input: []const u8,
-    strict: bool,
-    declarations: *const std.StringHashMap([]const u8),
-    resolved: *std.StringHashMap([]u8),
-    states: *std.StringHashMap(ResolveState),
-    max_output_len: usize,
-) (std.mem.Allocator.Error || BoundedDecodeError)!void {
-    const first = std.mem.indexOfScalar(u8, input, '&') orelse {
-        try appendLimited(out, alloc, input, max_output_len);
-        return;
-    };
+            if (input[src] != '&') {
+                const next = std.mem.indexOfScalarPos(u8, input, src, '&') orelse input.len;
+                try appendLimited(&frames.items[frame_idx].out, alloc, input[src..next], max_output_len);
+                frames.items[frame_idx].src = next;
+                continue;
+            }
 
-    try appendLimited(out, alloc, input[0..first], max_output_len);
-    var src = first;
-    while (src < input.len) {
-        if (input[src] != '&') {
-            const next = std.mem.indexOfScalarPos(u8, input, src, '&') orelse input.len;
-            try appendLimited(out, alloc, input[src..next], max_output_len);
-            src = next;
-            continue;
+            const token = parseEntityToken(input, src) catch |err| switch (err) {
+                error.UnterminatedEntity => {
+                    if (strict) return error.UnterminatedEntity;
+                    try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
+                    frames.items[frame_idx].src += 1;
+                    continue;
+                },
+                error.InvalidNumericCharacterEntity => {
+                    if (strict) return error.InvalidNumericCharacterEntity;
+                    try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
+                    frames.items[frame_idx].src += 1;
+                    continue;
+                },
+            };
+
+            if (try decodeEntityBody(token.body, strict)) |decoded| {
+                try appendLimited(&frames.items[frame_idx].out, alloc, decoded.bytes[0..decoded.len], max_output_len);
+                frames.items[frame_idx].src += token.consumed;
+                continue;
+            }
+
+            if (resolved.get(token.body)) |value| {
+                try appendLimited(&frames.items[frame_idx].out, alloc, value, max_output_len);
+                frames.items[frame_idx].src += token.consumed;
+                continue;
+            }
+
+            if (declarations.get(token.body)) |child_raw| {
+                if (states.get(token.body)) |state| switch (state) {
+                    .visiting => return error.RecursiveEntity,
+                    .done => unreachable,
+                };
+                try states.put(token.body, .visiting);
+                try frames.append(alloc, .{ .name = token.body, .input = child_raw });
+                pushed_child = true;
+                break;
+            }
+
+            if (strict) return error.InvalidNumericCharacterEntity;
+            try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
+            frames.items[frame_idx].src += 1;
         }
 
-        const token = parseEntityToken(input, src) catch |err| switch (err) {
-            error.UnterminatedEntity => {
-                if (strict) return error.UnterminatedEntity;
-                try appendLimited(out, alloc, "&", max_output_len);
-                src += 1;
-                continue;
-            },
-            error.InvalidNumericCharacterEntity => {
-                if (strict) return error.InvalidNumericCharacterEntity;
-                try appendLimited(out, alloc, "&", max_output_len);
-                src += 1;
-                continue;
-            },
+        if (pushed_child) continue;
+
+        const frame_name = frames.items[frame_idx].name;
+        const value = try frames.items[frame_idx].out.toOwnedSlice(alloc);
+        const owned_name = alloc.dupe(u8, frame_name) catch |err| {
+            alloc.free(value);
+            return err;
         };
-
-        if (try decodeEntityBody(token.body, strict)) |decoded| {
-            try appendLimited(out, alloc, decoded.bytes[0..decoded.len], max_output_len);
-            src += token.consumed;
-            continue;
+        const gop = resolved.getOrPut(owned_name) catch |err| {
+            alloc.free(owned_name);
+            alloc.free(value);
+            return err;
+        };
+        if (gop.found_existing) {
+            alloc.free(owned_name);
+            alloc.free(value);
+        } else {
+            gop.key_ptr.* = owned_name;
+            gop.value_ptr.* = value;
         }
+        states.getPtr(frame_name).?.* = .done;
+        frames.items.len -= 1;
 
-        if (resolved.get(token.body)) |value| {
-            try appendLimited(out, alloc, value, max_output_len);
-            src += token.consumed;
-            continue;
-        }
-        if (declarations.contains(token.body)) {
-            const value = try resolveEntityDeclaration(
-                alloc,
-                declarations,
-                resolved,
-                states,
-                token.body,
-                strict,
-                max_output_len,
-            );
-            try appendLimited(out, alloc, value, max_output_len);
-            src += token.consumed;
-            continue;
-        }
-
-        if (strict) return error.InvalidNumericCharacterEntity;
-        try appendLimited(out, alloc, "&", max_output_len);
-        src += 1;
+        if (frames.items.len == 0) return gop.value_ptr.*;
     }
+
+    unreachable;
 }
 
 const EntityDecode = struct {
@@ -491,4 +490,36 @@ test "bounded entity decoding rejects expansion before appending past the cap" {
         error.OutputTooLarge,
         decodeAllocWithEntityMapBounded(alloc, "&wide;", true, &map, 4),
     );
+}
+
+test "entity dependency resolution is iterative for deep declaration chains" {
+    const alloc = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+    const scratch = arena.allocator();
+
+    var declarations = std.StringHashMap([]const u8).init(scratch);
+    var resolved = std.StringHashMap([]u8).init(alloc);
+    defer {
+        var it = resolved.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            alloc.free(entry.value_ptr.*);
+        }
+        resolved.deinit();
+    }
+
+    const count = 50_000;
+    for (0..count) |i| {
+        const name = try std.fmt.allocPrint(scratch, "e{d}", .{i});
+        const value = if (i + 1 < count)
+            try std.fmt.allocPrint(scratch, "&e{d};", .{i + 1})
+        else
+            try scratch.dupe(u8, "x");
+        try declarations.put(name, value);
+    }
+
+    try resolveEntityDeclarationsBounded(alloc, &declarations, &resolved, true, 16);
+    try std.testing.expectEqualStrings("x", resolved.get("e0").?);
+    try std.testing.expectEqual(@as(usize, count), resolved.count());
 }
