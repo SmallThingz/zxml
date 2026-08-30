@@ -62,6 +62,8 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_tiny_text.xml", .iterations = 160, .is_real = false },
     .{ .name = "synthetic_two_attr.xml", .iterations = 140, .is_real = false },
     .{ .name = "synthetic_attrs8.xml", .iterations = 100, .is_real = false },
+    .{ .name = "synthetic_attrs32.xml", .iterations = 70, .is_real = false },
+    .{ .name = "synthetic_attrs96.xml", .iterations = 40, .is_real = false },
     .{ .name = "synthetic_unicode_text.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_pretty_indented.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_long_text.xml", .iterations = 100, .is_real = false },
@@ -102,7 +104,11 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_attrs4.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_attrs8.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_attrs16.xml", .iterations = 150, .is_real = false },
+    .{ .name = "synthetic_attrs32.xml", .iterations = 110, .is_real = false },
+    .{ .name = "synthetic_attrs48.xml", .iterations = 90, .is_real = false },
     .{ .name = "synthetic_attrs64.xml", .iterations = 70, .is_real = false },
+    .{ .name = "synthetic_attrs96.xml", .iterations = 55, .is_real = false },
+    .{ .name = "synthetic_attrs128.xml", .iterations = 45, .is_real = false },
     .{ .name = "synthetic_long_attr_values.xml", .iterations = 180, .is_real = false },
     .{ .name = "synthetic_single_quotes.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_unicode_text.xml", .iterations = 180, .is_real = false },
@@ -282,8 +288,12 @@ fn writeSyntheticFixtures(io: std.Io) !void {
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_two_attr.xml", "<x a='1' b='2'/>", 65_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_attrs4.xml", "<x a='1' b='2' c='3' d='4'/>", 38_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_attrs8.xml", "<x a='1' b='2' c='3' d='4' e='5' f='6' g='7' h='8'/>", 21_000);
-    try writeAttrs16(io, FIXTURES_DIR ++ "/synthetic_attrs16.xml");
-    try writeAttrs64(io, FIXTURES_DIR ++ "/synthetic_attrs64.xml");
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs16.xml", 16, 9_000);
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs32.xml", 32, 4_800);
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs48.xml", 48, 3_300);
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs64.xml", 64, 2_500);
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs96.xml", 96, 1_650);
+    try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs128.xml", 128, 1_250);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_long_attr_values.xml", "<item key='abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' value='The quick brown fox jumps over the lazy dog &amp; keeps running.'/>", 8_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_single_quotes.xml", "<item a='1' b='two' c='three four'/>", 28_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_unicode_text.xml", "<item>Καλημέρα κόσμε 日本語 中文 😀 café naïve résumé</item>", 18_000);
@@ -308,21 +318,16 @@ fn writeRepeatedSynthetic(io: std.Io, path: []const u8, row: []const u8, count: 
     try out.flush();
 }
 
-fn writeAttrs16(io: std.Io, path: []const u8) !void {
-    const row = "<x a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a10='10' a11='11' a12='12' a13='13' a14='14' a15='15'/>";
-    try writeRepeatedSynthetic(io, path, row, 9_000);
-}
-
-fn writeAttrs64(io: std.Io, path: []const u8) !void {
+fn writeAttrsN(io: std.Io, path: []const u8, attr_count: usize, row_count: usize) !void {
     var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
     defer file.close(io);
     var out_buf: [4096]u8 = undefined;
     var out_writer = file.writer(io, &out_buf);
     const out = &out_writer.interface;
     try out.writeAll("<root>");
-    for (0..2_500) |_| {
+    for (0..row_count) |_| {
         try out.writeAll("<x");
-        for (0..64) |i| try out.print(" a{d}='{d}'", .{ i, i });
+        for (0..attr_count) |i| try out.print(" a{d}='{d}'", .{ i, i });
         try out.writeAll("/>");
     }
     try out.writeAll("</root>");
