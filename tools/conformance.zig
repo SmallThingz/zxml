@@ -901,6 +901,17 @@ test "isIsoDate validates month lengths and leap years" {
     try std.testing.expect(!isIsoDate("2024-00-01"));
 }
 
+test "regexSubsetMatch honors start and end anchors" {
+    try std.testing.expect(regexSubsetMatch("xxABCyy", "ABC"));
+    try std.testing.expect(regexSubsetMatch("ABCyy", "^ABC"));
+    try std.testing.expect(!regexSubsetMatch("xxABC", "^ABC"));
+    try std.testing.expect(regexSubsetMatch("xxABC", "ABC$"));
+    try std.testing.expect(!regexSubsetMatch("ABCyy", "ABC$"));
+    try std.testing.expect(regexSubsetMatch("ABC", "^ABC$"));
+    try std.testing.expect(!regexSubsetMatch("xABC", "^ABC$"));
+    try std.testing.expect(regexSubsetMatch("price$", "\\$"));
+}
+
 fn regexSubsetMatch(text: []const u8, pattern: []const u8) bool {
     // This intentionally supports only the small regex subset used by the
     // conformance fixtures: anchors, character classes, literals, escapes,
@@ -908,27 +919,42 @@ fn regexSubsetMatch(text: []const u8, pattern: []const u8) bool {
     var p_start: usize = 0;
     var p_end: usize = pattern.len;
 
-    if (p_start < p_end and pattern[p_start] == '^') p_start += 1;
-    if (p_end > p_start and pattern[p_end - 1] == '$') p_end -= 1;
+    const anchored_start = p_start < p_end and pattern[p_start] == '^';
+    if (anchored_start) p_start += 1;
+    const anchored_end = p_end > p_start and pattern[p_end - 1] == '$' and !isEscaped(pattern, p_end - 1);
+    if (anchored_end) p_end -= 1;
 
-    var t: usize = 0;
-    var p = p_start;
+    if (anchored_start) {
+        const match_end = regexSubsetMatchAt(text, pattern[p_start..p_end], 0) orelse return false;
+        return !anchored_end or match_end == text.len;
+    }
 
-    while (p < p_end) {
+    var start: usize = 0;
+    while (start <= text.len) : (start += 1) {
+        const match_end = regexSubsetMatchAt(text, pattern[p_start..p_end], start) orelse continue;
+        if (!anchored_end or match_end == text.len) return true;
+    }
+    return false;
+}
+
+fn regexSubsetMatchAt(text: []const u8, pattern: []const u8, start: usize) ?usize {
+    var t = start;
+    var p: usize = 0;
+
+    while (p < pattern.len) {
         var use_class = false;
         var class_spec: []const u8 = "";
         var literal: u8 = 0;
 
         if (pattern[p] == '[') {
-            const close = std.mem.indexOfScalarPos(u8, pattern, p + 1, ']') orelse return false;
-            if (close >= p_end) return false;
+            const close = std.mem.indexOfScalarPos(u8, pattern, p + 1, ']') orelse return null;
             class_spec = pattern[p + 1 .. close];
-            if (class_spec.len == 0) return false;
+            if (class_spec.len == 0) return null;
             use_class = true;
             p = close + 1;
         } else if (pattern[p] == '\\') {
             p += 1;
-            if (p >= p_end) return false;
+            if (p >= pattern.len) return null;
             literal = pattern[p];
             p += 1;
         } else {
@@ -937,30 +963,37 @@ fn regexSubsetMatch(text: []const u8, pattern: []const u8) bool {
         }
 
         var repeat: usize = 1;
-        if (p < p_end and pattern[p] == '{') {
+        if (p < pattern.len and pattern[p] == '{') {
             p += 1;
             const num_start = p;
-            while (p < p_end and std.ascii.isDigit(pattern[p])) : (p += 1) {}
-            if (num_start == p) return false;
-            if (p >= p_end or pattern[p] != '}') return false;
-            repeat = std.fmt.parseUnsigned(usize, pattern[num_start..p], 10) catch return false;
+            while (p < pattern.len and std.ascii.isDigit(pattern[p])) : (p += 1) {}
+            if (num_start == p) return null;
+            if (p >= pattern.len or pattern[p] != '}') return null;
+            repeat = std.fmt.parseUnsigned(usize, pattern[num_start..p], 10) catch return null;
             p += 1;
         }
 
         var r: usize = 0;
         while (r < repeat) : (r += 1) {
-            if (t >= text.len) return false;
+            if (t >= text.len) return null;
             const ch = text[t];
             if (use_class) {
-                if (!charClassMatch(class_spec, ch)) return false;
-            } else {
-                if (ch != literal) return false;
+                if (!charClassMatch(class_spec, ch)) return null;
+            } else if (ch != literal) {
+                return null;
             }
             t += 1;
         }
     }
 
-    return t == text.len;
+    return t;
+}
+
+fn isEscaped(input: []const u8, pos: usize) bool {
+    var backslashes: usize = 0;
+    var i = pos;
+    while (i > 0 and input[i - 1] == '\\') : (i -= 1) backslashes += 1;
+    return backslashes % 2 == 1;
 }
 
 fn charClassMatch(spec: []const u8, ch: u8) bool {
