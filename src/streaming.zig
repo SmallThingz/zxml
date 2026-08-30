@@ -899,6 +899,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         self.doctype_value_start = value_start;
                         self.doctype_value_end = end;
                         self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                        try document.validateDoctypeEntityConstraintsAlloc(
+                            self.allocator,
+                            input[value_start..end],
+                            self.require_declared_entities,
+                        );
                         self.doctype_seen = true;
                     }
                     if (include_misc_nodes) {
@@ -1972,6 +1977,52 @@ test "streaming strict validates used entity replacement graphs" {
         "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b 'ok'>]><r>&a;</r>",
         "<!DOCTYPE r [<!ENTITY a '&lt;'>]><r x='&a;'/>",
         "<!DOCTYPE r [<!ENTITY a '&#38;lt;'>]><r x='&a;'/>",
+    };
+    inline for (valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+}
+
+test "streaming strict validates DTD attribute default entity constraints" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const invalid_entity = [_][]const u8{
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&e;'><!ENTITY e 'x'>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '&x;'><!ATTLIST r a CDATA '&e;'><!ENTITY x 'v'>]><r/>",
+        "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:missing' [<!ATTLIST r a CDATA '&e;'>]><r/>",
+    };
+    inline for (invalid_entity) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    const invalid_attribute = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY e SYSTEM 'x'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '<'><!ATTLIST r a CDATA '&e;'>]><r/>",
+    };
+    inline for (invalid_attribute) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidAttributeValue, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY e 'x'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r SYSTEM 'urn:missing' [<!ATTLIST r a CDATA '&external;'>]><r/>",
     };
     inline for (valid) |source| {
         var parser = ParserType.init(std.testing.allocator);

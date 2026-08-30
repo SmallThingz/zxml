@@ -518,6 +518,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.doctype_value_start = value_start;
                     self.doctype_value_end = value_end;
                     self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                    try document.validateDoctypeEntityConstraintsAlloc(
+                        self.doc.allocator,
+                        self.input[value_start..value_end],
+                        self.require_declared_entities,
+                    );
                 }
                 self.i = j + 1;
 

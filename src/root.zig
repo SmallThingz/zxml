@@ -905,6 +905,43 @@ test "strict validates used entity replacement graphs" {
     }
 }
 
+test "strict validates DTD attribute default entity constraints in declaration order" {
+    const undeclared_or_forward = [_][]const u8{
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&e;'><!ENTITY e 'x'>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '&x;'><!ATTLIST r a CDATA '&e;'><!ENTITY x 'v'>]><r/>",
+        "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:missing' [<!ATTLIST r a CDATA '&e;'>]><r/>",
+    };
+    inline for (undeclared_or_forward) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const invalid_attribute = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY e SYSTEM 'x'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '<'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '&x;'><!ENTITY x SYSTEM 'x'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '&#60;'><!ATTLIST r a CDATA #FIXED '&e;'>]><r/>",
+    };
+    inline for (invalid_attribute) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY e 'x'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x 'v'><!ENTITY e '&x;'><!ATTLIST r a CDATA '&e;'>]><r/>",
+        "<!DOCTYPE r SYSTEM 'urn:missing' [<!ATTLIST r a CDATA '&external;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY e '&lt;'><!ATTLIST r a CDATA #FIXED '&e;'>]><r/>",
+    };
+    inline for (valid) |source| {
+        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        defer parsed.deinit();
+    }
+}
+
 test "strict entity graph validation is iterative for deep chains" {
     var source = std.ArrayList(u8).empty;
     defer source.deinit(std.testing.allocator);
