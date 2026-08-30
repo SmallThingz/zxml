@@ -121,6 +121,29 @@ pub fn validateXmlAttributeReferencesAlloc(
 
 const XmlReferenceContext = enum { content, attribute };
 const GeneralEntityKind = enum { internal, external_parsed, unparsed };
+const ParameterEntityKind = enum { internal, external };
+
+const ParameterEntityDecl = struct {
+    kind: ParameterEntityKind,
+    replacement: ?[]u8 = null,
+};
+
+const ParameterEntityCatalog = struct {
+    allocator: std.mem.Allocator,
+    map: std.StringHashMap(ParameterEntityDecl),
+
+    fn init(allocator: std.mem.Allocator) ParameterEntityCatalog {
+        return .{ .allocator = allocator, .map = std.StringHashMap(ParameterEntityDecl).init(allocator) };
+    }
+
+    fn deinit(self: *ParameterEntityCatalog) void {
+        var it = self.map.iterator();
+        while (it.next()) |entry| {
+            if (entry.value_ptr.replacement) |replacement| self.allocator.free(replacement);
+        }
+        self.map.deinit();
+    }
+};
 
 const GeneralEntityDecl = struct {
     kind: GeneralEntityKind,
@@ -908,48 +931,116 @@ const DtdDeclarationKind = enum { element, attlist, entity, notation };
 /// left out, but the complete syntax and internal-subset PE restriction are
 /// enforced.
 fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) ParseError!bool {
+    const SequenceFrame = struct {
+        input: []const u8,
+        offset: usize = 0,
+        entity_name: ?[]const u8 = null,
+    };
+
+    var parameter_entities = ParameterEntityCatalog.init(allocator);
+    defer parameter_entities.deinit();
+    var states = std.StringHashMap(EntityValidationState).init(allocator);
+    defer states.deinit();
+    var frames = std.ArrayList(SequenceFrame).empty;
+    defer frames.deinit(allocator);
+    try frames.append(allocator, .{ .input = subset });
+
     var has_parameter_entity_references = false;
-    var i: usize = 0;
-    while (i < subset.len) {
-        if (tables.isWhitespace(subset[i])) {
-            _ = skipXmlWhitespace(subset, &i);
-            continue;
-        }
-        if (subset[i] == '%') {
-            has_parameter_entity_references = true;
-            try consumePeReference(subset, &i);
-            continue;
-        }
-        if (std.mem.startsWith(u8, subset[i..], "<!--")) {
-            const comment_end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.InvalidDoctype;
-            const body = subset[i + 4 .. comment_end];
-            if (std.mem.indexOf(u8, body, "--") != null or (body.len != 0 and body[body.len - 1] == '-')) {
-                return error.InvalidDoctype;
-            }
-            i = comment_end + 3;
-            continue;
-        }
-        if (std.mem.startsWith(u8, subset[i..], "<?")) {
-            i = try validateDtdProcessingInstruction(subset, i);
+    while (frames.items.len != 0) {
+        const frame_index = frames.items.len - 1;
+        var frame = &frames.items[frame_index];
+        if (frame.offset == frame.input.len) {
+            if (frame.entity_name) |name| states.getPtr(name).?.* = .done;
+            frames.items.len -= 1;
             continue;
         }
 
-        const kind: DtdDeclarationKind, const keyword: []const u8 = if (std.mem.startsWith(u8, subset[i..], "<!ELEMENT"))
+        const input = frame.input;
+        var i = frame.offset;
+        if (tables.isWhitespace(input[i])) {
+            _ = skipXmlWhitespace(input, &i);
+            frame.offset = i;
+            continue;
+        }
+        if (input[i] == '%') {
+            has_parameter_entity_references = true;
+            const name_start = i + 1;
+            try consumePeReference(input, &i);
+            const name = input[name_start .. i - 1];
+            frame.offset = i;
+
+            const entry = parameter_entities.map.getEntry(name) orelse continue;
+            const canonical_name = entry.key_ptr.*;
+            const decl = entry.value_ptr.*;
+            if (decl.kind == .external) continue; // Non-validating parsers need not read external PEs.
+            if (states.get(canonical_name)) |state| switch (state) {
+                .visiting => return error.RecursiveEntity,
+                .done => continue,
+            };
+            try states.put(canonical_name, .visiting);
+            try frames.append(allocator, .{ .input = decl.replacement.?, .entity_name = canonical_name });
+            continue;
+        }
+        if (std.mem.startsWith(u8, input[i..], "<!--")) {
+            const comment_end = std.mem.indexOfPos(u8, input, i + 4, "-->") orelse return error.InvalidDoctype;
+            const body = input[i + 4 .. comment_end];
+            if (std.mem.indexOf(u8, body, "--") != null or (body.len != 0 and body[body.len - 1] == '-')) {
+                return error.InvalidDoctype;
+            }
+            frame.offset = comment_end + 3;
+            continue;
+        }
+        if (std.mem.startsWith(u8, input[i..], "<?")) {
+            frame.offset = try validateDtdProcessingInstruction(input, i);
+            continue;
+        }
+
+        const kind: DtdDeclarationKind, const keyword: []const u8 = if (std.mem.startsWith(u8, input[i..], "<!ELEMENT"))
             .{ .element, "<!ELEMENT" }
-        else if (std.mem.startsWith(u8, subset[i..], "<!ATTLIST"))
+        else if (std.mem.startsWith(u8, input[i..], "<!ATTLIST"))
             .{ .attlist, "<!ATTLIST" }
-        else if (std.mem.startsWith(u8, subset[i..], "<!ENTITY"))
+        else if (std.mem.startsWith(u8, input[i..], "<!ENTITY"))
             .{ .entity, "<!ENTITY" }
-        else if (std.mem.startsWith(u8, subset[i..], "<!NOTATION"))
+        else if (std.mem.startsWith(u8, input[i..], "<!NOTATION"))
             .{ .notation, "<!NOTATION" }
         else
             return error.InvalidDoctype;
 
-        const decl_end = findMarkupDeclEnd(subset, i + keyword.len) orelse return error.InvalidDoctype;
-        try validateDtdDeclarationBody(allocator, subset[i + keyword.len .. decl_end], kind);
-        i = decl_end + 1;
+        const decl_end = findMarkupDeclEnd(input, i + keyword.len) orelse return error.InvalidDoctype;
+        const body = input[i + keyword.len .. decl_end];
+        try validateDtdDeclarationBody(allocator, body, kind);
+        if (kind == .entity) try addParameterEntityDeclarationBody(&parameter_entities, body);
+        frame = &frames.items[frame_index];
+        frame.offset = decl_end + 1;
     }
     return has_parameter_entity_references;
+}
+
+fn addParameterEntityDeclarationBody(catalog: *ParameterEntityCatalog, body: []const u8) ParseError!void {
+    var i: usize = 0;
+    if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+    if (i >= body.len or body[i] != '%') return;
+    i += 1;
+    if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+
+    const name_start = i;
+    try consumeDtdName(body, &i);
+    const name = body[name_start..i];
+    if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+    if (catalog.map.contains(name)) return;
+
+    if (i < body.len and (body[i] == '\'' or body[i] == '"')) {
+        const quote = body[i];
+        const value_start = i + 1;
+        const value_end = std.mem.indexOfScalarPos(u8, body, value_start, quote) orelse return error.InvalidDoctype;
+        const replacement = try normalizeEntityValueAlloc(catalog.allocator, body[value_start..value_end]);
+        errdefer catalog.allocator.free(replacement);
+        try catalog.map.put(name, .{ .kind = .internal, .replacement = replacement });
+        return;
+    }
+
+    try consumeExternalId(body, &i);
+    try catalog.map.put(name, .{ .kind = .external });
 }
 
 fn validateDtdProcessingInstruction(input: []const u8, start: usize) ParseError!usize {

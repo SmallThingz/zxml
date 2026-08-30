@@ -1986,6 +1986,41 @@ test "streaming strict validates used entity replacement graphs" {
     }
 }
 
+test "streaming strict validates internal parameter entity replacement text" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const invalid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY % p 'x'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p '<!ELEMENT>'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % q 'x'><!ENTITY % p '&#37;q;'>%p;]><r/>",
+    };
+    inline for (invalid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidDoctype, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY % p '<!ELEMENT r EMPTY>'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % q '<!ELEMENT r EMPTY>'><!ENTITY % p '&#37;q;'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p SYSTEM 'urn:external'>%p;]><r/>",
+    };
+    inline for (valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+}
+
 test "streaming strict validates DTD attribute default entity constraints" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     const ParserType = Types(opts).Parser;

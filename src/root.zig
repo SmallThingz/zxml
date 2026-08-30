@@ -905,6 +905,57 @@ test "strict validates used entity replacement graphs" {
     }
 }
 
+test "strict validates internal parameter entity replacement text" {
+    const invalid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY % p 'x'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p '<!ELEMENT>'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % q 'x'><!ENTITY % p '&#37;q;'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p '<![INCLUDE[<!ELEMENT r EMPTY>]]>'>%p;]><r/>",
+    };
+    inline for (invalid) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidDoctype, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.RecursiveEntity,
+            doc.parse("<!DOCTYPE r [<!ENTITY % p '&#37;p;'>%p;]><r/>", .{ .mode = .strict }),
+        );
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY % p '   '>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p '<!ELEMENT r EMPTY>'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p '&#60;!ELEMENT r EMPTY>'>%p;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % q '<!ELEMENT r EMPTY>'><!ENTITY % p '&#37;q;'>%p;]><r/>",
+        "<!DOCTYPE r [%unknown;]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p SYSTEM 'urn:external'>%p;]><r/>",
+    };
+    inline for (valid) |source| {
+        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        defer parsed.deinit();
+    }
+}
+
+test "strict parameter entity inclusion is iterative for deep chains" {
+    var source = std.ArrayList(u8).empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "<!DOCTYPE r [");
+    const depth: usize = 512;
+    for (0..depth - 1) |i| {
+        try source.print(std.testing.allocator, "<!ENTITY % p{d} '&#37;p{d};'>", .{ i, i + 1 });
+    }
+    try source.print(std.testing.allocator, "<!ENTITY % p{d} '&#60;!ELEMENT r EMPTY>'>%p0;]><r/>", .{depth - 1});
+
+    var doc = initDoc(.{});
+    defer doc.deinit();
+    try doc.parse(source.items, .{ .mode = .strict });
+}
+
 test "strict validates DTD attribute default entity constraints in declaration order" {
     const undeclared_or_forward = [_][]const u8{
         "<!DOCTYPE r [<!ATTLIST r a CDATA '&e;'><!ENTITY e 'x'>]><r/>",
