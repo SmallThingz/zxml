@@ -1183,3 +1183,23 @@ test "strict validates XML declaration grammar" {
     try doc.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"no\" ?><r/>", opts);
     try doc.parse("<?xml version='1.23'?><r/>", opts);
 }
+
+test "strict validates DOCTYPE grammar" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    const invalid = [_][]const u8{
+        "<!DOCTYPE><r/>",
+        "<!DOCTYPEr><r/>",
+        "<!DOCTYPE 1r><r/>",
+        "<!DOCTYPE r garbage><r/>",
+        "<!DOCTYPE r SYSTEM'urn:test'><r/>",
+        "<!DOCTYPE r PUBLIC 'id'><r/>",
+        "<!DOCTYPE r PUBLIC '^' 'sys'><r/>",
+    };
+    for (invalid) |source| try std.testing.expectError(error.InvalidDoctype, doc.parse(source, opts));
+
+    try doc.parse("<!DOCTYPE r SYSTEM 'urn:test'><r/>", opts);
+    try doc.parse("<!DOCTYPE r PUBLIC '-//Example//DTD Test 1.0//EN' 'urn:test' [<!ELEMENT r EMPTY>]><r/>", opts);
+}

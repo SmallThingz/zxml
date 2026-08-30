@@ -506,6 +506,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 const value_start = self.i + 9;
                 const value_end = j;
+                if (comptime strict_mode) _ = try document.validateDoctype(self.input[value_start..value_end]);
                 self.i = j + 1;
 
                 if (comptime strict_mode) self.doctype_seen = true;

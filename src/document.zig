@@ -221,6 +221,95 @@ pub fn validateXmlDeclaration(body: []const u8) ParseError!void {
     if (i != body.len) return error.InvalidDeclaration;
 }
 
+pub const DoctypeInfo = struct {
+    name_start: usize,
+    name_end: usize,
+};
+
+/// Validates the outer XML 1.0 doctypedecl grammar. The internal subset is
+/// delimited and structurally balanced here; individual markup declarations
+/// inside it are handled separately by the DTD/entity machinery.
+pub fn validateDoctype(value: []const u8) ParseError!DoctypeInfo {
+    var i: usize = 0;
+    if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
+    if (i >= value.len or !tables.isNameStart(value[i])) return error.InvalidDoctype;
+
+    const name_start = i;
+    i += 1;
+    while (i < value.len and tables.isNameChar(value[i])) : (i += 1) {}
+    const name_end = i;
+    if (!isValidXmlName(value[name_start..name_end])) return error.InvalidDoctype;
+
+    const had_space_after_name = skipXmlWhitespace(value, &i);
+    if (i < value.len and std.mem.startsWith(u8, value[i..], "SYSTEM")) {
+        if (!had_space_after_name) return error.InvalidDoctype;
+        i += "SYSTEM".len;
+        if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
+        try consumeSystemLiteral(value, &i);
+        _ = skipXmlWhitespace(value, &i);
+    } else if (i < value.len and std.mem.startsWith(u8, value[i..], "PUBLIC")) {
+        if (!had_space_after_name) return error.InvalidDoctype;
+        i += "PUBLIC".len;
+        if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
+        try consumePubidLiteral(value, &i);
+        if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
+        try consumeSystemLiteral(value, &i);
+        _ = skipXmlWhitespace(value, &i);
+    }
+
+    if (i < value.len and value[i] == '[') {
+        const subset_range = findInternalSubset(value[i..]) catch return error.InvalidDoctype;
+        const subset = subset_range orelse return error.InvalidDoctype;
+        if (subset.start != 1) return error.InvalidDoctype;
+        i += subset.end + 1;
+        _ = skipXmlWhitespace(value, &i);
+    }
+    if (i != value.len) return error.InvalidDoctype;
+
+    return .{ .name_start = name_start, .name_end = name_end };
+}
+
+inline fn skipXmlWhitespace(input: []const u8, i: *usize) bool {
+    const start = i.*;
+    while (i.* < input.len and tables.isWhitespace(input[i.*])) : (i.* += 1) {}
+    return i.* != start;
+}
+
+inline fn skipRequiredXmlWhitespace(input: []const u8, i: *usize) bool {
+    return skipXmlWhitespace(input, i);
+}
+
+fn consumeSystemLiteral(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len) return error.InvalidDoctype;
+    const quote = input[i.*];
+    if (quote != '\'' and quote != '"') return error.InvalidDoctype;
+    i.* += 1;
+    while (i.* < input.len and input[i.*] != quote) : (i.* += 1) {}
+    if (i.* >= input.len) return error.InvalidDoctype;
+    i.* += 1;
+}
+
+fn consumePubidLiteral(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len) return error.InvalidDoctype;
+    const quote = input[i.*];
+    if (quote != '\'' and quote != '"') return error.InvalidDoctype;
+    i.* += 1;
+    while (i.* < input.len and input[i.*] != quote) : (i.* += 1) {
+        if (!isPubidChar(input[i.*])) return error.InvalidDoctype;
+    }
+    if (i.* >= input.len) return error.InvalidDoctype;
+    i.* += 1;
+}
+
+inline fn isPubidChar(c: u8) bool {
+    return c == ' ' or c == '\r' or c == '\n' or
+        (c >= 'a' and c <= 'z') or (c >= 'A' and c <= 'Z') or (c >= '0' and c <= '9') or
+        switch (c) {
+            '-', '\'', '(', ')', '+', ',', '.', '/', ':', '=', '?', ';', '!', '*', '#', '@', '$', '_', '%' => true,
+            else => false,
+        };
+}
+
 const DeclarationValueKind = enum { version, encoding, standalone };
 
 fn expectDeclarationPseudoAttribute(body: []const u8, i: *usize, comptime name: []const u8, comptime kind: DeclarationValueKind) ParseError!void {
@@ -1302,4 +1391,35 @@ test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict });
+}
+
+test "validateDoctype enforces the outer XML grammar" {
+    const valid = [_][]const u8{
+        " r",
+        " r ",
+        " r[]",
+        " r [<!ELEMENT r EMPTY>] ",
+        " r SYSTEM 'urn:test'",
+        " r SYSTEM \"\"[]",
+        " r PUBLIC '-//W3C//DTD XHTML 1.0//EN' 'about:legacy-compat'",
+    };
+    for (valid) |value| {
+        const info = try validateDoctype(value);
+        try std.testing.expectEqualStrings("r", value[info.name_start..info.name_end]);
+    }
+
+    const invalid = [_][]const u8{
+        "",
+        "r",
+        " 1r",
+        " \xC3\x97",
+        " r garbage",
+        " r SYSTEM'urn:test'",
+        " r SYSTEM urn:test",
+        " r PUBLIC 'id'",
+        " r PUBLIC '^' 'sys'",
+        " r PUBLIC 'id''sys'",
+        " r [<!ELEMENT r EMPTY>] trailing",
+    };
+    for (invalid) |value| try std.testing.expectError(error.InvalidDoctype, validateDoctype(value));
 }

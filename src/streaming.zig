@@ -837,6 +837,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
+                    if (comptime strict_mode) _ = try document.validateDoctype(input[start + 9 .. end]);
                     if (comptime strict_mode) self.doctype_seen = true;
                     if (include_misc_nodes) {
                         const node: Node = .{
@@ -2602,4 +2603,32 @@ test "streaming strict validates XML declaration grammar" {
     };
     for (invalid) |source| try std.testing.expectError(error.InvalidDeclaration, parser.parse(source, &ctx, Ctx.onNode));
     try parser.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"yes\" ?><r/>", &ctx, Ctx.onNode);
+}
+
+test "streaming strict validates DOCTYPE grammar" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    const invalid = [_][]const u8{
+        "<!DOCTYPE><r/>",
+        "<!DOCTYPEr><r/>",
+        "<!DOCTYPE 1r><r/>",
+        "<!DOCTYPE r garbage><r/>",
+        "<!DOCTYPE r SYSTEM'urn:test'><r/>",
+        "<!DOCTYPE r PUBLIC 'id'><r/>",
+        "<!DOCTYPE r PUBLIC '^' 'sys'><r/>",
+    };
+    for (invalid) |source| try std.testing.expectError(error.InvalidDoctype, parser.parse(source, &ctx, Ctx.onNode));
+
+    try parser.parse("<!DOCTYPE r SYSTEM 'urn:test'><r/>", &ctx, Ctx.onNode);
+    try parser.parse("<!DOCTYPE r PUBLIC '-//Example//DTD Test 1.0//EN' 'urn:test' [<!ELEMENT r EMPTY>]><r/>", &ctx, Ctx.onNode);
 }
