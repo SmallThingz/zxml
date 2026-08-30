@@ -1909,16 +1909,17 @@ pub const Document = struct {
 
         const start = node.index;
         const end = self.nodes.items[start].subtree_end;
-        var open_stack = std.ArrayList(IndexInt).empty;
-        defer open_stack.deinit(self.allocator);
+        var open_idx: IndexInt = InvalidIndex;
 
         var idx = start;
         while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.items.len) : (idx += 1) {
-            while (open_stack.items.len != 0) {
-                const top = open_stack.items[open_stack.items.len - 1];
-                if (self.nodes.items[top].subtree_end >= idx) break;
-                open_stack.items.len -= 1;
-                try self.writeCloseElement(writer, top);
+            while (open_idx != InvalidIndex and
+                self.nodes.items[open_idx].kind == .element and
+                self.nodes.items[open_idx].subtree_end < idx)
+            {
+                const closing = open_idx;
+                open_idx = self.nodes.items[closing].parent;
+                try self.writeCloseElement(writer, closing);
             }
 
             const raw = self.nodes.items[idx];
@@ -1930,7 +1931,7 @@ pub const Document = struct {
                         try writer.writeAll("/>");
                     } else {
                         try writer.writeAll(">");
-                        try open_stack.append(self.allocator, idx);
+                        open_idx = idx;
                     }
                 },
                 .text => try writer.writeAll(raw.valueSpan().slice(self.source)),
@@ -1965,10 +1966,13 @@ pub const Document = struct {
             }
         }
 
-        while (open_stack.items.len != 0) {
-            const top = open_stack.items[open_stack.items.len - 1];
-            open_stack.items.len -= 1;
-            try self.writeCloseElement(writer, top);
+        while (open_idx != InvalidIndex and
+            open_idx >= start and
+            self.nodes.items[open_idx].kind == .element)
+        {
+            const closing = open_idx;
+            open_idx = self.nodes.items[closing].parent;
+            try self.writeCloseElement(writer, closing);
         }
     }
 
@@ -2377,6 +2381,41 @@ test "Document.write serializes parsed tree without reparsing" {
     try doc.write(&out.writer);
 
     try std.testing.expectEqualStrings("<?xml version='1.0'?><!DOCTYPE r [<!ENTITY x 'y'>]><r a=\"1\"><c>t&amp;x</c><!--ok--><![CDATA[raw<]]></r>", out.written());
+}
+
+test "Document.write does not allocate a traversal stack" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<r><a><b>text</b><c/></a><d/></r>", .{ .mode = .strict });
+
+    const Sink = struct {
+        buf: [256]u8 = undefined,
+        len: usize = 0,
+
+        pub fn writeAll(self: *@This(), bytes: []const u8) !void {
+            if (bytes.len > self.buf.len - self.len) return error.NoSpaceLeft;
+            @memcpy(self.buf[self.len..][0..bytes.len], bytes);
+            self.len += bytes.len;
+        }
+    };
+    var sink: Sink = .{};
+
+    const allocator = doc.allocator;
+    doc.allocator = std.testing.failing_allocator;
+    defer doc.allocator = allocator;
+    try doc.write(&sink);
+    try std.testing.expectEqualStrings("<r><a><b>text</b><c/></a><d/></r>", sink.buf[0..sink.len]);
+}
+
+test "Document.write handles multiple turbo roots without an auxiliary stack" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse("<a><x/></a><b><y>z</y></b>", .{ .mode = .turbo });
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try doc.write(&out.writer);
+    try std.testing.expectEqualStrings("<a><x/></a><b><y>z</y></b>", out.written());
 }
 
 test "serialization escapes double quotes from single-quoted attributes" {
