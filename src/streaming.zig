@@ -247,10 +247,11 @@ pub fn Types(comptime options: ParseOptions) type {
                             }
                         }
                         if (comptime strict_mode) {
-                            const run = scanner.scanTextRun(input, i);
-                            try self.validateCharacterDataRange(input, i, run.lt_index, false);
-                            if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
-                            if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                            const run = scanner.scanTextSpecials(input, i);
+                            const has_non_whitespace = !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
+                            try self.validateCharacterDataSpecials(input, i, run.lt_index, run.has_close_bracket, run.has_ampersand, false);
+                            if (self.stackLen() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
+                            if (run.lt_index > i and (!drop_whitespace_text_nodes or has_non_whitespace)) {
                                 const node: Node = .{
                                     .source = input,
                                     .kind = .text,
@@ -488,10 +489,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (input[next] == '<') return next;
                     }
                     if (comptime strict_mode) {
-                        const run = scanner.scanTextRun(input, i);
-                        try self.validateCharacterDataRange(input, i, run.lt_index, incremental);
-                        if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
-                        if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
+                        const run = scanner.scanTextSpecials(input, i);
+                        const has_non_whitespace = !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
+                        try self.validateCharacterDataSpecials(input, i, run.lt_index, run.has_close_bracket, run.has_ampersand, incremental);
+                        if (self.stackLen() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
+                        if (run.lt_index > i and (!drop_whitespace_text_nodes or has_non_whitespace)) {
                             const node: Node = .{
                                 .source = input,
                                 .kind = .text,
@@ -539,14 +541,26 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
             }
 
+            inline fn validateCharacterDataSpecials(
+                self: *const Self,
+                input: []const u8,
+                start: usize,
+                end: usize,
+                has_close_bracket: bool,
+                has_ampersand: bool,
+                comptime incremental: bool,
+            ) ParseError!void {
+                std.debug.assert(start <= end and end <= input.len);
+                if (containsForbiddenCdataClose(input, start, end, has_close_bracket)) return error.InvalidCharacterData;
+                if (has_ampersand) {
+                    try document.validateXmlReferencesAlloc(self.allocator, input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
+                }
+            }
+
             inline fn validateCharacterDataRange(self: *const Self, input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
                 std.debug.assert(start <= end and end <= input.len);
-                const value = input[start..end];
-                const specials = scanner.bytePairPresence(value, ']', '&');
-                if (containsForbiddenCdataClose(input, start, end, specials.first)) return error.InvalidCharacterData;
-                if (specials.second) {
-                    try document.validateXmlReferencesAlloc(self.allocator, value, incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
-                }
+                const specials = scanner.bytePairPresence(input[start..end], ']', '&');
+                try self.validateCharacterDataSpecials(input, start, end, specials.first, specials.second, incremental);
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
@@ -578,8 +592,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         .key = 0,
                         .needs_unicode_validation = scan.needs_unicode_validation,
                     };
-                } else
-                    scanner.NameScan{ .end = scanner.findNameEnd(input, i), .key = 0 };
+                } else scanner.NameScan{ .end = scanner.findNameEnd(input, i), .key = 0 };
                 const name_end = name_scan.end;
                 if (comptime strict_mode) {
                     if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
@@ -996,17 +1009,21 @@ pub fn Types(comptime options: ParseOptions) type {
             fn walkSkipped(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!SkipProgress {
                 var i = start;
                 while (i < input.len) {
-                    const lt = scanner.findByte(input, i, '<') orelse {
-                        if (comptime strict_mode) {
-                            self.validateCharacterDataRange(input, i, input.len, incremental) catch |err| switch (err) {
-                                error.UnexpectedEndOfData => if (incremental) return .{ .next = i, .needs_more = true } else return err,
-                                else => return err,
-                            };
-                        }
+                    var text_scan: scanner.TextSpecialRun = undefined;
+                    const lt = if (comptime strict_mode) blk: {
+                        text_scan = scanner.scanTextSpecials(input, i);
+                        break :blk text_scan.lt_index;
+                    } else scanner.findByte(input, i, '<') orelse input.len;
+                    if (comptime strict_mode) {
+                        self.validateCharacterDataSpecials(input, i, lt, text_scan.has_close_bracket, text_scan.has_ampersand, incremental) catch |err| switch (err) {
+                            error.UnexpectedEndOfData => if (incremental) return .{ .next = i, .needs_more = true } else return err,
+                            else => return err,
+                        };
+                    }
+                    if (lt == input.len) {
                         if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
-                    };
-                    if (comptime strict_mode) try self.validateCharacterDataRange(input, i, lt, false);
+                    }
                     if (lt + 1 >= input.len) {
                         if (incremental) return .{ .next = lt, .needs_more = true };
                         if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
@@ -1111,7 +1128,12 @@ pub fn Types(comptime options: ParseOptions) type {
             ) ParseError!?usize {
                 if (content_start >= input.len or input[content_start] == '<') return null;
 
-                const lt = scanner.findByte(input, content_start, '<') orelse return null;
+                var text_scan: scanner.TextSpecialRun = undefined;
+                const lt = if (comptime strict_mode) blk: {
+                    text_scan = scanner.scanTextSpecials(input, content_start);
+                    break :blk text_scan.lt_index;
+                } else scanner.findByte(input, content_start, '<') orelse return null;
+                if (lt >= input.len) return null;
                 if (lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
                 const open_len: usize = name.len();
@@ -1141,7 +1163,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const raw = input[content_start..lt];
-                if (comptime strict_mode) try self.validateCharacterDataRange(input, content_start, lt, false);
+                if (comptime strict_mode) {
+                    try self.validateCharacterDataSpecials(input, content_start, lt, text_scan.has_close_bracket, text_scan.has_ampersand, false);
+                }
                 if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
 
                 const node: Node = .{
@@ -1369,11 +1393,15 @@ fn skipSubtreeStateless(
     var depth: usize = 1;
     var i = start;
     while (i < input.len) {
-        const lt = scanner.findByte(input, i, '<') orelse {
-            if (comptime strict) try validateCharacterDataRange(input, i, input.len, false);
-            return error.UnexpectedEndOfData;
-        };
-        if (comptime strict) try validateCharacterDataRange(input, i, lt, false);
+        var text_scan: scanner.TextSpecialRun = undefined;
+        const lt = if (comptime strict) blk: {
+            text_scan = scanner.scanTextSpecials(input, i);
+            break :blk text_scan.lt_index;
+        } else scanner.findByte(input, i, '<') orelse input.len;
+        if (comptime strict) {
+            try validateCharacterDataSpecials(input, i, lt, text_scan.has_close_bracket, text_scan.has_ampersand, false);
+        }
+        if (lt == input.len) return error.UnexpectedEndOfData;
         i = lt;
         if (i + 1 >= input.len) return error.UnexpectedEndOfData;
         switch (input[i + 1]) {
@@ -1778,12 +1806,23 @@ inline fn validateComment(value: []const u8) ParseError!void {
     if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
 }
 
+inline fn validateCharacterDataSpecials(
+    input: []const u8,
+    start: usize,
+    end: usize,
+    has_close_bracket: bool,
+    has_ampersand: bool,
+    comptime incremental: bool,
+) ParseError!void {
+    std.debug.assert(start <= end and end <= input.len);
+    if (containsForbiddenCdataClose(input, start, end, has_close_bracket)) return error.InvalidCharacterData;
+    if (has_ampersand) try document.validateXmlReferences(input[start..end], incremental and end == input.len, null, false);
+}
+
 inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
     std.debug.assert(start <= end and end <= input.len);
-    const value = input[start..end];
-    const specials = scanner.bytePairPresence(value, ']', '&');
-    if (containsForbiddenCdataClose(input, start, end, specials.first)) return error.InvalidCharacterData;
-    if (specials.second) try document.validateXmlReferences(value, incremental and end == input.len, null, false);
+    const specials = scanner.bytePairPresence(input[start..end], ']', '&');
+    try validateCharacterDataSpecials(input, start, end, specials.first, specials.second, incremental);
 }
 
 test "streaming parser self-test: order attributes and depths" {

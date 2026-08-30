@@ -31,7 +31,6 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
 }
 
-
 pub const BytePairPresence = struct {
     first: bool = false,
     second: bool = false,
@@ -229,6 +228,77 @@ pub inline fn skipWhitespace(noalias input: []const u8, start: usize) usize {
     return i;
 }
 
+pub const TextSpecialRun = struct {
+    lt_index: usize,
+    has_close_bracket: bool = false,
+    has_ampersand: bool = false,
+};
+
+/// Scans character data once for its end and the two strict-mode sentinels.
+/// The short scalar probe keeps tiny text nodes cheap; long runs use SIMD.
+pub inline fn scanTextSpecials(noalias hay: []const u8, start: usize) TextSpecialRun {
+    if (start >= hay.len) return .{ .lt_index = hay.len };
+
+    var result: TextSpecialRun = .{ .lt_index = hay.len };
+    const probe_end = start + @min(hay.len - start, 32);
+    var i = start;
+    while (i + 8 <= probe_end) : (i += 8) {
+        inline for (0..8) |n| {
+            const c = hay[i + n];
+            if (c == '<') {
+                result.lt_index = i + n;
+                return result;
+            }
+            result.has_close_bracket = result.has_close_bracket or c == ']';
+            result.has_ampersand = result.has_ampersand or c == '&';
+        }
+    }
+    while (i < probe_end) : (i += 1) {
+        const c = hay[i];
+        if (c == '<') {
+            result.lt_index = i;
+            return result;
+        }
+        result.has_close_bracket = result.has_close_bracket or c == ']';
+        result.has_ampersand = result.has_ampersand or c == '&';
+    }
+    if (probe_end == hay.len) return result;
+
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const lt_vec: Vec = @splat('<');
+    const close_vec: Vec = @splat(']');
+    const amp_vec: Vec = @splat('&');
+    i = probe_end;
+    while (i + @sizeOf(Vec) <= hay.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = hay[i..][0..@sizeOf(Vec)].*;
+        if (@reduce(.Or, bytes == lt_vec)) {
+            const end = i + @sizeOf(Vec);
+            while (i < end) : (i += 1) {
+                const c = hay[i];
+                if (c == '<') {
+                    result.lt_index = i;
+                    return result;
+                }
+                result.has_close_bracket = result.has_close_bracket or c == ']';
+                result.has_ampersand = result.has_ampersand or c == '&';
+            }
+            unreachable;
+        }
+        result.has_close_bracket = result.has_close_bracket or @reduce(.Or, bytes == close_vec);
+        result.has_ampersand = result.has_ampersand or @reduce(.Or, bytes == amp_vec);
+    }
+    while (i < hay.len) : (i += 1) {
+        const c = hay[i];
+        if (c == '<') {
+            result.lt_index = i;
+            return result;
+        }
+        result.has_close_bracket = result.has_close_bracket or c == ']';
+        result.has_ampersand = result.has_ampersand or c == '&';
+    }
+    return result;
+}
+
 pub const TextRun = struct {
     lt_index: usize,
     has_non_whitespace: bool,
@@ -369,6 +439,27 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 9, "x"));
     try std.testing.expectEqual(@as(?usize, 6), findSequence("abcdef", 6, ""));
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
+}
+
+test "scanTextSpecials finds markup and strict sentinels in short and vector runs" {
+    const plain = scanTextSpecials("alpha<beta", 0);
+    try std.testing.expectEqual(@as(usize, 5), plain.lt_index);
+    try std.testing.expect(!plain.has_close_bracket);
+    try std.testing.expect(!plain.has_ampersand);
+
+    const special = scanTextSpecials("abc]def&amp;<tail", 0);
+    try std.testing.expectEqual(@as(usize, 12), special.lt_index);
+    try std.testing.expect(special.has_close_bracket);
+    try std.testing.expect(special.has_ampersand);
+
+    var long: [160]u8 = @splat('x');
+    long[70] = ']';
+    long[96] = '&';
+    long[140] = '<';
+    const vector = scanTextSpecials(&long, 0);
+    try std.testing.expectEqual(@as(usize, 140), vector.lt_index);
+    try std.testing.expect(vector.has_close_bracket);
+    try std.testing.expect(vector.has_ampersand);
 }
 
 test "bytePairPresence finds either sentinel in short and vector-sized inputs" {
