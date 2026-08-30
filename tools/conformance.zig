@@ -179,6 +179,14 @@ fn runCase(alloc: std.mem.Allocator, obj: std.json.ObjectMap, case_idx: usize) !
     const case_name = valueString(obj, "name") orelse "unnamed-case";
     _ = case_idx;
 
+    if (unknownCaseField(obj)) |key| {
+        return .{
+            .case_name = case_name,
+            .pass = false,
+            .reason = try std.fmt.allocPrint(alloc, "unknown case field: {s}", .{key}),
+        };
+    }
+
     if (invalidCaseFieldType(obj)) |problem| {
         return .{
             .case_name = case_name,
@@ -1000,6 +1008,52 @@ const FieldTypeProblem = struct {
     expected: []const u8,
 };
 
+fn isKnownCaseField(key: []const u8) bool {
+    const known_fields = [_][]const u8{
+        "name",
+        "xml",
+        "profile",
+        "profiles",
+        "expect_ok",
+        "expect_error",
+        "expect_nodes",
+        "expect_elements",
+        "expect_misc_nodes",
+        "expect_root_name",
+        "expect_first_text",
+        "expect_root_attr_name",
+        "expect_root_attr_value",
+        "expect_unique_root_attrs",
+        "expect_element_name",
+        "expect_element_min",
+        "expect_element_max",
+        "expect_cardinality_valid",
+        "expect_field_name",
+        "expect_field_text",
+        "expect_field_type",
+        "expect_field_type_valid",
+        "expect_field_pattern",
+        "expect_field_pattern_valid",
+        "expect_date_before_left",
+        "expect_date_before_right",
+        "expect_date_before_valid",
+    };
+    inline for (known_fields) |known| {
+        if (std.mem.eql(u8, key, known)) return true;
+    }
+    return false;
+}
+
+fn unknownCaseField(obj: std.json.ObjectMap) ?[]const u8 {
+    var copy = obj;
+    var it = copy.iterator();
+    while (it.next()) |entry| {
+        const key = entry.key_ptr.*;
+        if (!isKnownCaseField(key)) return key;
+    }
+    return null;
+}
+
 fn invalidCaseFieldType(obj: std.json.ObjectMap) ?FieldTypeProblem {
     const string_fields = [_][]const u8{
         "name",
@@ -1090,6 +1144,19 @@ fn invalidCaseFieldCombination(obj: std.json.ObjectMap) ?[]const u8 {
     }
 
     return null;
+}
+
+test "runCase rejects unknown fields instead of silently ignoring them" {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"typo","xml":"<r/>","expect_elemnts":99}
+    , .{});
+    defer parsed.deinit();
+
+    const result = try runCase(alloc, parsed.value.object, 0);
+    defer if (result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(!result.pass);
+    try std.testing.expectEqualStrings("unknown case field: expect_elemnts", result.reason.?);
 }
 
 test "runCase rejects wrong-typed optional fields" {
