@@ -174,6 +174,22 @@ pub fn build(b: *std.Build) void {
     const run_conformance_tests = b.addRunArtifact(conformance_tests);
     if (b.args) |args| run_conformance_tests.addArgs(args);
 
+    const public_api_tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tests/public_api.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "zxml", .module = mod },
+            },
+        }),
+        .test_runner = .{ .path = b.path("test_runner.zig"), .mode = .simple },
+    });
+    const run_public_api_tests = b.addRunArtifact(public_api_tests);
+    if (b.args) |args| run_public_api_tests.addArgs(args);
+    const public_api_step = b.step("test-public-api", "Compile and execute every public zxml API function");
+    public_api_step.dependOn(&run_public_api_tests.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_example_tests.step);
@@ -181,4 +197,5 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tools_tests.step);
     test_step.dependOn(&run_tools_common_tests.step);
     test_step.dependOn(&run_conformance_tests.step);
+    test_step.dependOn(&run_public_api_tests.step);
 }
