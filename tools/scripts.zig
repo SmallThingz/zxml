@@ -478,8 +478,14 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
         if (!refresh) {
             const st = std.Io.Dir.cwd().statFile(io, target, .{}) catch null;
             if (st != null and st.?.size > 0) {
-                std.debug.print("cached: {s}\n", .{item.out});
-                continue;
+                ensureFixtureIsNotOpaqueCdata(io, alloc, target, item.out) catch |err| switch (err) {
+                    error.InvalidFixture => std.Io.Dir.cwd().deleteFile(io, target) catch {},
+                    else => return err,
+                };
+                if (common.fileExists(io, target)) {
+                    std.debug.print("cached: {s}\n", .{item.out});
+                    continue;
+                }
             }
         }
 
@@ -498,7 +504,10 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
             target,
         };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
-        try ensureFixtureIsNotOpaqueCdata(io, alloc, target, item.out);
+        ensureFixtureIsNotOpaqueCdata(io, alloc, target, item.out) catch |err| {
+            std.Io.Dir.cwd().deleteFile(io, target) catch {};
+            return err;
+        };
     }
 
     const bundled = [_]struct { src: []const u8, out: []const u8 }{
