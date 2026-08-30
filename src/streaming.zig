@@ -673,7 +673,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             first_attr_start = attr_name_start;
                             first_attr_end = attr_i;
                         } else {
-                            if (attr_count == 2) self.attribute_name_filter = try initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
+                            if (attr_count == 2) self.attribute_name_filter = initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
                             addAttributeNameFilter(&self.attribute_name_filter, input[attr_name_start..attr_i]);
                         }
                         attr_count += 1;
@@ -1678,10 +1678,11 @@ inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
     filter.* |= bit;
 }
 
-noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) ParseError!u64 {
+noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) u64 {
     var filter: u64 = 0;
-    const first = (try scanValidatedAttributeToken(input, start, second_start)) orelse return filter;
-    addAttributeNameFilter(&filter, input[first.name_start..first.name_end]);
+    const first_start = skipWsStrict(input, start);
+    const first_end = scanner.findNameEndAfterStart(input, first_start);
+    addAttributeNameFilter(&filter, input[first_start..first_end]);
     addAttributeNameFilter(&filter, input[second_start..second_end]);
     return filter;
 }
