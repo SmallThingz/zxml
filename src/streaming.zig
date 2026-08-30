@@ -147,7 +147,7 @@ pub fn Types(comptime options: ParseOptions) type {
             key: u64,
         };
         const Stack = if (options.validate_closing_tags) std.ArrayList(StackEntry) else usize;
-        const Allocator = if (options.validate_closing_tags) std.mem.Allocator else void;
+        const Allocator = if (options.validate_closing_tags or options.mode == .strict) std.mem.Allocator else void;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -192,7 +192,7 @@ pub fn Types(comptime options: ParseOptions) type {
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
-                return .{ .allocator = if (comptime validate_closing_tags) allocator else {} };
+                return .{ .allocator = if (comptime validate_closing_tags or strict_mode) allocator else {} };
             }
 
             pub fn deinit(self: *Self) void {
@@ -837,7 +837,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (comptime strict_mode) _ = try document.validateDoctype(input[start + 9 .. end]);
+                    if (comptime strict_mode) _ = try document.validateDoctypeAlloc(self.allocator, input[start + 9 .. end]);
                     if (comptime strict_mode) self.doctype_seen = true;
                     if (include_misc_nodes) {
                         const node: Node = .{
@@ -2626,9 +2626,56 @@ test "streaming strict validates DOCTYPE grammar" {
         "<!DOCTYPE r SYSTEM'urn:test'><r/>",
         "<!DOCTYPE r PUBLIC 'id'><r/>",
         "<!DOCTYPE r PUBLIC '^' 'sys'><r/>",
+        "<!DOCTYPE r [junk]><r/>",
+        "<!DOCTYPE r [<!FOO x>]><r/>",
+        "<!DOCTYPE r [<![IGNORE[x]]>]><r/>",
+        "<!DOCTYPE r [<!--a--b-->]><r/>",
+        "<!DOCTYPE r [<!--a--->]><r/>",
+        "<!DOCTYPE r [<?xml x?>]><r/>",
+        "<!DOCTYPE r [<??>]><r/>",
+        "<!DOCTYPE r [%missing]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r ANYx>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r ()>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (a|)>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (a,b|c)>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (a b)>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (#PCDATA|a)>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (#PCDATA,a)*>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT \xC3\x97 EMPTY>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a UNKNOWN #IMPLIED>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a () #IMPLIED>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a NOTATION () #IMPLIED>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a (one|two)>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA 'x<y'>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&#0;'>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA '&#X41;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x PUBLIC 'id'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY %p 'x'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p SYSTEM 'x' NDATA n>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x '%p;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x '&#xD800;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x '&#x110000;'>]><r/>",
+        "<!DOCTYPE r [<!NOTATION n>]><r/>",
+        "<!DOCTYPE r [<!NOTATION n SYSTEM>]><r/>",
+        "<!DOCTYPE r [<!NOTATION n PUBLIC>]><r/>",
     };
     for (invalid) |source| try std.testing.expectError(error.InvalidDoctype, parser.parse(source, &ctx, Ctx.onNode));
 
-    try parser.parse("<!DOCTYPE r SYSTEM 'urn:test'><r/>", &ctx, Ctx.onNode);
-    try parser.parse("<!DOCTYPE r PUBLIC '-//Example//DTD Test 1.0//EN' 'urn:test' [<!ELEMENT r EMPTY>]><r/>", &ctx, Ctx.onNode);
+    const valid = [_][]const u8{
+        "<!DOCTYPE r SYSTEM 'urn:test'><r/>",
+        "<!DOCTYPE r PUBLIC '-//Example//DTD Test 1.0//EN' 'urn:test' [<!ELEMENT r EMPTY>]><r/>",
+        "<!DOCTYPE r []><r/>",
+        "<!DOCTYPE r [<!--ok--><?pi data?><!ELEMENT r ANY>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (a,(b|c)+,d?)><!ELEMENT a EMPTY><!ELEMENT b EMPTY><!ELEMENT c EMPTY><!ELEMENT d EMPTY>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (#PCDATA)>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT r (#PCDATA|em|b)*>]><r/>",
+        "<!DOCTYPE r [<!ATTLIST r a CDATA #IMPLIED b ID #REQUIRED c (one|two|3) 'one' n NOTATION (gif|jpg) #FIXED 'gif'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY x 'a&amp;&#x41;'><!ENTITY ext SYSTEM 'urn:x' NDATA n><!ENTITY % p 'x'><!NOTATION n PUBLIC 'id'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY % p SYSTEM 'urn:p'><!NOTATION n SYSTEM 'urn:n'><!NOTATION m PUBLIC 'id' 'urn:m'>]><r/>",
+        "<!DOCTYPE r [<!ELEMENT \xC3\xA9l\xC3\xA9ment EMPTY>]><r/>",
+    };
+    for (valid) |source| try parser.parse(source, &ctx, Ctx.onNode);
 }

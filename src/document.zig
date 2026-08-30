@@ -284,10 +284,14 @@ pub const DoctypeInfo = struct {
     name_end: usize,
 };
 
-/// Validates the outer XML 1.0 doctypedecl grammar. The internal subset is
-/// delimited and structurally balanced here; individual markup declarations
-/// inside it are handled separately by the DTD/entity machinery.
+/// Validates XML 1.0 doctypedecl syntax, including the complete internal-subset
+/// grammar required for well-formed non-validating parsing. Validity constraints
+/// such as declaration uniqueness are intentionally not enforced.
 pub fn validateDoctype(value: []const u8) ParseError!DoctypeInfo {
+    return validateDoctypeAlloc(std.heap.page_allocator, value);
+}
+
+pub fn validateDoctypeAlloc(allocator: std.mem.Allocator, value: []const u8) ParseError!DoctypeInfo {
     var i: usize = 0;
     if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
     if (i >= value.len or !tables.isNameStart(value[i])) return error.InvalidDoctype;
@@ -319,6 +323,7 @@ pub fn validateDoctype(value: []const u8) ParseError!DoctypeInfo {
         const subset_range = findInternalSubset(value[i..]) catch return error.InvalidDoctype;
         const subset = subset_range orelse return error.InvalidDoctype;
         if (subset.start != 1) return error.InvalidDoctype;
+        try validateInternalSubset(allocator, value[i + subset.start .. i + subset.end]);
         i += subset.end + 1;
         _ = skipXmlWhitespace(value, &i);
     }
@@ -366,6 +371,450 @@ inline fn isPubidChar(c: u8) bool {
             '-', '\'', '(', ')', '+', ',', '.', '/', ':', '=', '?', ';', '!', '*', '#', '@', '$', '_', '%' => true,
             else => false,
         };
+}
+
+const DtdDeclarationKind = enum { element, attlist, entity, notation };
+
+/// Checks the physical internal subset grammar required of non-validating XML
+/// processors. Validity constraints such as unique declarations are deliberately
+/// left out, but the complete syntax and internal-subset PE restriction are
+/// enforced.
+fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) ParseError!void {
+    var i: usize = 0;
+    while (i < subset.len) {
+        if (tables.isWhitespace(subset[i])) {
+            _ = skipXmlWhitespace(subset, &i);
+            continue;
+        }
+        if (subset[i] == '%') {
+            try consumePeReference(subset, &i);
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<!--")) {
+            const comment_end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.InvalidDoctype;
+            const body = subset[i + 4 .. comment_end];
+            if (std.mem.indexOf(u8, body, "--") != null or (body.len != 0 and body[body.len - 1] == '-')) {
+                return error.InvalidDoctype;
+            }
+            i = comment_end + 3;
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<?")) {
+            i = try validateDtdProcessingInstruction(subset, i);
+            continue;
+        }
+
+        const kind: DtdDeclarationKind, const keyword: []const u8 = if (std.mem.startsWith(u8, subset[i..], "<!ELEMENT"))
+            .{ .element, "<!ELEMENT" }
+        else if (std.mem.startsWith(u8, subset[i..], "<!ATTLIST"))
+            .{ .attlist, "<!ATTLIST" }
+        else if (std.mem.startsWith(u8, subset[i..], "<!ENTITY"))
+            .{ .entity, "<!ENTITY" }
+        else if (std.mem.startsWith(u8, subset[i..], "<!NOTATION"))
+            .{ .notation, "<!NOTATION" }
+        else
+            return error.InvalidDoctype;
+
+        const decl_end = findMarkupDeclEnd(subset, i + keyword.len) orelse return error.InvalidDoctype;
+        try validateDtdDeclarationBody(allocator, subset[i + keyword.len .. decl_end], kind);
+        i = decl_end + 1;
+    }
+}
+
+fn validateDtdProcessingInstruction(input: []const u8, start: usize) ParseError!usize {
+    var i = start + 2;
+    try consumeDtdName(input, &i);
+    const target = input[start + 2 .. i];
+    if (std.ascii.eqlIgnoreCase(target, "xml")) return error.InvalidDoctype;
+
+    if (i + 1 < input.len and input[i] == '?' and input[i + 1] == '>') return i + 2;
+    if (!skipRequiredXmlWhitespace(input, &i)) return error.InvalidDoctype;
+    const pi_end = std.mem.indexOfPos(u8, input, i, "?>") orelse return error.InvalidDoctype;
+    return pi_end + 2;
+}
+
+fn validateDtdDeclarationBody(allocator: std.mem.Allocator, body: []const u8, kind: DtdDeclarationKind) ParseError!void {
+    var i: usize = 0;
+    if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+
+    switch (kind) {
+        .element => {
+            try consumeDtdName(body, &i);
+            if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+            try validateElementContentSpec(allocator, body, &i);
+            _ = skipXmlWhitespace(body, &i);
+            if (i != body.len) return error.InvalidDoctype;
+        },
+        .attlist => {
+            try consumeDtdName(body, &i);
+            while (true) {
+                const had_space = skipXmlWhitespace(body, &i);
+                if (i == body.len) return;
+                if (!had_space) return error.InvalidDoctype;
+                try consumeDtdName(body, &i);
+                if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+                try consumeAttributeType(body, &i);
+                if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+                try consumeDefaultDecl(body, &i);
+            }
+        },
+        .entity => {
+            var parameter = false;
+            if (i < body.len and body[i] == '%') {
+                parameter = true;
+                i += 1;
+                if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+            }
+            try consumeDtdName(body, &i);
+            if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+            try consumeEntityDefinition(body, &i, parameter);
+            _ = skipXmlWhitespace(body, &i);
+            if (i != body.len) return error.InvalidDoctype;
+        },
+        .notation => {
+            try consumeDtdName(body, &i);
+            if (!skipRequiredXmlWhitespace(body, &i)) return error.InvalidDoctype;
+            try consumeNotationDefinition(body, &i);
+            _ = skipXmlWhitespace(body, &i);
+            if (i != body.len) return error.InvalidDoctype;
+        },
+    }
+}
+
+fn consumeDtdName(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len or !tables.isNameStart(input[i.*])) return error.InvalidDoctype;
+    const start = i.*;
+    i.* += 1;
+    while (i.* < input.len and tables.isNameChar(input[i.*])) : (i.* += 1) {}
+    if (!isValidXmlName(input[start..i.*])) return error.InvalidDoctype;
+}
+
+fn consumeDtdNmtoken(input: []const u8, i: *usize) ParseError!void {
+    const start = i.*;
+    if (i.* >= input.len or !tables.isNameChar(input[i.*])) return error.InvalidDoctype;
+    while (i.* < input.len and tables.isNameChar(input[i.*])) : (i.* += 1) {}
+
+    var j = start;
+    while (j < i.*) {
+        const c = input[j];
+        if (c < 0x80) {
+            if (!tables.isNameChar(c)) return error.InvalidDoctype;
+            j += 1;
+        } else {
+            const cp = nextUtf8Codepoint(input[0..i.*], &j) orelse return error.InvalidDoctype;
+            if (!isXmlNameChar(cp)) return error.InvalidDoctype;
+        }
+    }
+}
+
+fn consumePeReference(input: []const u8, i: *usize) ParseError!void {
+    std.debug.assert(i.* < input.len and input[i.*] == '%');
+    i.* += 1;
+    try consumeDtdName(input, i);
+    if (i.* >= input.len or input[i.*] != ';') return error.InvalidDoctype;
+    i.* += 1;
+}
+
+const ContentSeparator = enum { unset, choice, sequence };
+const ContentFrame = struct {
+    separator: ContentSeparator = .unset,
+    expect_cp: bool = true,
+};
+
+fn consumeOccurrence(input: []const u8, i: *usize) void {
+    if (i.* < input.len and (input[i.*] == '?' or input[i.*] == '*' or input[i.*] == '+')) i.* += 1;
+}
+
+fn validateElementContentSpec(allocator: std.mem.Allocator, input: []const u8, i: *usize) ParseError!void {
+    if (std.mem.startsWith(u8, input[i.*..], "EMPTY")) {
+        i.* += "EMPTY".len;
+        return;
+    }
+    if (std.mem.startsWith(u8, input[i.*..], "ANY")) {
+        i.* += "ANY".len;
+        return;
+    }
+    if (i.* >= input.len or input[i.*] != '(') return error.InvalidDoctype;
+
+    var probe = i.* + 1;
+    _ = skipXmlWhitespace(input, &probe);
+    if (std.mem.startsWith(u8, input[probe..], "#PCDATA")) {
+        try consumeMixedContent(input, i);
+        return;
+    }
+    try consumeChildrenContent(allocator, input, i);
+}
+
+fn consumeMixedContent(input: []const u8, i: *usize) ParseError!void {
+    std.debug.assert(input[i.*] == '(');
+    i.* += 1;
+    _ = skipXmlWhitespace(input, i);
+    if (!std.mem.startsWith(u8, input[i.*..], "#PCDATA")) return error.InvalidDoctype;
+    i.* += "#PCDATA".len;
+
+    var has_names = false;
+    while (true) {
+        _ = skipXmlWhitespace(input, i);
+        if (i.* >= input.len) return error.InvalidDoctype;
+        if (input[i.*] == '|') {
+            has_names = true;
+            i.* += 1;
+            _ = skipXmlWhitespace(input, i);
+            try consumeDtdName(input, i);
+            continue;
+        }
+        if (input[i.*] != ')') return error.InvalidDoctype;
+        i.* += 1;
+        if (i.* < input.len and input[i.*] == '*') {
+            i.* += 1;
+            return;
+        }
+        if (has_names) return error.InvalidDoctype;
+        return;
+    }
+}
+
+fn consumeChildrenContent(allocator: std.mem.Allocator, input: []const u8, i: *usize) ParseError!void {
+    std.debug.assert(input[i.*] == '(');
+    var stack_fallback = std.heap.stackFallback(512, allocator);
+    const temp_allocator = stack_fallback.get();
+    var stack: std.ArrayList(ContentFrame) = .empty;
+    defer stack.deinit(temp_allocator);
+
+    i.* += 1;
+    try stack.append(temp_allocator, .{});
+    while (stack.items.len != 0) {
+        const frame_index = stack.items.len - 1;
+        if (stack.items[frame_index].expect_cp) {
+            _ = skipXmlWhitespace(input, i);
+            if (i.* >= input.len) return error.InvalidDoctype;
+            if (input[i.*] == '(') {
+                i.* += 1;
+                try stack.append(temp_allocator, .{});
+                continue;
+            }
+            try consumeDtdName(input, i);
+            consumeOccurrence(input, i);
+            stack.items[frame_index].expect_cp = false;
+            continue;
+        }
+
+        _ = skipXmlWhitespace(input, i);
+        if (i.* >= input.len) return error.InvalidDoctype;
+        const c = input[i.*];
+        if (c == '|' or c == ',') {
+            const separator: ContentSeparator = if (c == '|') .choice else .sequence;
+            if (stack.items[frame_index].separator == .unset) {
+                stack.items[frame_index].separator = separator;
+            } else if (stack.items[frame_index].separator != separator) {
+                return error.InvalidDoctype;
+            }
+            stack.items[frame_index].expect_cp = true;
+            i.* += 1;
+            continue;
+        }
+        if (c != ')') return error.InvalidDoctype;
+
+        i.* += 1;
+        stack.items.len -= 1;
+        consumeOccurrence(input, i);
+        if (stack.items.len != 0) stack.items[stack.items.len - 1].expect_cp = false;
+    }
+}
+
+fn consumeAttributeType(input: []const u8, i: *usize) ParseError!void {
+    const keywords = [_][]const u8{ "CDATA", "IDREFS", "IDREF", "ID", "ENTITIES", "ENTITY", "NMTOKENS", "NMTOKEN" };
+    inline for (keywords) |keyword| {
+        if (std.mem.startsWith(u8, input[i.*..], keyword)) {
+            i.* += keyword.len;
+            return;
+        }
+    }
+    if (std.mem.startsWith(u8, input[i.*..], "NOTATION")) {
+        i.* += "NOTATION".len;
+        if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+        try consumeNameEnumeration(input, i);
+        return;
+    }
+    try consumeNmtokenEnumeration(input, i);
+}
+
+fn consumeNameEnumeration(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len or input[i.*] != '(') return error.InvalidDoctype;
+    i.* += 1;
+    _ = skipXmlWhitespace(input, i);
+    try consumeDtdName(input, i);
+    while (true) {
+        _ = skipXmlWhitespace(input, i);
+        if (i.* >= input.len) return error.InvalidDoctype;
+        if (input[i.*] == ')') {
+            i.* += 1;
+            return;
+        }
+        if (input[i.*] != '|') return error.InvalidDoctype;
+        i.* += 1;
+        _ = skipXmlWhitespace(input, i);
+        try consumeDtdName(input, i);
+    }
+}
+
+fn consumeNmtokenEnumeration(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len or input[i.*] != '(') return error.InvalidDoctype;
+    i.* += 1;
+    _ = skipXmlWhitespace(input, i);
+    try consumeDtdNmtoken(input, i);
+    while (true) {
+        _ = skipXmlWhitespace(input, i);
+        if (i.* >= input.len) return error.InvalidDoctype;
+        if (input[i.*] == ')') {
+            i.* += 1;
+            return;
+        }
+        if (input[i.*] != '|') return error.InvalidDoctype;
+        i.* += 1;
+        _ = skipXmlWhitespace(input, i);
+        try consumeDtdNmtoken(input, i);
+    }
+}
+
+fn consumeDefaultDecl(input: []const u8, i: *usize) ParseError!void {
+    if (std.mem.startsWith(u8, input[i.*..], "#REQUIRED")) {
+        i.* += "#REQUIRED".len;
+        return;
+    }
+    if (std.mem.startsWith(u8, input[i.*..], "#IMPLIED")) {
+        i.* += "#IMPLIED".len;
+        return;
+    }
+    if (std.mem.startsWith(u8, input[i.*..], "#FIXED")) {
+        i.* += "#FIXED".len;
+        if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+    }
+    try consumeAttValue(input, i);
+}
+
+fn consumeAttValue(input: []const u8, i: *usize) ParseError!void {
+    if (i.* >= input.len or (input[i.*] != '\'' and input[i.*] != '"')) return error.InvalidDoctype;
+    const quote = input[i.*];
+    i.* += 1;
+    while (i.* < input.len and input[i.*] != quote) {
+        if (input[i.*] == '<') return error.InvalidDoctype;
+        if (input[i.*] == '&') {
+            try consumeDtdReference(input, i);
+            continue;
+        }
+        i.* += 1;
+    }
+    if (i.* >= input.len) return error.InvalidDoctype;
+    i.* += 1;
+}
+
+fn consumeEntityDefinition(input: []const u8, i: *usize, parameter: bool) ParseError!void {
+    if (i.* >= input.len) return error.InvalidDoctype;
+    if (input[i.*] == '\'' or input[i.*] == '"') {
+        try consumeEntityValue(input, i);
+        return;
+    }
+
+    try consumeExternalId(input, i);
+    if (parameter) return;
+
+    const saved = i.*;
+    if (!skipRequiredXmlWhitespace(input, i)) return;
+    if (!std.mem.startsWith(u8, input[i.*..], "NDATA")) {
+        i.* = saved;
+        return;
+    }
+    i.* += "NDATA".len;
+    if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+    try consumeDtdName(input, i);
+}
+
+fn consumeEntityValue(input: []const u8, i: *usize) ParseError!void {
+    const quote = input[i.*];
+    i.* += 1;
+    while (i.* < input.len and input[i.*] != quote) {
+        // PE references are syntactically recognized in entity values, but the
+        // XML internal-subset well-formedness constraint forbids them here.
+        if (input[i.*] == '%') return error.InvalidDoctype;
+        if (input[i.*] == '&') {
+            try consumeDtdReference(input, i);
+            continue;
+        }
+        i.* += 1;
+    }
+    if (i.* >= input.len) return error.InvalidDoctype;
+    i.* += 1;
+}
+
+fn consumeDtdReference(input: []const u8, i: *usize) ParseError!void {
+    std.debug.assert(i.* < input.len and input[i.*] == '&');
+    i.* += 1;
+    if (i.* < input.len and input[i.*] == '#') {
+        i.* += 1;
+        var base: u8 = 10;
+        if (i.* < input.len and input[i.*] == 'x') {
+            base = 16;
+            i.* += 1;
+        }
+        const digits_start = i.*;
+        var value: u32 = 0;
+        while (i.* < input.len) : (i.* += 1) {
+            const c = input[i.*];
+            const digit: ?u8 = if (c >= '0' and c <= '9')
+                c - '0'
+            else if (base == 16 and c >= 'a' and c <= 'f')
+                c - 'a' + 10
+            else if (base == 16 and c >= 'A' and c <= 'F')
+                c - 'A' + 10
+            else
+                null;
+            const d = digit orelse break;
+            if (value > (0x10FFFF - @as(u32, d)) / @as(u32, base)) return error.InvalidDoctype;
+            value = value * @as(u32, base) + @as(u32, d);
+        }
+        if (i.* == digits_start or value > 0x10FFFF or !isXmlCharacter(@intCast(value))) return error.InvalidDoctype;
+    } else {
+        try consumeDtdName(input, i);
+    }
+    if (i.* >= input.len or input[i.*] != ';') return error.InvalidDoctype;
+    i.* += 1;
+}
+
+fn consumeExternalId(input: []const u8, i: *usize) ParseError!void {
+    if (std.mem.startsWith(u8, input[i.*..], "SYSTEM")) {
+        i.* += "SYSTEM".len;
+        if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+        try consumeSystemLiteral(input, i);
+        return;
+    }
+    if (!std.mem.startsWith(u8, input[i.*..], "PUBLIC")) return error.InvalidDoctype;
+    i.* += "PUBLIC".len;
+    if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+    try consumePubidLiteral(input, i);
+    if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+    try consumeSystemLiteral(input, i);
+}
+
+fn consumeNotationDefinition(input: []const u8, i: *usize) ParseError!void {
+    if (std.mem.startsWith(u8, input[i.*..], "SYSTEM")) {
+        i.* += "SYSTEM".len;
+        if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+        try consumeSystemLiteral(input, i);
+        return;
+    }
+    if (!std.mem.startsWith(u8, input[i.*..], "PUBLIC")) return error.InvalidDoctype;
+    i.* += "PUBLIC".len;
+    if (!skipRequiredXmlWhitespace(input, i)) return error.InvalidDoctype;
+    try consumePubidLiteral(input, i);
+
+    const after_pubid = i.*;
+    if (!skipRequiredXmlWhitespace(input, i)) return;
+    if (i.* < input.len and (input[i.*] == '\'' or input[i.*] == '"')) {
+        try consumeSystemLiteral(input, i);
+    } else {
+        i.* = after_pubid;
+    }
 }
 
 const DeclarationValueKind = enum { version, encoding, standalone };
@@ -1495,4 +1944,18 @@ test "validateDoctype enforces the outer XML grammar" {
         " r [<!ELEMENT r EMPTY>] trailing",
     };
     for (invalid) |value| try std.testing.expectError(error.InvalidDoctype, validateDoctype(value));
+}
+
+test "validateDoctype handles deeply nested content models iteratively" {
+    var value: std.ArrayList(u8) = .empty;
+    defer value.deinit(std.testing.allocator);
+
+    try value.appendSlice(std.testing.allocator, " r [<!ELEMENT r ");
+    for (0..4096) |_| try value.append(std.testing.allocator, '(');
+    try value.append(std.testing.allocator, 'a');
+    for (0..4096) |_| try value.append(std.testing.allocator, ')');
+    try value.appendSlice(std.testing.allocator, ">]");
+
+    const info = try validateDoctypeAlloc(std.testing.allocator, value.items);
+    try std.testing.expectEqualStrings("r", value.items[info.name_start..info.name_end]);
 }
