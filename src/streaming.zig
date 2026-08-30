@@ -799,7 +799,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     switch (input[lt + 1]) {
                         '/' => {
                             if (comptime strict_mode or validate_closing_tags) {
-                                const close = scanClosingTag(input, lt, strict_mode) catch |err| switch (err) {
+                                const close = scanClosingTag(input, lt, strict_mode, incremental) catch |err| switch (err) {
                                     error.UnexpectedEndOfData => {
                                         if (incremental) return .{ .next = lt, .needs_more = true };
                                         if (strict_mode or require_closed_elements_on_eof) return err;
@@ -1159,7 +1159,7 @@ fn skipSubtreeStateless(
         switch (input[i + 1]) {
             '/' => {
                 if (comptime strict or validate_closing_tags) {
-                    const close = try scanClosingTag(input, i, strict);
+                    const close = try scanClosingTag(input, i, strict, false);
                     if (comptime validate_closing_tags) {
                         const expected = try expectedOpenNameAtDepth(input, start, root_name, i, depth, strict);
                         const close_len = close.name.len();
@@ -1216,7 +1216,7 @@ fn expectedOpenNameAtDepth(
         switch (input[i + 1]) {
             '/' => {
                 if (comptime strict) {
-                    i = (try scanClosingTag(input, i, true)).next;
+                    i = (try scanClosingTag(input, i, true, false)).next;
                 } else {
                     const gt = scanner.findByte(input, i + 2, '>') orelse return error.UnexpectedEndOfData;
                     i = gt + 1;
@@ -1317,7 +1317,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
     return error.UnexpectedEndOfData;
 }
 
-fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseError!CloseToken {
+fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!CloseToken {
     var i = start + 2;
     if (i < input.len and tables.isWhitespace(input[i])) {
         if (strict) return error.InvalidClosingTagName;
@@ -1330,7 +1330,10 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool) ParseE
     const name_end = name_scan.end;
     i = name_end;
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict);
-    if (i >= input.len) return error.UnexpectedEndOfData;
+    if (i >= input.len) {
+        if (!strict and !incremental) return error.InvalidClosingTagName;
+        return error.UnexpectedEndOfData;
+    }
     if (input[i] != '>') return error.InvalidClosingTagName;
     return .{ .next = i + 1, .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) }, .key = name_scan.key };
 }
@@ -2252,6 +2255,22 @@ test "streaming turbo closing validation rejects a named close missing gt" {
         var ctx: Ctx = .{};
         try std.testing.expectError(error.InvalidClosingTagName, parser.parse(input, &ctx, Ctx.onNode));
     }
+}
+
+test "streaming skipped turbo subtree rejects a named close missing gt" {
+    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return node.kind != .element;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<a></X", &ctx, Ctx.onNode));
 }
 
 test "streaming skipped turbo subtree preserves required-closure errors" {
