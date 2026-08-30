@@ -626,7 +626,7 @@ fn calibrateIterations(io: std.Io, alloc: std.mem.Allocator, parser_name: []cons
 
     const factor_u64 = std.math.divCeil(u64, min_sample_ns, base_ns) catch return base_iterations;
     const factor = @as(usize, @intCast(@min(factor_u64, 10_000)));
-    return std.math.mul(usize, base_iterations, factor) catch std.math.maxInt(usize);
+    return try std.math.mul(usize, base_iterations, factor);
 }
 
 fn freeParseResult(alloc: std.mem.Allocator, row: *ParseResult) void {
@@ -650,9 +650,9 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
     }
 
     for (profile.fixtures) |fx| {
-        const ours = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
-        const pugixml = findThroughput(rows, "pugixml", fx.name) orelse continue;
-        const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse continue;
+        const ours = findThroughput(rows, "ours-turbo", fx.name) orelse return error.MissingBenchmarkResult;
+        const pugixml = findThroughput(rows, "pugixml", fx.name) orelse return error.MissingBenchmarkResult;
+        const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse return error.MissingBenchmarkResult;
 
         const best_external_mb_s: f64 = if (pugixml >= rapidxml) pugixml else rapidxml;
         const best_external_parser = if (pugixml >= rapidxml) "pugixml" else "rapidxml";
@@ -689,10 +689,10 @@ fn evaluateStreamGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []co
     }
 
     for (profile.fixtures) |fx| {
-        const dom_turbo = findThroughput(rows, "ours-turbo", fx.name) orelse continue;
-        const stream_turbo = findThroughput(rows, "stream-turbo", fx.name) orelse continue;
-        const dom_strict = findThroughput(rows, "ours-strict", fx.name) orelse continue;
-        const stream_strict = findThroughput(rows, "stream-strict", fx.name) orelse continue;
+        const dom_turbo = findThroughput(rows, "ours-turbo", fx.name) orelse return error.MissingBenchmarkResult;
+        const stream_turbo = findThroughput(rows, "stream-turbo", fx.name) orelse return error.MissingBenchmarkResult;
+        const dom_strict = findThroughput(rows, "ours-strict", fx.name) orelse return error.MissingBenchmarkResult;
+        const stream_strict = findThroughput(rows, "stream-strict", fx.name) orelse return error.MissingBenchmarkResult;
 
         const turbo_ratio = if (dom_turbo == 0) 0 else stream_turbo / dom_turbo;
         const strict_ratio = if (dom_strict == 0) 0 else stream_strict / dom_strict;
@@ -1720,4 +1720,23 @@ pub fn main(init: std.process.Init) !void {
 
     usage();
     return error.InvalidArguments;
+}
+
+test "benchmark gates reject missing parser rows" {
+    const alloc = std.testing.allocator;
+    const fixtures = [_]FixtureCase{.{ .name = "fixture.xml", .iterations = 1, .is_real = true }};
+    const profile = Profile{ .name = "test", .fixtures = &fixtures };
+    var samples = [_]u64{1};
+    const incomplete = [_]ParseResult{.{
+        .parser = "ours-turbo",
+        .fixture = "fixture.xml",
+        .is_real = true,
+        .iterations = 1,
+        .samples_ns = &samples,
+        .median_ns = 1,
+        .throughput_mb_s = 1.0,
+    }};
+
+    try std.testing.expectError(error.MissingBenchmarkResult, evaluateGateRows(alloc, profile, &incomplete));
+    try std.testing.expectError(error.MissingBenchmarkResult, evaluateStreamGateRows(alloc, profile, &incomplete));
 }

@@ -6,6 +6,7 @@ pub const ConformanceError = error{
     InvalidArguments,
     InvalidSuiteFormat,
     InvalidProfile,
+    NoSuitesFound,
     ConformanceFailed,
 };
 
@@ -42,7 +43,7 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
 
     if (suite_paths.items.len == 0) {
         std.debug.print("no conformance suites found under {s}\n", .{conformance_primary_dir});
-        return;
+        return ConformanceError.NoSuitesFound;
     }
 
     std.mem.sort([]u8, suite_paths.items, {}, struct {
@@ -99,6 +100,27 @@ fn appendSuitesFromDir(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList
     return count;
 }
 
+const SuiteMetadata = struct {
+    name: []const u8,
+    cases: []const std.json.Value,
+};
+
+fn suiteMetadata(root: std.json.Value, suite_path: []const u8) ConformanceError!SuiteMetadata {
+    if (root != .object) return ConformanceError.InvalidSuiteFormat;
+
+    const suite_name = if (root.object.get("suite")) |value| blk: {
+        if (value != .string) return ConformanceError.InvalidSuiteFormat;
+        break :blk value.string;
+    } else suite_path;
+
+    const cases_value = root.object.get("cases") orelse return ConformanceError.InvalidSuiteFormat;
+    if (cases_value != .array or cases_value.array.items.len == 0) {
+        return ConformanceError.InvalidSuiteFormat;
+    }
+
+    return .{ .name = suite_name, .cases = cases_value.array.items };
+}
+
 fn runSuiteFile(io: std.Io, alloc: std.mem.Allocator, suite_path: []const u8) !SuiteSummary {
     const suite_bytes = try common.readFileAlloc(io, alloc, suite_path);
     defer alloc.free(suite_bytes);
@@ -106,16 +128,9 @@ fn runSuiteFile(io: std.Io, alloc: std.mem.Allocator, suite_path: []const u8) !S
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, suite_bytes, .{});
     defer parsed.deinit();
 
-    const root = parsed.value;
-    if (root != .object) return ConformanceError.InvalidSuiteFormat;
-
-    const suite_name = if (root.object.get("suite")) |v|
-        if (v == .string) v.string else suite_path
-    else
-        suite_path;
-
-    const cases_val = root.object.get("cases") orelse return ConformanceError.InvalidSuiteFormat;
-    if (cases_val != .array) return ConformanceError.InvalidSuiteFormat;
+    const metadata = try suiteMetadata(parsed.value, suite_path);
+    const suite_name = metadata.name;
+    const cases_val = metadata.cases;
 
     const suite_name_owned = try alloc.dupe(u8, suite_name);
     errdefer alloc.free(suite_name_owned);
@@ -126,7 +141,7 @@ fn runSuiteFile(io: std.Io, alloc: std.mem.Allocator, suite_path: []const u8) !S
 
     std.debug.print("\nRunning suite: {s} ({s})\n", .{ suite_name, suite_path });
 
-    for (cases_val.array.items, 0..) |case_val, case_idx| {
+    for (cases_val, 0..) |case_val, case_idx| {
         total += 1;
         if (case_val != .object) {
             failed += 1;
@@ -1054,4 +1069,28 @@ test "runCase rejects negative and overflowing count fields" {
     defer if (negative_result.reason) |reason| alloc.free(reason);
     try std.testing.expect(!negative_result.pass);
     try std.testing.expectEqualStrings("field expect_nodes must be a non-negative integer", negative_result.reason.?);
+}
+
+test "suiteMetadata rejects malformed and empty suite metadata" {
+    const alloc = std.testing.allocator;
+
+    const wrong_name = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"suite":42,"cases":[{"xml":"<r/>"}]}
+    , .{});
+    defer wrong_name.deinit();
+    try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(wrong_name.value, "fallback.json"));
+
+    const empty_cases = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"suite":"empty","cases":[]}
+    , .{});
+    defer empty_cases.deinit();
+    try std.testing.expectError(ConformanceError.InvalidSuiteFormat, suiteMetadata(empty_cases.value, "fallback.json"));
+
+    const valid = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"suite":"valid","cases":[{"xml":"<r/>"}]}
+    , .{});
+    defer valid.deinit();
+    const metadata = try suiteMetadata(valid.value, "fallback.json");
+    try std.testing.expectEqualStrings("valid", metadata.name);
+    try std.testing.expectEqual(@as(usize, 1), metadata.cases.len);
 }
