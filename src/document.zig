@@ -123,14 +123,44 @@ pub fn validateXmlCharacters(input: []const u8) ParseError!void {
 
 pub fn isValidXmlName(name: []const u8) bool {
     if (name.len == 0) return false;
-    var view = std.unicode.Utf8View.init(name) catch return false;
-    var it = view.iterator();
-    const first = it.nextCodepoint() orelse return false;
-    if (!isXmlNameStart(first)) return false;
-    while (it.nextCodepoint()) |codepoint| {
+
+    var i: usize = 0;
+    if (name[0] < 0x80) {
+        if (!tables.isNameStart(name[0])) return false;
+        i = 1;
+    } else {
+        const first = nextUtf8Codepoint(name, &i) orelse return false;
+        if (!isXmlNameStart(first)) return false;
+    }
+
+    while (i < name.len) {
+        const c = name[i];
+        if (c < 0x80) {
+            if (!tables.isNameChar(c)) return false;
+            i += 1;
+            continue;
+        }
+        const codepoint = nextUtf8Codepoint(name, &i) orelse return false;
         if (!isXmlNameChar(codepoint)) return false;
     }
     return true;
+}
+
+inline fn nextUtf8Codepoint(input: []const u8, i: *usize) ?u21 {
+    const first = input[i.*];
+    const sequence_len: usize = if (first >= 0xC2 and first <= 0xDF)
+        2
+    else if (first >= 0xE0 and first <= 0xEF)
+        3
+    else if (first >= 0xF0 and first <= 0xF4)
+        4
+    else
+        return null;
+    if (sequence_len > input.len - i.*) return null;
+    const end = i.* + sequence_len;
+    const codepoint = std.unicode.utf8Decode(input[i.*..end]) catch return null;
+    i.* = end;
+    return codepoint;
 }
 
 inline fn isXmlCharacter(codepoint: u21) bool {
@@ -1391,6 +1421,18 @@ test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict });
+}
+
+test "XML Name validation handles ASCII Unicode and malformed UTF-8 in one pass" {
+    try std.testing.expect(isValidXmlName("root"));
+    try std.testing.expect(isValidXmlName("a-b.c_7"));
+    try std.testing.expect(isValidXmlName("\xC3\xA9l\xC3\xA9ment"));
+    try std.testing.expect(isValidXmlName("a\xC2\xB7b"));
+    try std.testing.expect(!isValidXmlName("7root"));
+    try std.testing.expect(!isValidXmlName("\xC3\x97"));
+    try std.testing.expect(!isValidXmlName("a\xCD\xBE"));
+    try std.testing.expect(!isValidXmlName("\xC3"));
+    try std.testing.expect(!isValidXmlName("\xC0\xAF"));
 }
 
 test "validateDoctype enforces the outer XML grammar" {
