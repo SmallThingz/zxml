@@ -67,6 +67,7 @@ pub const ParseError = error{
     InvalidNumericCharacterEntity,
     UnterminatedEntity,
     EntityValueTooLarge,
+    RecursiveEntity,
 };
 
 pub const ParseDiagnostic = struct {
@@ -499,6 +500,8 @@ pub const Document = struct {
     pub fn registerDoctypeEntities(self: *Document, doctype_value: []const u8) ParseError!void {
         const subset_range = try findInternalSubset(doctype_value) orelse return;
         const subset = doctype_value[subset_range.start..subset_range.end];
+        var declarations = std.StringHashMap([]const u8).init(self.allocator);
+        defer declarations.deinit();
         var i: usize = 0;
         while (i < subset.len) {
             if (std.mem.startsWith(u8, subset[i..], "<!--")) {
@@ -566,36 +569,24 @@ pub const Document = struct {
 
             const raw_value = subset[value_start..i];
             const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
-            const expanded = if (self.expand_dtd_entities)
-                entities.decodeAllocWithEntityMapBounded(
-                    self.allocator,
-                    raw_value,
-                    self.parse_mode == .strict,
-                    &self.entity_map,
-                    self.max_entity_value_len,
-                ) catch |err| switch (err) {
-                    error.OutputTooLarge => return error.EntityValueTooLarge,
-                    else => |e| return e,
-                }
-            else blk: {
-                if (raw_value.len > self.max_entity_value_len) return error.EntityValueTooLarge;
-                break :blk try self.allocator.dupe(u8, raw_value);
-            };
-            errdefer self.allocator.free(expanded);
-
-            const owned_name = try self.allocator.dupe(u8, name);
-            errdefer self.allocator.free(owned_name);
-
-            const gop = try self.entity_map.getOrPut(owned_name);
-            if (gop.found_existing) {
-                self.allocator.free(owned_name);
-                self.allocator.free(expanded);
-            } else {
-                gop.key_ptr.* = owned_name;
-                gop.value_ptr.* = expanded;
+            if (!self.entity_map.contains(name) and !declarations.contains(name)) {
+                try declarations.put(name, raw_value);
             }
 
             i = end + 1;
+        }
+
+        if (self.expand_dtd_entities) {
+            entities.resolveEntityDeclarationsBounded(
+                self.allocator,
+                &declarations,
+                &self.entity_map,
+                self.parse_mode == .strict,
+                self.max_entity_value_len,
+            ) catch |err| switch (err) {
+                error.OutputTooLarge => return error.EntityValueTooLarge,
+                else => |e| return e,
+            };
         }
     }
 
@@ -1094,4 +1085,43 @@ test "DTD expansion limit applies while expanding referenced entity values" {
         "<!DOCTYPE r [<!ENTITY a '1234'><!ENTITY b '&a;&a;'>]><r/>",
         .{ .mode = .strict, .expand_dtd_entities = true, .max_entity_value_len = 4 },
     ));
+}
+
+test "DTD entity expansion resolves forward and nested references independent of declaration order" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(
+        "<!DOCTYPE r [<!ENTITY a '&b;!'><!ENTITY b '&c;'><!ENTITY c 'ok'>]><r>&a;</r>",
+        .{ .mode = .strict, .expand_dtd_entities = true },
+    );
+
+    try std.testing.expectEqualStrings("ok!", doc.entity_map.get("a").?);
+    const root_node = doc.nodeAt(2) orelse return error.TestUnexpectedResult;
+    const text = try root_node.firstChild().?.value(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expectEqualStrings("ok!", text);
+}
+
+test "DTD entity limit applies to decoded replacement text, not raw declaration bytes" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(
+        "<!DOCTYPE r [<!ENTITY a '&#65;'>]><r>&a;</r>",
+        .{ .mode = .strict, .expand_dtd_entities = true, .max_entity_value_len = 1 },
+    );
+    try std.testing.expectEqualStrings("A", doc.entity_map.get("a").?);
+}
+
+test "DTD entity expansion rejects direct and indirect recursion" {
+    inline for (.{
+        "<!DOCTYPE r [<!ENTITY a '&a;'>]><r/>",
+        "<!DOCTYPE r [<!ENTITY a '&b;'><!ENTITY b '&a;'>]><r/>",
+    }) |xml| {
+        var doc = Document.init(std.testing.allocator);
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.RecursiveEntity,
+            doc.parse(xml, .{ .mode = .strict, .expand_dtd_entities = true }),
+        );
+    }
 }

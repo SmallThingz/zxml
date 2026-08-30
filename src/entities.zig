@@ -4,9 +4,162 @@ const tables = @import("tables.zig");
 pub const DecodeError = error{
     InvalidNumericCharacterEntity,
     UnterminatedEntity,
+    RecursiveEntity,
 };
 
 pub const BoundedDecodeError = DecodeError || error{OutputTooLarge};
+
+const ResolveState = enum {
+    visiting,
+    done,
+};
+
+/// Resolves borrowed DTD entity declarations into `resolved`. Declarations may
+/// reference entities declared later. Each final replacement value is bounded
+/// independently, and recursive entity graphs are rejected.
+pub fn resolveEntityDeclarationsBounded(
+    alloc: std.mem.Allocator,
+    declarations: *const std.StringHashMap([]const u8),
+    resolved: *std.StringHashMap([]u8),
+    strict: bool,
+    max_output_len: usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)!void {
+    var states = std.StringHashMap(ResolveState).init(alloc);
+    defer states.deinit();
+
+    var it = declarations.iterator();
+    while (it.next()) |entry| {
+        _ = try resolveEntityDeclaration(
+            alloc,
+            declarations,
+            resolved,
+            &states,
+            entry.key_ptr.*,
+            strict,
+            max_output_len,
+        );
+    }
+}
+
+fn resolveEntityDeclaration(
+    alloc: std.mem.Allocator,
+    declarations: *const std.StringHashMap([]const u8),
+    resolved: *std.StringHashMap([]u8),
+    states: *std.StringHashMap(ResolveState),
+    name: []const u8,
+    strict: bool,
+    max_output_len: usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)![]const u8 {
+    if (resolved.get(name)) |value| return value;
+    if (states.get(name)) |state| switch (state) {
+        .done => unreachable,
+        .visiting => return error.RecursiveEntity,
+    };
+
+    const raw = declarations.get(name) orelse unreachable;
+    try states.put(name, .visiting);
+    errdefer _ = states.remove(name);
+
+    var out = std.ArrayList(u8).empty;
+    errdefer out.deinit(alloc);
+    try appendDecodedResolvingDeclarations(
+        &out,
+        alloc,
+        raw,
+        strict,
+        declarations,
+        resolved,
+        states,
+        max_output_len,
+    );
+    const value = try out.toOwnedSlice(alloc);
+    errdefer alloc.free(value);
+    const owned_name = try alloc.dupe(u8, name);
+    errdefer alloc.free(owned_name);
+
+    const gop = try resolved.getOrPut(owned_name);
+    if (gop.found_existing) {
+        alloc.free(owned_name);
+        alloc.free(value);
+    } else {
+        gop.key_ptr.* = owned_name;
+        gop.value_ptr.* = value;
+    }
+    states.getPtr(name).?.* = .done;
+    return gop.value_ptr.*;
+}
+
+fn appendDecodedResolvingDeclarations(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    declarations: *const std.StringHashMap([]const u8),
+    resolved: *std.StringHashMap([]u8),
+    states: *std.StringHashMap(ResolveState),
+    max_output_len: usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)!void {
+    const first = std.mem.indexOfScalar(u8, input, '&') orelse {
+        try appendLimited(out, alloc, input, max_output_len);
+        return;
+    };
+
+    try appendLimited(out, alloc, input[0..first], max_output_len);
+    var src = first;
+    while (src < input.len) {
+        if (input[src] != '&') {
+            const next = std.mem.indexOfScalarPos(u8, input, src, '&') orelse input.len;
+            try appendLimited(out, alloc, input[src..next], max_output_len);
+            src = next;
+            continue;
+        }
+
+        const token = parseEntityToken(input, src) catch |err| switch (err) {
+            error.UnterminatedEntity => {
+                if (strict) return error.UnterminatedEntity;
+                try appendLimited(out, alloc, "&", max_output_len);
+                src += 1;
+                continue;
+            },
+            error.InvalidNumericCharacterEntity => {
+                if (strict) return error.InvalidNumericCharacterEntity;
+                try appendLimited(out, alloc, "&", max_output_len);
+                src += 1;
+                continue;
+            },
+        };
+
+        if (try decodeEntityBody(token.body, strict)) |decoded| {
+            try appendLimited(out, alloc, decoded.bytes[0..decoded.len], max_output_len);
+            src += token.consumed;
+            continue;
+        }
+
+        if (resolved.get(token.body)) |value| {
+            try appendLimited(out, alloc, value, max_output_len);
+            src += token.consumed;
+            continue;
+        }
+        if (declarations.contains(token.body)) {
+            const value = try resolveEntityDeclaration(
+                alloc,
+                declarations,
+                resolved,
+                states,
+                token.body,
+                strict,
+                max_output_len,
+            );
+            try appendLimited(out, alloc, value, max_output_len);
+            src += token.consumed;
+            continue;
+        }
+
+        if (strict) return error.InvalidNumericCharacterEntity;
+        try appendLimited(out, alloc, "&", max_output_len);
+        src += 1;
+    }
+}
 
 const EntityDecode = struct {
     bytes: [4]u8,
@@ -154,7 +307,7 @@ fn tryAppendDecodedEntityBody(
     return false;
 }
 
-fn parseEntityToken(noalias buf: []const u8, start: usize) DecodeError!EntityToken {
+fn parseEntityToken(noalias buf: []const u8, start: usize) error{ InvalidNumericCharacterEntity, UnterminatedEntity }!EntityToken {
     const semi = std.mem.indexOfScalarPos(u8, buf, start + 1, ';') orelse {
         return error.UnterminatedEntity;
     };
