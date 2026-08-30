@@ -168,8 +168,17 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
     const pugixml_dir = PARSERS_DIR ++ "/pugixml";
     const pugixml_git = pugixml_dir ++ "/.git";
     if (!common.fileExists(io, pugixml_git)) {
+        // A failed/interrupted clone can leave the destination directory behind
+        // without a usable repository. Since bench/parsers is generated state,
+        // remove that stale target before retrying the clone.
+        if (common.fileExists(io, pugixml_dir)) {
+            try std.Io.Dir.cwd().deleteTree(io, pugixml_dir);
+        }
         const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", pugixml_dir };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
+        if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
+            return error.IncompleteExternalParser;
+        }
     } else if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
         // bench/parsers is generated/ignored state. Repair deleted or partially
         // populated tracked files instead of treating the mere presence of
