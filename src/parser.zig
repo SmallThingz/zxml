@@ -34,18 +34,26 @@ noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const do
 
 noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
+    const table_capacity = 256;
     const NameSlot = struct {
         hash: u64,
         start: IndexInt,
         end: IndexInt,
     };
-    var slots: [128]NameSlot = undefined;
-    var occupied: u128 = 0;
+    var slots: [table_capacity]NameSlot = undefined;
+    var occupied = [_]u64{0} ** (table_capacity / 64);
     for (attrs) |attr| {
         const name = attr.name.slice(input);
         const hash = attributeNameHash(name);
-        var slot_index: usize = @intCast(hash >> 57);
-        while (occupied & (@as(u128, 1) << @as(u7, @intCast(slot_index))) != 0) {
+        var slot_index: usize = @intCast(hash >> 56);
+        while (true) {
+            const word_index = slot_index >> 6;
+            const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
+            if (occupied[word_index] & bit == 0) {
+                slots[slot_index] = .{ .hash = hash, .start = attr.name.start, .end = attr.name.end };
+                occupied[word_index] |= bit;
+                break;
+            }
             const previous = slots[slot_index];
             if (previous.hash == hash and
                 previous.end - previous.start == attr.name.end - attr.name.start and
@@ -53,10 +61,8 @@ noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const docume
             {
                 return attr.name.start;
             }
-            slot_index = (slot_index + 1) & 127;
+            slot_index = (slot_index + 1) & (table_capacity - 1);
         }
-        slots[slot_index] = .{ .hash = hash, .start = attr.name.start, .end = attr.name.end };
-        occupied |= @as(u128, 1) << @as(u7, @intCast(slot_index));
     }
     return null;
 }
