@@ -1526,10 +1526,12 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
         if (quote == '\'' or quote == '"') {
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
             if (comptime strict) {
+                const value = input[i + 1 .. quote_pos];
+                if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
                 if (entity_allocator) |allocator| {
-                    try document.validateXmlAttributeReferencesAlloc(allocator, input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
+                    try document.validateXmlAttributeReferencesAlloc(allocator, value, doctype_value, require_declared_entities);
                 } else {
-                    try document.validateXmlAttributeReferences(input[i + 1 .. quote_pos], doctype_value, require_declared_entities);
+                    try document.validateXmlAttributeReferences(value, doctype_value, require_declared_entities);
                 }
             }
             i = quote_pos + 1;
@@ -2240,6 +2242,7 @@ test "streaming strict validates XML Unicode and names" {
     ctx.skip_root = true;
     try std.testing.expectError(error.ExpectedElementName, parser.parse("<r><\xC3\x97/></r>", &ctx, Ctx.onNode));
     try std.testing.expectError(error.ExpectedAttributeName, parser.parse("<r><x \xC3\x97='v'/></r>", &ctx, Ctx.onNode));
+    try std.testing.expectError(error.InvalidAttributeValue, parser.parse("<r><x a='x<y'/></r>", &ctx, Ctx.onNode));
     try std.testing.expectError(error.ExpectedPiTarget, parser.parse("<r><?\xC3\x97?></r>", &ctx, Ctx.onNode));
 }
 
