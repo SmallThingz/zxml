@@ -83,6 +83,47 @@ pub const ParseError = error{
     RecursiveEntity,
 };
 
+pub fn validateXmlReferences(value: []const u8, allow_trailing_partial: bool) ParseError!void {
+    var search_from: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
+        const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
+            if (allow_trailing_partial) return error.UnexpectedEndOfData;
+            return error.UnterminatedEntity;
+        };
+        if (!isValidXmlReferenceBody(value[amp + 1 .. semi])) return error.InvalidNumericCharacterEntity;
+        search_from = semi + 1;
+    }
+}
+
+fn isValidXmlReferenceBody(body: []const u8) bool {
+    if (body.len == 0) return false;
+    if (body[0] != '#') return isValidXmlName(body);
+
+    var i: usize = 1;
+    var base: u32 = 10;
+    if (i < body.len and body[i] == 'x') {
+        base = 16;
+        i += 1;
+    }
+    if (i == body.len) return false;
+
+    var value: u32 = 0;
+    while (i < body.len) : (i += 1) {
+        const c = body[i];
+        const digit: u8 = if (c >= '0' and c <= '9')
+            c - '0'
+        else if (base == 16 and c >= 'a' and c <= 'f')
+            c - 'a' + 10
+        else if (base == 16 and c >= 'A' and c <= 'F')
+            c - 'A' + 10
+        else
+            return false;
+        if (value > (0x10FFFF - @as(u32, digit)) / base) return false;
+        value = value * base + @as(u32, digit);
+    }
+    return value <= 0x10FFFF and isXmlCharacter(@intCast(value));
+}
+
 pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
     const Vec = @Vector(xml_scan_vector_len, u8);
     const high_bit: Vec = @splat(0x80);

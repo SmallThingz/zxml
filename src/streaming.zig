@@ -232,7 +232,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                         if (comptime strict_mode) {
                             const run = scanner.scanTextRun(input, i);
-                            try validateCharacterDataRange(input, i, run.lt_index);
+                            try validateCharacterDataRange(input, i, run.lt_index, false);
                             if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                             if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                                 const node: Node = .{
@@ -453,7 +453,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     if (comptime strict_mode) {
                         const run = scanner.scanTextRun(input, i);
-                        try validateCharacterDataRange(input, i, run.lt_index);
+                        try validateCharacterDataRange(input, i, run.lt_index, incremental);
                         if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const node: Node = .{
@@ -877,11 +877,16 @@ pub fn Types(comptime options: ParseOptions) type {
                 var i = start;
                 while (i < input.len) {
                     const lt = scanner.findByte(input, i, '<') orelse {
-                        if (comptime strict_mode) try validateCharacterDataRange(input, i, input.len);
+                        if (comptime strict_mode) {
+                            validateCharacterDataRange(input, i, input.len, incremental) catch |err| switch (err) {
+                                error.UnexpectedEndOfData => if (incremental) return .{ .next = i, .needs_more = true } else return err,
+                                else => return err,
+                            };
+                        }
                         if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     };
-                    if (comptime strict_mode) try validateCharacterDataRange(input, i, lt);
+                    if (comptime strict_mode) try validateCharacterDataRange(input, i, lt, false);
                     if (lt + 1 >= input.len) {
                         if (incremental) return .{ .next = lt, .needs_more = true };
                         if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
@@ -1016,7 +1021,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const raw = input[content_start..lt];
-                if (comptime strict_mode) try validateCharacterDataRange(input, content_start, lt);
+                if (comptime strict_mode) try validateCharacterDataRange(input, content_start, lt, false);
                 if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
 
                 const node: Node = .{
@@ -1245,10 +1250,10 @@ fn skipSubtreeStateless(
     var i = start;
     while (i < input.len) {
         const lt = scanner.findByte(input, i, '<') orelse {
-            if (comptime strict) try validateCharacterDataRange(input, i, input.len);
+            if (comptime strict) try validateCharacterDataRange(input, i, input.len, false);
             return error.UnexpectedEndOfData;
         };
-        if (comptime strict) try validateCharacterDataRange(input, i, lt);
+        if (comptime strict) try validateCharacterDataRange(input, i, lt, false);
         i = lt;
         if (i + 1 >= input.len) return error.UnexpectedEndOfData;
         switch (input[i + 1]) {
@@ -1563,19 +1568,21 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
 
 inline fn validateAttributeValue(value: []const u8) ParseError!void {
     if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
+    try document.validateXmlReferences(value, false);
 }
 
 inline fn validateComment(value: []const u8) ParseError!void {
     if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
 }
 
-inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize) ParseError!void {
+inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
     std.debug.assert(start <= end and end <= input.len);
     // Incremental parsing may already have committed character data ending at
     // `start`. Look behind by the longest proper prefix of `]]>` so a forbidden
     // sequence split across cumulative chunks is still detected.
     const check_start = start - @min(start, 2);
     if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
+    try document.validateXmlReferences(input[start..end], incremental and end == input.len);
 }
 
 test "streaming parser self-test: order attributes and depths" {
@@ -1779,6 +1786,29 @@ test "streaming parseAvailable accepts every valid token prefix" {
         try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
         try parser.finish();
         try std.testing.expectEqual(@as(usize, 6), ctx.events);
+    }
+}
+
+test "streaming parseAvailable accepts references split at every byte" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;</r>";
+
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    for (0..source.len + 1) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
     }
 }
 
@@ -2338,10 +2368,12 @@ test "streaming cumulative strict parsing rejects malformed tokens at every spli
         }
     };
     const cases = [_][]const u8{
-        "<r>",       "<r></x>",         "<r></ r>",           "<r></r x>",        "<r a=1/>",                          "<r a='x<y'/>",
-        "<r a='x>",  "<r a='x'b='y'/>", "<r><!--a--b--></r>", "<r><!--a---></r>", "<r>a]]>b</r>",                      "<? ?>",
-        "<?XML x?>", "<r><? ?></r>",    "<r><?XML x?></r>",   "<!doctype r><r/>", "<!DOCTYPE r [<!ELEMENT r ANY><r/>", "<r><!foo</r>",
-        "<r><x/",    "<r><x a='1'",     "<r><![CDATA[x</r>",  "<r><!--x</r>",     "<r><?pi x</r>",                     "<",
+        "<r>",           "<r></x>",         "<r></ r>",           "<r></r x>",         "<r a=1/>",                          "<r a='x<y'/>",
+        "<r>&#X41;</r>", "<r>&#0;</r>",     "<r>&#xD800;</r>",    "<r>&#x110000;</r>", "<r>&;</r>",                         "<r>&1x;</r>",
+        "<r>&amp</r>",   "<r a='&#0;'/>",   "<r a='&#X41;'/>",    "<r a='&1x;'/>",     "<r a='&amp'/>",                     "<r a='a&b'/>",
+        "<r a='x>",      "<r a='x'b='y'/>", "<r><!--a--b--></r>", "<r><!--a---></r>",  "<r>a]]>b</r>",                      "<? ?>",
+        "<?XML x?>",     "<r><? ?></r>",    "<r><?XML x?></r>",   "<!doctype r><r/>",  "<!DOCTYPE r [<!ELEMENT r ANY><r/>", "<r><!foo</r>",
+        "<r><x/",        "<r><x a='1'",     "<r><![CDATA[x</r>",  "<r><!--x</r>",      "<r><?pi x</r>",                     "<",
     };
 
     for (cases) |source| {

@@ -744,6 +744,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateAttributeValue(value: []const u8) ParseError!void {
             if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
+            try document.validateXmlReferences(value, false);
         }
 
         inline fn validateComment(value: []const u8) ParseError!void {
@@ -752,6 +753,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateCharacterData(value: []const u8) ParseError!void {
             if (std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
+            try document.validateXmlReferences(value, false);
         }
     };
 }
