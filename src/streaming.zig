@@ -670,8 +670,10 @@ pub fn Types(comptime options: ParseOptions) type {
                                 @branchHint(.unlikely);
                                 return error.DuplicateAttribute;
                             }
+                            first_attr_start = attr_name_start;
+                            first_attr_end = attr_i;
                         } else {
-                            if (attr_count == 2) self.attribute_name_filter = try initAttributeNameFilter(input, attr_start, attr_name_start);
+                            if (attr_count == 2) self.attribute_name_filter = try initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
                             addAttributeNameFilter(&self.attribute_name_filter, input[attr_name_start..attr_i]);
                         }
                         attr_count += 1;
@@ -1676,15 +1678,11 @@ inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
     filter.* |= bit;
 }
 
-noinline fn initAttributeNameFilter(input: []const u8, start: usize, end: usize) ParseError!u64 {
+noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) ParseError!u64 {
     var filter: u64 = 0;
-    var i = start;
-    var count: usize = 0;
-    while (count < 2) : (count += 1) {
-        const attr = (try scanValidatedAttributeToken(input, i, end)) orelse break;
-        addAttributeNameFilter(&filter, input[attr.name_start..attr.name_end]);
-        i = attr.next;
-    }
+    const first = (try scanValidatedAttributeToken(input, start, second_start)) orelse return filter;
+    addAttributeNameFilter(&filter, input[first.name_start..first.name_end]);
+    addAttributeNameFilter(&filter, input[second_start..second_end]);
     return filter;
 }
 
