@@ -336,7 +336,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 var value_start = self.i;
                 var value_end = self.i;
                 parse_value: {
-                    if (self.i < input_len and tables.isWhitespace(input[self.i])) self.skipWhitespace();
+                    if (self.i < input_len and input[self.i] != '=' and tables.isWhitespace(input[self.i])) self.skipWhitespace();
                     if (self.i + 1 < input_len and input[self.i] == '=') {
                         const quote = input[self.i + 1];
                         if (quote == '\'' or quote == '"') {

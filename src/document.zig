@@ -229,8 +229,13 @@ fn validateXmlReferenceSyntax(value: []const u8, allow_trailing_partial: bool) P
             return error.UnterminatedEntity;
         };
         const body = value[amp + 1 .. semi];
-        if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
-        if (body[0] != '#' and !isPredefinedEntityName(body)) has_custom_reference = true;
+        if (body.len == 0) return error.InvalidNumericCharacterEntity;
+        if (body[0] == '#') {
+            if (xmlNumericReferenceValue(body) == null) return error.InvalidNumericCharacterEntity;
+        } else if (!isPredefinedEntityName(body)) {
+            if (!isValidXmlName(body)) return error.InvalidNumericCharacterEntity;
+            has_custom_reference = true;
+        }
         search_from = semi + 1;
     }
     return has_custom_reference;
