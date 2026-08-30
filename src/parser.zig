@@ -111,7 +111,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
-        fn parse(noalias self: *Self) ParseError!void {
+        fn parse(noalias self: *Self) align(128) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
             if (comptime validate_closing_tags) {
                 try self.doc.parse_validate_stack.ensureTotalCapacity(self.doc.allocator, self.doc.parse_stack.capacity);
