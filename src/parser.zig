@@ -615,7 +615,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         self.i = next;
                         return;
                     }
-                } else if (next >= self.input.len or self.input[next] != ' ') {
+                } else if (next >= self.input.len or !tables.isWhitespace(self.input[next])) {
                     self.i = next;
                     return;
                 }
@@ -794,6 +794,19 @@ test "strict closing validation supports tag names longer than u16" {
     doc.source = source;
     try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
     try std.testing.expectEqual(@as(usize, name_len), doc.nodeAt(1).?.nameSlice().len);
+}
+
+test "turbo mode accepts mixed XML whitespace around attribute equals" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    const source = "<r a \n \t=\r '1' b \r\n = \t\"2\"></r \n>";
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    doc.source = source;
+    try parseInto(&doc, source, .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+    const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
 }
 
 test "strict start tags accept mixed XML whitespace between attributes" {
