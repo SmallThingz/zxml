@@ -163,6 +163,10 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_generation: u64 = 0,
             root_seen: bool = false,
             doctype_seen: bool = false,
+            standalone_yes: bool = false,
+            doctype_value_start: usize = 0,
+            doctype_value_end: usize = 0,
+            require_declared_entities: bool = true,
             xml_validated_offset: usize = 0,
 
             const Self = @This();
@@ -180,6 +184,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 stack_generation: u64,
                 root_seen: bool,
                 doctype_seen: bool,
+                standalone_yes: bool,
+                doctype_value_start: usize,
+                doctype_value_end: usize,
+                require_declared_entities: bool,
             };
 
             const Checkpoint = struct {
@@ -189,6 +197,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 needs_more: bool,
                 root_seen: bool,
                 doctype_seen: bool,
+                standalone_yes: bool,
+                doctype_value_start: usize,
+                doctype_value_end: usize,
+                require_declared_entities: bool,
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
@@ -209,6 +221,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
                 self.root_seen = false;
                 self.doctype_seen = false;
+                self.standalone_yes = false;
+                self.doctype_value_start = 0;
+                self.doctype_value_end = 0;
+                self.require_declared_entities = true;
                 self.xml_validated_offset = 0;
                 if (comptime strict_mode) {
                     try document.validateXmlCharacters(input);
@@ -232,7 +248,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                         if (comptime strict_mode) {
                             const run = scanner.scanTextRun(input, i);
-                            try validateCharacterDataRange(input, i, run.lt_index, false);
+                            try self.validateCharacterDataRange(input, i, run.lt_index, false);
                             if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                             if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                                 const node: Node = .{
@@ -286,6 +302,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
                 self.root_seen = false;
                 self.doctype_seen = false;
+                self.standalone_yes = false;
+                self.doctype_value_start = 0;
+                self.doctype_value_end = 0;
+                self.require_declared_entities = true;
                 self.xml_validated_offset = 0;
             }
 
@@ -302,6 +322,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
                     .root_seen = self.root_seen,
                     .doctype_seen = self.doctype_seen,
+                    .standalone_yes = self.standalone_yes,
+                    .doctype_value_start = self.doctype_value_start,
+                    .doctype_value_end = self.doctype_value_end,
+                    .require_declared_entities = self.require_declared_entities,
                 };
             }
 
@@ -313,6 +337,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = state.needs_more;
                 self.root_seen = state.root_seen;
                 self.doctype_seen = state.doctype_seen;
+                self.standalone_yes = state.standalone_yes;
+                self.doctype_value_start = state.doctype_value_start;
+                self.doctype_value_end = state.doctype_value_end;
+                self.require_declared_entities = state.require_declared_entities;
                 // A restored continuation may diverge immediately after the
                 // saved parse offset, so revalidate from that byte onward.
                 self.xml_validated_offset = state.offset;
@@ -350,6 +378,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     .needs_more = self.needs_more,
                     .root_seen = self.root_seen,
                     .doctype_seen = self.doctype_seen,
+                    .standalone_yes = self.standalone_yes,
+                    .doctype_value_start = self.doctype_value_start,
+                    .doctype_value_end = self.doctype_value_end,
+                    .require_declared_entities = self.require_declared_entities,
                 };
             }
 
@@ -358,6 +390,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = state.needs_more;
                 self.root_seen = state.root_seen;
                 self.doctype_seen = state.doctype_seen;
+                self.standalone_yes = state.standalone_yes;
+                self.doctype_value_start = state.doctype_value_start;
+                self.doctype_value_end = state.doctype_value_end;
+                self.require_declared_entities = state.require_declared_entities;
                 if (comptime validate_closing_tags) {
                     std.debug.assert(!self.restore_pending);
                     std.debug.assert(state.stack_len == self.stack.items.len);
@@ -453,7 +489,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     if (comptime strict_mode) {
                         const run = scanner.scanTextRun(input, i);
-                        try validateCharacterDataRange(input, i, run.lt_index, incremental);
+                        try self.validateCharacterDataRange(input, i, run.lt_index, incremental);
                         if (self.stackLen() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const node: Node = .{
@@ -488,6 +524,23 @@ pub fn Types(comptime options: ParseOptions) type {
                     '!' => try self.parseBangNode(input, i, ctx, callback, incremental),
                     else => try self.parseOpeningTag(input, i, ctx, callback, incremental),
                 };
+            }
+
+            inline fn doctypeValue(self: *const Self, input: []const u8) ?[]const u8 {
+                if (!self.doctype_seen) return null;
+                return input[self.doctype_value_start..self.doctype_value_end];
+            }
+
+            inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
+                if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
+                try document.validateXmlReferences(value, false, self.doctypeValue(input), self.require_declared_entities);
+            }
+
+            inline fn validateCharacterDataRange(self: *const Self, input: []const u8, start: usize, end: usize, comptime incremental: bool) ParseError!void {
+                std.debug.assert(start <= end and end <= input.len);
+                const check_start = start - @min(start, 2);
+                if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
+                try document.validateXmlReferences(input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
@@ -578,7 +631,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 if (strict_mode) return error.ExpectedQuote;
                                 return error.UnexpectedEndOfData;
                             };
-                            if (comptime strict_mode) try validateAttributeValue(input[attr_i + 2 .. quote_pos]);
+                            if (comptime strict_mode) try self.validateAttributeValue(input, input[attr_i + 2 .. quote_pos]);
                             i = quote_pos + 1;
                             continue;
                         }
@@ -604,7 +657,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             if (strict_mode) return error.ExpectedQuote;
                             return error.UnexpectedEndOfData;
                         };
-                        if (comptime strict_mode) try validateAttributeValue(input[attr_i + 1 .. quote_pos]);
+                        if (comptime strict_mode) try self.validateAttributeValue(input, input[attr_i + 1 .. quote_pos]);
                         i = quote_pos + 1;
                         continue;
                     }
@@ -770,7 +823,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     return input.len;
                 };
                 if (comptime strict_mode) {
-                    if (xml_target) try document.validateXmlDeclaration(input[value_start..end]);
+                    if (xml_target) {
+                        const declaration = try document.validateXmlDeclaration(input[value_start..end]);
+                        self.standalone_yes = declaration.standalone_yes;
+                    }
                 }
                 if (include_misc_nodes) {
                     const decl = xml_target;
@@ -837,8 +893,14 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (strict_mode or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (comptime strict_mode) _ = try document.validateDoctypeAlloc(self.allocator, input[start + 9 .. end]);
-                    if (comptime strict_mode) self.doctype_seen = true;
+                    if (comptime strict_mode) {
+                        const value_start = start + 9;
+                        const info = try document.validateDoctypeAlloc(self.allocator, input[value_start..end]);
+                        self.doctype_value_start = value_start;
+                        self.doctype_value_end = end;
+                        self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                        self.doctype_seen = true;
+                    }
                     if (include_misc_nodes) {
                         const node: Node = .{
                             .source = input,
@@ -878,7 +940,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 while (i < input.len) {
                     const lt = scanner.findByte(input, i, '<') orelse {
                         if (comptime strict_mode) {
-                            validateCharacterDataRange(input, i, input.len, incremental) catch |err| switch (err) {
+                            self.validateCharacterDataRange(input, i, input.len, incremental) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental) return .{ .next = i, .needs_more = true } else return err,
                                 else => return err,
                             };
@@ -886,7 +948,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     };
-                    if (comptime strict_mode) try validateCharacterDataRange(input, i, lt, false);
+                    if (comptime strict_mode) try self.validateCharacterDataRange(input, i, lt, false);
                     if (lt + 1 >= input.len) {
                         if (incremental) return .{ .next = lt, .needs_more = true };
                         if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
@@ -956,7 +1018,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 continue;
                             }
 
-                            const open = scanOpeningTagToken(input, lt, strict_mode) catch |err| switch (err) {
+                            const open = scanOpeningTagToken(input, lt, strict_mode, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -1021,7 +1083,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const raw = input[content_start..lt];
-                if (comptime strict_mode) try validateCharacterDataRange(input, content_start, lt, false);
+                if (comptime strict_mode) try self.validateCharacterDataRange(input, content_start, lt, false);
                 if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
 
                 const node: Node = .{
@@ -1288,7 +1350,7 @@ fn skipSubtreeStateless(
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict);
+                const open = try scanOpeningTagToken(input, i, strict, null, false);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
@@ -1333,7 +1395,7 @@ fn expectedOpenNameAtDepth(
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict);
+                const open = try scanOpeningTagToken(input, i, strict, null, false);
                 i = open.next;
                 if (!open.self_closing) {
                     depth += 1;
@@ -1359,7 +1421,7 @@ const CloseToken = struct {
     key: u64,
 };
 
-fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) ParseError!OpenToken {
+fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, doctype_value: ?[]const u8, require_declared_entities: bool) ParseError!OpenToken {
     var i = start + 1;
     if (i >= input.len or !tables.isNameStart(input[i])) return error.ExpectedElementName;
     const name_start = i;
@@ -1411,7 +1473,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
-            if (comptime strict) try validateAttributeValue(input[i + 1 .. quote_pos]);
+            if (comptime strict) try document.validateXmlReferences(input[i + 1 .. quote_pos], false, doctype_value, require_declared_entities);
             i = quote_pos + 1;
         } else {
             if (strict) return error.ExpectedQuote;
@@ -1568,7 +1630,7 @@ fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime inc
 
 inline fn validateAttributeValue(value: []const u8) ParseError!void {
     if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-    try document.validateXmlReferences(value, false);
+    try document.validateXmlReferences(value, false, null, false);
 }
 
 inline fn validateComment(value: []const u8) ParseError!void {
@@ -1582,7 +1644,7 @@ inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize
     // sequence split across cumulative chunks is still detected.
     const check_start = start - @min(start, 2);
     if (std.mem.indexOf(u8, input[check_start..end], "]]>") != null) return error.InvalidCharacterData;
-    try document.validateXmlReferences(input[start..end], incremental and end == input.len);
+    try document.validateXmlReferences(input[start..end], incremental and end == input.len, null, false);
 }
 
 test "streaming parser self-test: order attributes and depths" {
@@ -1807,6 +1869,64 @@ test "streaming parseAvailable accepts references split at every byte" {
         var ctx: Ctx = .{};
 
         _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+    }
+}
+
+test "streaming strict enforces declared parsed general entities" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+
+    const invalid = [_][]const u8{
+        "<r>&custom;</r>",
+        "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>",
+        "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
+        "<!DOCTYPE r><r><skip><x a='&custom;'/></skip></r>",
+    };
+    inline for (invalid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    const valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>",
+        "<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
+    };
+    inline for (valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+}
+
+test "streaming cumulative declared entities survive every split and restore" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<!DOCTYPE r [<!ENTITY custom 'x'>]><r a='&custom;'>&custom;</r>";
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    for (0..source.len + 1) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        const state = parser.save();
+        parser.restore(state);
         try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
         try parser.finish();
     }

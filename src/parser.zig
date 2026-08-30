@@ -29,6 +29,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         current_parent: IndexInt = 0,
         root_seen: bool = false,
         doctype_seen: bool = false,
+        standalone_yes: bool = false,
+        doctype_value_start: usize = 0,
+        doctype_value_end: usize = 0,
+        require_declared_entities: bool = true,
 
         const Self = @This();
 
@@ -58,7 +62,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     const run = if (comptime strict_mode) scanner.scanTextRunStrict(self.input, self.i) else scanner.scanTextRun(self.input, self.i);
                     if (run.lt_index > self.i) {
                         if (comptime strict_mode) {
-                            try validateCharacterData(self.input[self.i..run.lt_index]);
+                            try self.validateCharacterData(self.input[self.i..run.lt_index]);
                             if (self.topIndex() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
                         }
                         if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
@@ -227,7 +231,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             value_start = self.i + 2;
                             if (scanner.findByte(input, value_start, quote)) |quote_pos| {
                                 value_end = quote_pos;
-                                if (comptime strict_mode) try validateAttributeValue(input[value_start..value_end]);
+                                if (comptime strict_mode) try self.validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
                                 if (strict_mode) return error.ExpectedQuote;
@@ -250,7 +254,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             value_start = self.i;
                             if (scanner.findByte(input, self.i, quote)) |quote_pos| {
                                 value_end = quote_pos;
-                                if (comptime strict_mode) try validateAttributeValue(input[value_start..value_end]);
+                                if (comptime strict_mode) try self.validateAttributeValue(input[value_start..value_end]);
                                 self.i = quote_pos + 1;
                             } else {
                                 if (strict_mode) return error.ExpectedQuote;
@@ -425,7 +429,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i = end + 2;
 
             if (comptime strict_mode) {
-                if (xml_target) try document.validateXmlDeclaration(self.input[value_start..value_end]);
+                if (xml_target) {
+                    const declaration = try document.validateXmlDeclaration(self.input[value_start..value_end]);
+                    self.standalone_yes = declaration.standalone_yes;
+                }
             }
 
             if (!opts.include_misc_nodes) return;
@@ -506,7 +513,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 const value_start = self.i + 9;
                 const value_end = j;
-                if (comptime strict_mode) _ = try document.validateDoctypeAlloc(self.doc.allocator, self.input[value_start..value_end]);
+                if (comptime strict_mode) {
+                    const info = try document.validateDoctypeAlloc(self.doc.allocator, self.input[value_start..value_end]);
+                    self.doctype_value_start = value_start;
+                    self.doctype_value_end = value_end;
+                    self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                }
                 self.i = j + 1;
 
                 if (comptime strict_mode) self.doctype_seen = true;
@@ -723,7 +735,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const raw = self.input[text_start..lt];
-            if (comptime strict_mode) try validateCharacterData(raw);
+            if (comptime strict_mode) try self.validateCharacterData(raw);
             if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0])) {
                 const whitespace_only = blk: {
                     if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
@@ -742,18 +754,23 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        inline fn validateAttributeValue(value: []const u8) ParseError!void {
+        inline fn validateAttributeValue(self: *const Self, value: []const u8) ParseError!void {
             if (std.mem.indexOfScalar(u8, value, '<') != null) return error.InvalidAttributeValue;
-            try document.validateXmlReferences(value, false);
+            try document.validateXmlReferences(value, false, self.doctypeValue(), self.require_declared_entities);
         }
 
         inline fn validateComment(value: []const u8) ParseError!void {
             if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
         }
 
-        inline fn validateCharacterData(value: []const u8) ParseError!void {
+        inline fn validateCharacterData(self: *const Self, value: []const u8) ParseError!void {
             if (std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
-            try document.validateXmlReferences(value, false);
+            try document.validateXmlReferences(value, false, self.doctypeValue(), self.require_declared_entities);
+        }
+
+        inline fn doctypeValue(self: *const Self) ?[]const u8 {
+            if (!self.doctype_seen) return null;
+            return self.input[self.doctype_value_start..self.doctype_value_end];
         }
     };
 }

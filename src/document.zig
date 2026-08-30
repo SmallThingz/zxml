@@ -83,16 +83,92 @@ pub const ParseError = error{
     RecursiveEntity,
 };
 
-pub fn validateXmlReferences(value: []const u8, allow_trailing_partial: bool) ParseError!void {
+pub fn validateXmlReferences(
+    value: []const u8,
+    allow_trailing_partial: bool,
+    doctype_value: ?[]const u8,
+    require_declared_entities: bool,
+) ParseError!void {
     var search_from: usize = 0;
     while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
         const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
             if (allow_trailing_partial) return error.UnexpectedEndOfData;
             return error.UnterminatedEntity;
         };
-        if (!isValidXmlReferenceBody(value[amp + 1 .. semi])) return error.InvalidNumericCharacterEntity;
+        const body = value[amp + 1 .. semi];
+        if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
+        if (require_declared_entities and body[0] != '#' and !isPredefinedEntityName(body)) {
+            const declared = if (doctype_value) |doctype| try doctypeDeclaresParsedGeneralEntity(doctype, body) else false;
+            if (!declared) return error.InvalidNumericCharacterEntity;
+        }
         search_from = semi + 1;
     }
+}
+
+inline fn isPredefinedEntityName(name: []const u8) bool {
+    return std.mem.eql(u8, name, "amp") or std.mem.eql(u8, name, "lt") or
+        std.mem.eql(u8, name, "gt") or std.mem.eql(u8, name, "apos") or
+        std.mem.eql(u8, name, "quot");
+}
+
+fn doctypeDeclaresParsedGeneralEntity(doctype_value: []const u8, target: []const u8) ParseError!bool {
+    const subset_range = try findInternalSubset(doctype_value) orelse return false;
+    const subset = doctype_value[subset_range.start..subset_range.end];
+    var i: usize = 0;
+    while (i < subset.len) {
+        if (tables.isWhitespace(subset[i])) {
+            _ = skipXmlWhitespace(subset, &i);
+            continue;
+        }
+        if (subset[i] == '%') {
+            try consumePeReference(subset, &i);
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<!--")) {
+            const end = std.mem.indexOfPos(u8, subset, i + 4, "-->") orelse return error.InvalidDoctype;
+            i = end + 3;
+            continue;
+        }
+        if (std.mem.startsWith(u8, subset[i..], "<?")) {
+            const end = std.mem.indexOfPos(u8, subset, i + 2, "?>") orelse return error.InvalidDoctype;
+            i = end + 2;
+            continue;
+        }
+        if (subset[i] != '<') return error.InvalidDoctype;
+
+        const entity_decl = std.mem.startsWith(u8, subset[i..], "<!ENTITY");
+        const keyword_len: usize = if (entity_decl)
+            "<!ENTITY".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!ELEMENT"))
+            "<!ELEMENT".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!ATTLIST"))
+            "<!ATTLIST".len
+        else if (std.mem.startsWith(u8, subset[i..], "<!NOTATION"))
+            "<!NOTATION".len
+        else
+            return error.InvalidDoctype;
+        const decl_end = findMarkupDeclEnd(subset, i + keyword_len) orelse return error.InvalidDoctype;
+        if (entity_decl) {
+            const body = subset[i + keyword_len .. decl_end];
+            var j: usize = 0;
+            if (!skipRequiredXmlWhitespace(body, &j)) return error.InvalidDoctype;
+            if (j < body.len and body[j] == '%') {
+                i = decl_end + 1;
+                continue;
+            }
+            const name_start = j;
+            try consumeDtdName(body, &j);
+            if (std.mem.eql(u8, body[name_start..j], target)) {
+                if (!skipRequiredXmlWhitespace(body, &j)) return error.InvalidDoctype;
+                if (j < body.len and (body[j] == '\'' or body[j] == '"')) return true;
+                try consumeExternalId(body, &j);
+                if (skipRequiredXmlWhitespace(body, &j) and std.mem.startsWith(u8, body[j..], "NDATA")) return false;
+                return true;
+            }
+        }
+        i = decl_end + 1;
+    }
+    return false;
 }
 
 fn isValidXmlReferenceBody(body: []const u8) bool {
@@ -302,27 +378,36 @@ pub const ParseDiagnostic = struct {
     }
 };
 
-pub fn validateXmlDeclaration(body: []const u8) ParseError!void {
+pub const XmlDeclarationInfo = struct {
+    standalone_yes: bool = false,
+};
+
+pub fn validateXmlDeclaration(body: []const u8) ParseError!XmlDeclarationInfo {
+    var info: XmlDeclarationInfo = .{};
     var i: usize = 0;
-    try expectDeclarationPseudoAttribute(body, &i, "version", .version);
+    _ = try expectDeclarationPseudoAttribute(body, &i, "version", .version);
 
     var had_separator = skipDeclarationWhitespace(body, &i);
     if (i < body.len and std.mem.startsWith(u8, body[i..], "encoding")) {
         if (!had_separator) return error.InvalidDeclaration;
-        try expectDeclarationPseudoAttribute(body, &i, "encoding", .encoding);
+        _ = try expectDeclarationPseudoAttribute(body, &i, "encoding", .encoding);
         had_separator = skipDeclarationWhitespace(body, &i);
     }
     if (i < body.len and std.mem.startsWith(u8, body[i..], "standalone")) {
         if (!had_separator) return error.InvalidDeclaration;
-        try expectDeclarationPseudoAttribute(body, &i, "standalone", .standalone);
+        const standalone = try expectDeclarationPseudoAttribute(body, &i, "standalone", .standalone);
+        info.standalone_yes = std.mem.eql(u8, standalone, "yes");
         _ = skipDeclarationWhitespace(body, &i);
     }
     if (i != body.len) return error.InvalidDeclaration;
+    return info;
 }
 
 pub const DoctypeInfo = struct {
     name_start: usize,
     name_end: usize,
+    has_external_id: bool = false,
+    has_parameter_entity_references: bool = false,
 };
 
 /// Validates XML 1.0 doctypedecl syntax, including the complete internal-subset
@@ -343,14 +428,18 @@ pub fn validateDoctypeAlloc(allocator: std.mem.Allocator, value: []const u8) Par
     const name_end = i;
     if (!isValidXmlName(value[name_start..name_end])) return error.InvalidDoctype;
 
+    var has_external_id = false;
+    var has_parameter_entity_references = false;
     const had_space_after_name = skipXmlWhitespace(value, &i);
     if (i < value.len and std.mem.startsWith(u8, value[i..], "SYSTEM")) {
+        has_external_id = true;
         if (!had_space_after_name) return error.InvalidDoctype;
         i += "SYSTEM".len;
         if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
         try consumeSystemLiteral(value, &i);
         _ = skipXmlWhitespace(value, &i);
     } else if (i < value.len and std.mem.startsWith(u8, value[i..], "PUBLIC")) {
+        has_external_id = true;
         if (!had_space_after_name) return error.InvalidDoctype;
         i += "PUBLIC".len;
         if (!skipRequiredXmlWhitespace(value, &i)) return error.InvalidDoctype;
@@ -364,13 +453,18 @@ pub fn validateDoctypeAlloc(allocator: std.mem.Allocator, value: []const u8) Par
         const subset_range = findInternalSubset(value[i..]) catch return error.InvalidDoctype;
         const subset = subset_range orelse return error.InvalidDoctype;
         if (subset.start != 1) return error.InvalidDoctype;
-        try validateInternalSubset(allocator, value[i + subset.start .. i + subset.end]);
+        has_parameter_entity_references = try validateInternalSubset(allocator, value[i + subset.start .. i + subset.end]);
         i += subset.end + 1;
         _ = skipXmlWhitespace(value, &i);
     }
     if (i != value.len) return error.InvalidDoctype;
 
-    return .{ .name_start = name_start, .name_end = name_end };
+    return .{
+        .name_start = name_start,
+        .name_end = name_end,
+        .has_external_id = has_external_id,
+        .has_parameter_entity_references = has_parameter_entity_references,
+    };
 }
 
 inline fn skipXmlWhitespace(input: []const u8, i: *usize) bool {
@@ -420,7 +514,8 @@ const DtdDeclarationKind = enum { element, attlist, entity, notation };
 /// processors. Validity constraints such as unique declarations are deliberately
 /// left out, but the complete syntax and internal-subset PE restriction are
 /// enforced.
-fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) ParseError!void {
+fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) ParseError!bool {
+    var has_parameter_entity_references = false;
     var i: usize = 0;
     while (i < subset.len) {
         if (tables.isWhitespace(subset[i])) {
@@ -428,6 +523,7 @@ fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) Pars
             continue;
         }
         if (subset[i] == '%') {
+            has_parameter_entity_references = true;
             try consumePeReference(subset, &i);
             continue;
         }
@@ -460,6 +556,7 @@ fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) Pars
         try validateDtdDeclarationBody(allocator, subset[i + keyword.len .. decl_end], kind);
         i = decl_end + 1;
     }
+    return has_parameter_entity_references;
 }
 
 fn validateDtdProcessingInstruction(input: []const u8, start: usize) ParseError!usize {
@@ -860,7 +957,7 @@ fn consumeNotationDefinition(input: []const u8, i: *usize) ParseError!void {
 
 const DeclarationValueKind = enum { version, encoding, standalone };
 
-fn expectDeclarationPseudoAttribute(body: []const u8, i: *usize, comptime name: []const u8, comptime kind: DeclarationValueKind) ParseError!void {
+fn expectDeclarationPseudoAttribute(body: []const u8, i: *usize, comptime name: []const u8, comptime kind: DeclarationValueKind) ParseError![]const u8 {
     if (!std.mem.startsWith(u8, body[i.*..], name)) return error.InvalidDeclaration;
     i.* += name.len;
     _ = skipDeclarationWhitespace(body, i);
@@ -892,6 +989,7 @@ fn expectDeclarationPseudoAttribute(body: []const u8, i: *usize, comptime name: 
         .standalone => std.mem.eql(u8, value, "yes") or std.mem.eql(u8, value, "no"),
     };
     if (!valid) return error.InvalidDeclaration;
+    return value;
 }
 
 fn skipDeclarationWhitespace(body: []const u8, i: *usize) bool {

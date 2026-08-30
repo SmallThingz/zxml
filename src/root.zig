@@ -801,15 +801,44 @@ test "strict rejects malformed and XML-invalid references during parse" {
     defer parsed.deinit();
 }
 
-test "strict decoded access rejects unknown named entities when DTD expansion is disabled" {
-    var parsed = try parseTestDoc("<r>&custom;</r>", .{ .mode = .strict });
-    defer parsed.deinit();
-
-    try std.testing.expectEqualStrings("&custom;", parsed.doc.nodeAt(1).?.firstChild().?.valueRawSlice());
-    try std.testing.expectError(
-        error.InvalidNumericCharacterEntity,
-        parsed.doc.nodeAt(1).?.firstChild().?.value(std.testing.allocator),
-    );
+test "strict enforces declared parsed general entities" {
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse("<r>&custom;</r>", .{ .mode = .strict }));
+    }
+    {
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>", .{ .mode = .strict });
+        defer parsed.deinit();
+        try std.testing.expectEqualStrings("&custom;", parsed.doc.nodeAt(2).?.firstChild().?.valueRawSlice());
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>";
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n><!ENTITY custom 'later'>]><r>&custom;</r>";
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+    {
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'first'><!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>", .{ .mode = .strict });
+        defer parsed.deinit();
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try doc.parse("<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>", .{ .mode = .strict });
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        const source = "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>";
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
 }
 
 test "turbo invalid numeric entity stays literal in raw and decoded access" {
