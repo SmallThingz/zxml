@@ -796,20 +796,31 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
         if (node.kind != .element) continue;
         if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
 
-        var child = doc.nodeAt(@intCast(i)).?.firstChild();
-        while (child) |n| : (child = n.nextSibling()) {
-            if (n.kind != .text) continue;
-            if (profileWantsDecodedValues(profile)) {
-                return n.value(alloc) catch |err| switch (err) {
-                    error.OutOfMemory => error.OutOfMemory,
-                    else => mapDecodeError(err),
-                };
-            }
-            return n.valueRawSlice();
+        const element = doc.nodeAt(@intCast(i)).?;
+        if (profileWantsDecodedValues(profile)) {
+            return element.innerText(alloc) catch |err| switch (err) {
+                error.OutOfMemory => error.OutOfMemory,
+                else => mapDecodeError(err),
+            };
         }
-        return null;
+
+        var out = std.ArrayList(u8).empty;
+        errdefer out.deinit(alloc);
+        try appendRawElementText(&out, alloc, element);
+        return try out.toOwnedSlice(alloc);
     }
     return null;
+}
+
+fn appendRawElementText(out: *std.ArrayList(u8), alloc: std.mem.Allocator, element: anytype) std.mem.Allocator.Error!void {
+    var child = element.firstChild();
+    while (child) |node| : (child = node.nextSibling()) {
+        switch (node.kind) {
+            .text, .cdata => try out.appendSlice(alloc, node.valueRawSlice()),
+            .element => try appendRawElementText(out, alloc, node),
+            else => {},
+        }
+    }
 }
 
 fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
@@ -1252,6 +1263,38 @@ test "runCase rejects expectation fields that would otherwise be ignored" {
         try std.testing.expect(!result.pass);
         try std.testing.expectEqualStrings(case.reason, result.reason.?);
     }
+}
+
+test "field text checks concatenate text, CDATA, and descendant text" {
+    const alloc = std.testing.allocator;
+
+    const raw = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"raw","profile":"strict","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&amp;G"}
+    , .{});
+    defer raw.deinit();
+    const raw_result = try runCase(alloc, raw.value.object, 0);
+    defer if (raw_result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(raw_result.pass);
+
+    const decoded = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"decoded","profile":"strict_entities","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&G"}
+    , .{});
+    defer decoded.deinit();
+    const decoded_result = try runCase(alloc, decoded.value.object, 0);
+    defer if (decoded_result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(decoded_result.pass);
+}
+
+test "field text checks distinguish an empty field from a missing field" {
+    const alloc = std.testing.allocator;
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc,
+        \\{"name":"empty","xml":"<r><Code/></r>","expect_field_name":"Code","expect_field_text":""}
+    , .{});
+    defer parsed.deinit();
+
+    const result = try runCase(alloc, parsed.value.object, 0);
+    defer if (result.reason) |reason| alloc.free(reason);
+    try std.testing.expect(result.pass);
 }
 
 test "root attribute expectations do not require a root-name expectation" {
