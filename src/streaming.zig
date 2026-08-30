@@ -1093,7 +1093,7 @@ inline fn skipWs(input: []const u8, start: usize) usize {
     const c = input[start];
     if (c == ' ') {
         const next = start + 1;
-        if (next >= input.len or input[next] != ' ') return next;
+        if (next >= input.len or !tables.isWhitespace(input[next])) return next;
     } else if (!tables.isWhitespace(c)) {
         return start;
     }
@@ -2002,6 +2002,38 @@ test "streaming strict validation supports tag names longer than u16" {
     var ctx: Ctx = .{};
     try parser.parse(source, &ctx, Ctx.onNode);
     try std.testing.expectEqual(@as(usize, 1), ctx.count);
+}
+
+test "streaming turbo accepts mixed XML whitespace around attribute equals" {
+    const opts: ParseOptions = .{
+        .mode = .turbo,
+        .validate_closing_tags = true,
+        .require_closed_elements_on_eof = true,
+    };
+    const T = Types(opts);
+    const input = "<r a \n \t=\r \"x>y\"><b/></r \n>";
+
+    const Context = struct {
+        saw_root: bool = false,
+        saw_child: bool = false,
+
+        fn onNode(self: *@This(), node: T.Node) bool {
+            if (node.kind != .element) return true;
+            if (std.mem.eql(u8, node.nameSlice(), "r")) {
+                self.saw_root = std.mem.eql(u8, node.getAttributeValueRaw("a") orelse "", "x>y");
+            } else if (std.mem.eql(u8, node.nameSlice(), "b")) {
+                self.saw_child = true;
+            }
+            return true;
+        }
+    };
+
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Context = .{};
+    try parser.parse(input, &ctx, Context.onNode);
+    try std.testing.expect(ctx.saw_root);
+    try std.testing.expect(ctx.saw_child);
 }
 
 test "streaming strict accepts mixed XML whitespace between attributes" {
