@@ -6,6 +6,8 @@ pub const DecodeError = error{
     UnterminatedEntity,
 };
 
+pub const BoundedDecodeError = DecodeError || error{OutputTooLarge};
+
 const EntityDecode = struct {
     bytes: [4]u8,
     len: usize,
@@ -22,10 +24,36 @@ pub fn decodeAllocWithEntityMap(
     strict: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) (std.mem.Allocator.Error || DecodeError)![]u8 {
-    if (std.mem.indexOfScalar(u8, input, '&') == null) return alloc.dupe(u8, input);
+    return decodeAllocWithEntityMapImpl(alloc, input, strict, entity_map, null) catch |err| switch (err) {
+        error.OutputTooLarge => unreachable,
+        else => |e| return e,
+    };
+}
+
+pub fn decodeAllocWithEntityMapBounded(
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+    max_output_len: usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)![]u8 {
+    return decodeAllocWithEntityMapImpl(alloc, input, strict, entity_map, max_output_len);
+}
+
+fn decodeAllocWithEntityMapImpl(
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+    max_output_len: ?usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)![]u8 {
+    if (std.mem.indexOfScalar(u8, input, '&') == null) {
+        if (max_output_len) |limit| if (input.len > limit) return error.OutputTooLarge;
+        return alloc.dupe(u8, input);
+    }
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
-    try appendDecodedWithEntityMap(&out, alloc, input, strict, entity_map);
+    try appendDecodedWithEntityMapImpl(&out, alloc, input, strict, entity_map, max_output_len);
     return out.toOwnedSlice(alloc);
 }
 
@@ -36,17 +64,31 @@ pub fn appendDecodedWithEntityMap(
     strict: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) (std.mem.Allocator.Error || DecodeError)!void {
+    appendDecodedWithEntityMapImpl(out, alloc, input, strict, entity_map, null) catch |err| switch (err) {
+        error.OutputTooLarge => unreachable,
+        else => |e| return e,
+    };
+}
+
+fn appendDecodedWithEntityMapImpl(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    input: []const u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+    max_output_len: ?usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)!void {
     const first = std.mem.indexOfScalar(u8, input, '&') orelse {
-        try out.appendSlice(alloc, input);
+        try appendLimited(out, alloc, input, max_output_len);
         return;
     };
 
-    try out.appendSlice(alloc, input[0..first]);
+    try appendLimited(out, alloc, input[0..first], max_output_len);
     var src = first;
     while (src < input.len) {
         if (input[src] != '&') {
             const next = std.mem.indexOfScalarPos(u8, input, src, '&') orelse input.len;
-            try out.appendSlice(alloc, input[src..next]);
+            try appendLimited(out, alloc, input[src..next], max_output_len);
             src = next;
             continue;
         }
@@ -54,27 +96,39 @@ pub fn appendDecodedWithEntityMap(
         const token = parseEntityToken(input, src) catch |err| switch (err) {
             error.UnterminatedEntity => {
                 if (strict) return error.UnterminatedEntity;
-                try out.append(alloc, '&');
+                try appendLimited(out, alloc, "&", max_output_len);
                 src += 1;
                 continue;
             },
             error.InvalidNumericCharacterEntity => {
                 if (strict) return error.InvalidNumericCharacterEntity;
-                try out.append(alloc, '&');
+                try appendLimited(out, alloc, "&", max_output_len);
                 src += 1;
                 continue;
             },
         };
 
-        if (try tryAppendDecodedEntityBody(out, alloc, token.body, strict, entity_map)) {
+        if (try tryAppendDecodedEntityBody(out, alloc, token.body, strict, entity_map, max_output_len)) {
             src += token.consumed;
             continue;
         }
 
         if (strict) return error.InvalidNumericCharacterEntity;
-        try out.append(alloc, '&');
+        try appendLimited(out, alloc, "&", max_output_len);
         src += 1;
     }
+}
+
+fn appendLimited(
+    out: *std.ArrayList(u8),
+    alloc: std.mem.Allocator,
+    bytes: []const u8,
+    max_output_len: ?usize,
+) (std.mem.Allocator.Error || error{OutputTooLarge})!void {
+    if (max_output_len) |limit| {
+        if (out.items.len > limit or bytes.len > limit - out.items.len) return error.OutputTooLarge;
+    }
+    try out.appendSlice(alloc, bytes);
 }
 
 fn tryAppendDecodedEntityBody(
@@ -83,15 +137,16 @@ fn tryAppendDecodedEntityBody(
     body: []const u8,
     strict: bool,
     entity_map: ?*const std.StringHashMap([]u8),
-) (std.mem.Allocator.Error || DecodeError)!bool {
+    max_output_len: ?usize,
+) (std.mem.Allocator.Error || BoundedDecodeError)!bool {
     if (try decodeEntityBody(body, strict)) |decoded| {
-        try out.appendSlice(alloc, decoded.bytes[0..decoded.len]);
+        try appendLimited(out, alloc, decoded.bytes[0..decoded.len], max_output_len);
         return true;
     }
 
     if (entity_map) |map| {
         if (map.get(body)) |value| {
-            try out.appendSlice(alloc, value);
+            try appendLimited(out, alloc, value, max_output_len);
             return true;
         }
     }
@@ -262,4 +317,25 @@ test "strict decode rejects XML-invalid character references" {
     const turbo = try decodeAllocWithEntityMap(alloc, "&#X41;", false, null);
     defer alloc.free(turbo);
     try std.testing.expectEqualStrings("A", turbo);
+}
+
+test "bounded entity decoding rejects expansion before appending past the cap" {
+    const alloc = std.testing.allocator;
+    var map = std.StringHashMap([]u8).init(alloc);
+    defer {
+        var it = map.iterator();
+        while (it.next()) |entry| {
+            alloc.free(entry.key_ptr.*);
+            alloc.free(entry.value_ptr.*);
+        }
+        map.deinit();
+    }
+
+    const key = try alloc.dupe(u8, "wide");
+    const value = try alloc.dupe(u8, "12345678");
+    try map.put(key, value);
+    try std.testing.expectError(
+        error.OutputTooLarge,
+        decodeAllocWithEntityMapBounded(alloc, "&wide;", true, &map, 4),
+    );
 }

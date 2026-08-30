@@ -1,5 +1,4 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const common = @import("common.zig");
 const conformance = @import("conformance.zig");
 
@@ -535,16 +534,11 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
     const iters = try std.fmt.allocPrint(alloc, "{d}", .{iterations});
     defer alloc.free(iters);
 
-    var argv: [7][]const u8 = undefined;
+    // Do not require Linux-specific CPU affinity tooling here. Benchmarking
+    // should still work in minimal containers and restricted cpusets where
+    // `taskset` is absent or CPU 0 is unavailable.
+    var argv: [4][]const u8 = undefined;
     var argc: usize = 0;
-    const pin = builtin.os.tag == .linux;
-
-    if (pin) {
-        argv[0] = "taskset";
-        argv[1] = "-c";
-        argv[2] = "0";
-        argc = 3;
-    }
 
     if (std.mem.eql(u8, parser_name, "ours-strict")) {
         argv[argc + 0] = BIN_DIR ++ "/ours_runner";

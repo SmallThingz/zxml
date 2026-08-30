@@ -567,12 +567,21 @@ pub const Document = struct {
             const raw_value = subset[value_start..i];
             const end = findMarkupDeclEnd(subset, i + 1) orelse return error.UnexpectedEndOfData;
             const expanded = if (self.expand_dtd_entities)
-                try entities.decodeAllocWithEntityMap(self.allocator, raw_value, self.parse_mode == .strict, &self.entity_map)
-            else
-                try self.allocator.dupe(u8, raw_value);
+                entities.decodeAllocWithEntityMapBounded(
+                    self.allocator,
+                    raw_value,
+                    self.parse_mode == .strict,
+                    &self.entity_map,
+                    self.max_entity_value_len,
+                ) catch |err| switch (err) {
+                    error.OutputTooLarge => return error.EntityValueTooLarge,
+                    else => |e| return e,
+                }
+            else blk: {
+                if (raw_value.len > self.max_entity_value_len) return error.EntityValueTooLarge;
+                break :blk try self.allocator.dupe(u8, raw_value);
+            };
             errdefer self.allocator.free(expanded);
-
-            if (expanded.len > self.max_entity_value_len) return error.EntityValueTooLarge;
 
             const owned_name = try self.allocator.dupe(u8, name);
             errdefer self.allocator.free(owned_name);
@@ -1076,4 +1085,13 @@ test "parse diagnostics treat CRLF and CR as line endings" {
 
     const cr = ParseDiagnostic{ .err = error.ExpectedGt, .offset = 4, .source = "a\rb\rc" };
     try std.testing.expectEqual(ParseDiagnostic.Location{ .line = 3, .column = 1 }, cr.location());
+}
+
+test "DTD expansion limit applies while expanding referenced entity values" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+    try std.testing.expectError(error.EntityValueTooLarge, doc.parse(
+        "<!DOCTYPE r [<!ENTITY a '1234'><!ENTITY b '&a;&a;'>]><r/>",
+        .{ .mode = .strict, .expand_dtd_entities = true, .max_entity_value_len = 4 },
+    ));
 }

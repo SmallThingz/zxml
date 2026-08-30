@@ -29,5 +29,8 @@ pub fn main(init: std.process.Init) !void {
         return error.InvalidArguments;
 
     const total_ns = try run_parse.runParseFile(init.io, alloc, args.items[2], try std.fmt.parseInt(usize, args.items[3], 10), mode);
-    std.debug.print("{d}\n", .{total_ns});
+    var stdout_buffer: [64]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(init.io, &stdout_buffer);
+    try stdout_writer.interface.print("{d}\n", .{total_ns});
+    try stdout_writer.interface.flush();
 }

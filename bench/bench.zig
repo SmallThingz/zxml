@@ -25,14 +25,14 @@ pub fn main(init: std.process.Init) !void {
             return error.InvalidBenchMode;
         const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
         const total_ns = try run_parse.runParseFile(init.io, alloc, args.items[3], iterations, mode);
-        std.debug.print("{d}\n", .{total_ns});
+        try printMeasurement(init.io, total_ns);
         return;
     }
 
     if (args.items.len == 3) {
         const iterations = try std.fmt.parseInt(usize, args.items[2], 10);
         const total_ns = try run_parse.runParseFile(init.io, alloc, args.items[1], iterations, .turbo);
-        std.debug.print("{d}\n", .{total_ns});
+        try printMeasurement(init.io, total_ns);
         return;
     }
 
@@ -41,4 +41,11 @@ pub fn main(init: std.process.Init) !void {
         .{ args.items[0], args.items[0] },
     );
     return error.InvalidArguments;
+}
+
+fn printMeasurement(io: std.Io, total_ns: u64) !void {
+    var stdout_buffer: [64]u8 = undefined;
+    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    try stdout_writer.interface.print("{d}\n", .{total_ns});
+    try stdout_writer.interface.flush();
 }
