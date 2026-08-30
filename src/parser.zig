@@ -17,12 +17,46 @@ inline fn attributeNameHash(name: []const u8) u64 {
     return mixed;
 }
 
-noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) ?usize {
+noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
+    @branchHint(.cold);
+    if (attrs.len >= 32 and attrs.len <= 128) {
+        @branchHint(.unlikely);
+        return findDuplicateAttributeLarge(input, attrs);
+    }
     for (attrs, 0..) |current, i| {
         const current_name = current.name.slice(input);
         for (attrs[0..i]) |previous| {
             if (std.mem.eql(u8, previous.name.slice(input), current_name)) return current.name.start;
         }
+    }
+    return null;
+}
+
+noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
+    @branchHint(.cold);
+    const NameSlot = struct {
+        hash: u64,
+        start: IndexInt,
+        end: IndexInt,
+    };
+    var slots: [128]NameSlot = undefined;
+    var occupied: u128 = 0;
+    for (attrs) |attr| {
+        const name = attr.name.slice(input);
+        const hash = attributeNameHash(name);
+        var slot_index: usize = @intCast(hash >> 57);
+        while (occupied & (@as(u128, 1) << @as(u7, @intCast(slot_index))) != 0) {
+            const previous = slots[slot_index];
+            if (previous.hash == hash and
+                previous.end - previous.start == attr.name.end - attr.name.start and
+                std.mem.eql(u8, input[@intCast(previous.start)..@intCast(previous.end)], name))
+            {
+                return attr.name.start;
+            }
+            slot_index = (slot_index + 1) & 127;
+        }
+        slots[slot_index] = .{ .hash = hash, .start = attr.name.start, .end = attr.name.end };
+        occupied |= @as(u128, 1) << @as(u7, @intCast(slot_index));
     }
     return null;
 }

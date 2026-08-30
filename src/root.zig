@@ -1448,6 +1448,16 @@ test "strict rejects duplicate attribute names" {
     try many.appendSlice(std.testing.allocator, " a63='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
 
+    // Exercise the >128-attribute exact fallback as well as the large-tag path.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..129) |index| try many.print(std.testing.allocator, " b{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try strict_doc.parse(many.items, strict_opts);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " b127='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
+
     const turbo_opts: ParseOptions = .{ .mode = .turbo };
     var turbo_doc = initDoc(turbo_opts);
     defer turbo_doc.deinit();
