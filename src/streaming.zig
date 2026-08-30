@@ -582,6 +582,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
                 const attr_start = i;
                 var attr_end = i;
+                var attr_count: usize = 0;
                 var self_closing = false;
                 var closed = false;
 
@@ -637,6 +638,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     };
                     if (comptime strict_mode) {
                         if (attr_name_needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
+                        attr_count += 1;
                     }
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
                         const quote = input[attr_i + 1];
@@ -685,7 +687,9 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
                 if (!closed) return error.UnexpectedEndOfData;
-                if (comptime strict_mode) try validateUniqueAttributesRaw(input, attr_start, attr_end);
+                if (comptime strict_mode) {
+                    if (attr_count > 1) try validateUniqueAttributesRaw(input, attr_start, attr_end);
+                }
 
                 if (comptime strict_mode) {
                     if (self.stackLen() == 0) {
@@ -1467,19 +1471,24 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
     }
     i = name_end;
     const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
+    var attr_count: usize = 0;
     while (i < input.len) {
         const boundary = i;
         i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
         if (c == '>') {
-            if (comptime strict) try validateUniqueAttributesRaw(input, name_end, i);
+            if (comptime strict) {
+                if (attr_count > 1) try validateUniqueAttributesRaw(input, name_end, i);
+            }
             return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
         }
         if (c == '/') {
             if (i + 1 >= input.len) return error.UnexpectedEndOfData;
             if (input[i + 1] == '>') {
-                if (comptime strict) try validateUniqueAttributesRaw(input, name_end, i);
+                if (comptime strict) {
+                    if (attr_count > 1) try validateUniqueAttributesRaw(input, name_end, i);
+                }
                 return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
             }
         }
@@ -1497,6 +1506,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             const attr_name_scan = scanner.scanNameEnd(input, i);
             i = attr_name_scan.end;
             if (attr_name_scan.needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..i])) return error.ExpectedAttributeName;
+            attr_count += 1;
         } else {
             i = scanner.findNameEnd(input, i);
         }
