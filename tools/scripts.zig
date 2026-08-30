@@ -489,6 +489,11 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
             }
         }
 
+        const download_target = try std.fmt.allocPrint(alloc, "{s}.download", .{target});
+        defer alloc.free(download_target);
+        std.Io.Dir.cwd().deleteFile(io, download_target) catch {};
+        errdefer std.Io.Dir.cwd().deleteFile(io, download_target) catch {};
+
         const argv = [_][]const u8{
             "curl",
             "-L",
@@ -501,13 +506,12 @@ fn setupFixtures(io: std.Io, alloc: std.mem.Allocator, refresh: bool) !void {
             "zxml-bench/1.0",
             item.url,
             "-o",
-            target,
+            download_target,
         };
         try common.runInherit(io, alloc, &argv, REPO_ROOT);
-        ensureFixtureIsNotOpaqueCdata(io, alloc, target, item.out) catch |err| {
-            std.Io.Dir.cwd().deleteFile(io, target) catch {};
-            return err;
-        };
+        try ensureFixtureIsNotOpaqueCdata(io, alloc, download_target, item.out);
+        const cwd = std.Io.Dir.cwd();
+        try cwd.rename(download_target, cwd, target, io);
     }
 
     const bundled = [_]struct { src: []const u8, out: []const u8 }{
