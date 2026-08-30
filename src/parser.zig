@@ -129,14 +129,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             while (self.i < self.input.len) {
                 if (self.input[self.i] != '<') {
                     if (comptime strict_mode) {
-                        const run = scanner.scanTextSpecials(self.input, self.i);
-                        const has_non_whitespace = !tables.WhitespaceTable[self.input[self.i]] or scanner.skipWhitespace(self.input, self.i) < run.lt_index;
-                        if (run.lt_index > self.i) {
-                            try self.validateCharacterDataSpecials(self.input[self.i..run.lt_index], run.has_close_bracket, run.has_ampersand);
+                        const text_start = self.i;
+                        const whitespace_end = if (tables.WhitespaceTable[self.input[text_start]]) scanner.skipWhitespace(self.input, text_start) else text_start;
+                        const has_non_whitespace = whitespace_end == text_start or (whitespace_end < self.input.len and self.input[whitespace_end] != '<');
+                        const run = if (has_non_whitespace) scanner.scanTextSpecials(self.input, whitespace_end) else scanner.TextSpecialRun{ .lt_index = whitespace_end };
+                        if (run.lt_index > text_start) {
+                            try self.validateCharacterDataSpecials(self.input[text_start..run.lt_index], run.has_close_bracket, run.has_ampersand);
                             if (self.topIndex() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
                             if (!drop_whitespace_text_nodes or has_non_whitespace) {
                                 const parent_idx = self.topIndex();
-                                _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
+                                _ = try self.appendTextNodeTo(parent_idx, text_start, run.lt_index);
                             }
                         }
                         self.i = run.lt_index;
