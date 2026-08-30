@@ -88,18 +88,26 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             while (self.i < self.input.len) {
                 if (self.input[self.i] != '<') {
-                    const run = if (comptime strict_mode) scanner.scanTextRunStrict(self.input, self.i) else scanner.scanTextRun(self.input, self.i);
-                    if (run.lt_index > self.i) {
-                        if (comptime strict_mode) {
-                            try self.validateCharacterData(self.input[self.i..run.lt_index]);
-                            if (self.topIndex() == 0 and run.has_non_whitespace) return error.InvalidDocumentContent;
+                    if (comptime strict_mode) {
+                        const run = scanner.scanTextSpecials(self.input, self.i);
+                        const has_non_whitespace = !tables.WhitespaceTable[self.input[self.i]] or scanner.skipWhitespace(self.input, self.i) < run.lt_index;
+                        if (run.lt_index > self.i) {
+                            try self.validateCharacterDataSpecials(self.input[self.i..run.lt_index], run.has_close_bracket, run.has_ampersand);
+                            if (self.topIndex() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
+                            if (!drop_whitespace_text_nodes or has_non_whitespace) {
+                                const parent_idx = self.topIndex();
+                                _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
+                            }
                         }
-                        if (!drop_whitespace_text_nodes or run.has_non_whitespace) {
+                        self.i = run.lt_index;
+                    } else {
+                        const run = scanner.scanTextRun(self.input, self.i);
+                        if (run.lt_index > self.i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const parent_idx = self.topIndex();
                             _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
                         }
+                        self.i = run.lt_index;
                     }
-                    self.i = run.lt_index;
                     continue;
                 }
 
@@ -783,8 +791,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const text_start = self.i;
             if (text_start >= self.input.len or self.input[text_start] == '<') return false;
 
-            const lt = scanner.findByte(self.input, text_start, '<') orelse return false;
-            if (lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
+            var has_close_bracket = false;
+            var has_ampersand = false;
+            const lt = if (comptime strict_mode) blk: {
+                const specials = scanner.scanTextSpecials(self.input, text_start);
+                has_close_bracket = specials.has_close_bracket;
+                has_ampersand = specials.has_ampersand;
+                break :blk specials.lt_index;
+            } else scanner.findByte(self.input, text_start, '<') orelse return false;
+            if (lt >= self.input.len or lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
 
             const close_start = lt + 2;
             const close_end = close_start + (name_end - name_start);
@@ -814,7 +829,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const raw = self.input[text_start..lt];
-            if (comptime strict_mode) try self.validateCharacterData(raw);
+            if (comptime strict_mode) try self.validateCharacterDataSpecials(raw, has_close_bracket, has_ampersand);
             if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0])) {
                 const whitespace_only = blk: {
                     if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
@@ -847,8 +862,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateCharacterData(self: *const Self, value: []const u8) ParseError!void {
             const specials = scanner.bytePairPresence(value, ']', '&');
-            if (specials.first and std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
-            if (specials.second) {
+            return self.validateCharacterDataSpecials(value, specials.first, specials.second);
+        }
+
+        inline fn validateCharacterDataSpecials(self: *const Self, value: []const u8, has_close_bracket: bool, has_ampersand: bool) ParseError!void {
+            if (has_close_bracket and std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
+            if (has_ampersand) {
                 try document.validateXmlReferencesAlloc(self.doc.allocator, value, false, self.doctypeValue(), self.require_declared_entities);
             }
         }
