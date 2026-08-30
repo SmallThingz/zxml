@@ -1618,7 +1618,20 @@ const ValidatedAttrToken = struct {
 };
 
 fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
-    var i = skipWsStrict(input, start);
+    var i = start;
+    if (i >= end) return null;
+
+    // This is a second, duplicate-name-only pass over an already validated
+    // opening tag. Optimize the overwhelmingly common ` name='value'` shape:
+    // one ASCII space before the name and no whitespace around `=`. Fall back
+    // to the strict whitespace scanner only for mixed/long whitespace.
+    if (input[i] == ' ') {
+        i += 1;
+        if (i >= end) return null;
+        if (input[i] <= ' ') i = skipWsStrict(input, i);
+    } else if (tables.isWhitespace(input[i])) {
+        i = skipWsStrict(input, i);
+    }
     if (i >= end) return null;
 
     // The opening-tag scanner has already validated the complete attribute
@@ -1628,24 +1641,32 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     const name_start = i;
     i = scanner.findNameEndAfterStart(input, i);
     const name_end = i;
-    i = skipWsStrict(input, i);
-    if (i >= end or input[i] != '=') return error.ExpectedEq;
+
+    if (i >= end or input[i] != '=') {
+        i = skipWsStrict(input, i);
+        if (i >= end or input[i] != '=') return error.ExpectedEq;
+    }
     i += 1;
-    i = skipWsStrict(input, i);
     if (i >= end) return error.ExpectedQuote;
-    const quote = input[i];
-    if (quote != '\'' and quote != '"') return error.ExpectedQuote;
+    var quote = input[i];
+    if (quote != '\'' and quote != '"') {
+        i = skipWsStrict(input, i);
+        if (i >= end) return error.ExpectedQuote;
+        quote = input[i];
+        if (quote != '\'' and quote != '"') return error.ExpectedQuote;
+    }
     const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse return error.ExpectedQuote;
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
 }
 
 inline fn attributeNameHash(name: []const u8) u64 {
-    var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) *% 0x9e3779b97f4a7c15);
-    mixed ^= mixed >> 30;
-    mixed *%= 0xbf58476d1ce4e5b9;
-    mixed ^= mixed >> 27;
-    mixed *%= 0x94d049bb133111eb;
-    mixed ^= mixed >> 31;
+    // Duplicate detection is always verified with an exact byte comparison, so
+    // this hash only needs to spread the prefix/length well enough for the
+    // 64-slot local table. One multiply is sufficient and materially cheaper
+    // than a full general-purpose 64-bit finalizer.
+    var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) << 56);
+    mixed *%= 0x9e3779b97f4a7c15;
+    mixed ^= mixed >> 32;
     return mixed;
 }
 
@@ -1687,7 +1708,7 @@ noinline fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: us
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHash(current_name);
-        var slot_index: usize = @intCast(hash & (table_capacity - 1));
+        var slot_index: usize = @intCast(hash >> (64 - 6));
         while (occupied & (@as(u64, 1) << @as(u6, @intCast(slot_index))) != 0) {
             const previous = slots[slot_index];
             if (previous.hash == hash and
@@ -3143,7 +3164,7 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     try parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9'/>", &ctx, Ctx.onNode);
     // Distinct names that land in the same hash-table bucket must probe rather
     // than false-positive as duplicates.
-    try parser.parse("<r k1='1' k12='12' z='3'/>", &ctx, Ctx.onNode);
+    try parser.parse("<r h='1' ab='2' z='3'/>", &ctx, Ctx.onNode);
 
     var many = std.ArrayList(u8).empty;
     defer many.deinit(std.testing.allocator);
