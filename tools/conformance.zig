@@ -1292,7 +1292,12 @@ test "field text checks concatenate text, CDATA, and descendant text" {
 
 test "raw field text extraction handles deeply nested elements iteratively" {
     const alloc = std.testing.allocator;
-    const depth = 20_000;
+    // Each nested level contributes "<x></x>" (7 bytes). Keep the fixture
+    // inside the configured span width while still making recursion impractical.
+    const fixed_len = "<r><Code>".len + "value".len + "</Code></r>".len;
+    const max_depth_for_input = (zxml.MaxInputLen -| fixed_len) / 7;
+    const depth = @min(20_000, max_depth_for_input);
+    try std.testing.expect(depth >= 1_000);
 
     var xml = std.ArrayList(u8).empty;
     defer xml.deinit(alloc);

@@ -860,6 +860,26 @@ test "document can be reused across parses" {
     try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueRawSlice());
 }
 
+test "u16 parse accepts input exactly at the index range boundary" {
+    if (common.IndexInt != u16) return error.SkipZigTest;
+
+    const alloc = std.testing.allocator;
+    const opts: ParseOptions = .{ .mode = .strict };
+    const Document = Types(opts).Document;
+    var doc = Document.init(alloc);
+    defer doc.deinit();
+
+    const src = try alloc.alloc(u8, MaxInputLen);
+    defer alloc.free(src);
+    @memset(src, ' ');
+    @memcpy(src[0..3], "<r>");
+    @memcpy(src[src.len - 4 ..], "</r>");
+
+    try doc.parse(src, opts);
+    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
+    try std.testing.expectEqual(@as(common.IndexInt, MaxInputLen), @as(common.IndexInt, @intCast(src.len)));
+}
+
 test "u16 parse rejects input larger than index range" {
     if (common.IndexInt != u16) return error.SkipZigTest;
 
