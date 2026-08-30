@@ -1149,3 +1149,16 @@ test "strict enforces document-level well-formedness" {
 
     try doc.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", opts);
 }
+
+test "strict rejects duplicate attribute names" {
+    const strict_opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var strict_doc = initDoc(strict_opts);
+    defer strict_doc.deinit();
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r a='1' a='2'/>", strict_opts));
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r><x a='1' b='2' a='3'/></r>", strict_opts));
+
+    const turbo_opts: ParseOptions = .{ .mode = .turbo };
+    var turbo_doc = initDoc(turbo_opts);
+    defer turbo_doc.deinit();
+    try turbo_doc.parse("<r a='1' a='2'/>", turbo_opts);
+}

@@ -42,8 +42,15 @@
       "expect_unique_root_attrs": true
     },
     {
-      "name": "wf-unique-attrs-invalid-detected",
-      "profiles": ["strict", "turbo_default"],
+      "name": "wf-strict-duplicate-attrs-rejected",
+      "profile": "strict",
+      "xml": "<root a='1' a='2'></root>",
+      "expect_ok": false,
+      "expect_error": "DuplicateAttribute"
+    },
+    {
+      "name": "wf-turbo-duplicate-attrs-detected",
+      "profile": "turbo_default",
       "xml": "<root a='1' a='2'></root>",
       "expect_ok": true,
       "expect_root_name": "root",

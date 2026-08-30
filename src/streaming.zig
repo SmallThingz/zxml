@@ -578,6 +578,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
                 if (!closed) return error.UnexpectedEndOfData;
+                if (comptime strict_mode) try validateUniqueAttributesRaw(input, attr_start, attr_end);
 
                 if (comptime strict_mode) {
                     if (self.stackLen() == 0) {
@@ -1314,10 +1315,16 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
         i = skipWsMode(input, i, strict);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
-        if (c == '>') return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
+        if (c == '>') {
+            if (comptime strict) try validateUniqueAttributesRaw(input, name_end, i);
+            return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
+        }
         if (c == '/') {
             if (i + 1 >= input.len) return error.UnexpectedEndOfData;
-            if (input[i + 1] == '>') return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
+            if (input[i + 1] == '>') {
+                if (comptime strict) try validateUniqueAttributesRaw(input, name_end, i);
+                return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
+            }
         }
         if (strict and i == boundary) {
             @branchHint(.unlikely);
@@ -1357,6 +1364,47 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool) P
         }
     }
     return error.UnexpectedEndOfData;
+}
+
+const StrictAttrToken = struct {
+    name_start: usize,
+    name_end: usize,
+    next: usize,
+};
+
+fn scanStrictAttributeToken(input: []const u8, start: usize, end: usize) ParseError!?StrictAttrToken {
+    var i = skipWsStrict(input, start);
+    if (i >= end) return null;
+    if (!tables.isNameStart(input[i])) return error.ExpectedAttributeName;
+    const name_start = i;
+    i = scanner.findNameEndAfterStart(input, i);
+    const name_end = i;
+    i = skipWsStrict(input, i);
+    if (i >= end or input[i] != '=') return error.ExpectedEq;
+    i += 1;
+    i = skipWsStrict(input, i);
+    if (i >= end) return error.ExpectedQuote;
+    const quote = input[i];
+    if (quote != '\'' and quote != '"') return error.ExpectedQuote;
+    const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse return error.ExpectedQuote;
+    try validateAttributeValue(input[i + 1 .. quote_pos]);
+    return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+}
+
+fn validateUniqueAttributesRaw(input: []const u8, start: usize, end: usize) ParseError!void {
+    var i = start;
+    while (try scanStrictAttributeToken(input, i, end)) |current| {
+        var prev_i = start;
+        while (prev_i < current.name_start) {
+            const previous = (try scanStrictAttributeToken(input, prev_i, end)) orelse break;
+            if (previous.name_start == current.name_start) break;
+            if (std.mem.eql(u8, input[previous.name_start..previous.name_end], input[current.name_start..current.name_end])) {
+                return error.DuplicateAttribute;
+            }
+            prev_i = previous.next;
+        }
+        i = current.next;
+    }
 }
 
 fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!CloseToken {
@@ -2381,4 +2429,25 @@ test "streaming strict save restore preserves document-level state" {
     parser.restore(state);
     try std.testing.expect(try parser.parseAvailable("<!DOCTYPE a><b/>", &ctx, Ctx.onNode));
     try parser.finish();
+}
+
+test "streaming strict rejects duplicate attribute names including skipped subtrees" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        skip_root: bool = false,
+        fn onNode(self: *@This(), node: *const Event) bool {
+            if (self.skip_root and node.kind == .element and node.depth == 0) return false;
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r a='1' a='2'/>", &ctx, Ctx.onNode));
+
+    ctx.skip_root = true;
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r><x a='1' a='2'/></r>", &ctx, Ctx.onNode));
 }

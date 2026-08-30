@@ -57,6 +57,7 @@ pub const ParseError = error{
     ExpectedGt,
     ExpectedElementName,
     ExpectedAttributeName,
+    DuplicateAttribute,
     ExpectedEq,
     ExpectedQuote,
     InvalidAttributeValue,

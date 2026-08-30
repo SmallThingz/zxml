@@ -202,6 +202,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const attr_name_start = self.i;
                 self.i = if (comptime strict_mode) scanner.findNameEndAfterStart(self.input, self.i) else scanner.findNameEnd(self.input, self.i);
                 const attr_name_end = self.i;
+                if (comptime strict_mode) {
+                    var prev_i: usize = attr_start_idx;
+                    while (prev_i < self.doc.attrs.items.len) : (prev_i += 1) {
+                        const prev_name = self.doc.attrs.items[prev_i].name.slice(self.input);
+                        if (std.mem.eql(u8, prev_name, self.input[attr_name_start..attr_name_end])) return error.DuplicateAttribute;
+                    }
+                }
                 const input = self.input;
                 const input_len = input.len;
 
