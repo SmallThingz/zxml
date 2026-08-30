@@ -78,8 +78,26 @@ pub const ParseError = error{
 };
 
 pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
+    const Vec = @Vector(16, u8);
+    const high_bit: Vec = @splat(0x80);
+    const control_limit: Vec = @splat(0x20);
+    const tab: Vec = @splat('\t');
+    const newline: Vec = @splat('\n');
+    const carriage_return: Vec = @splat('\r');
+
     var i: usize = 0;
     while (i < input.len) {
+        // XML is overwhelmingly ASCII. Validate full SIMD-width runs at once and
+        // drop to the scalar path only for non-ASCII or forbidden controls.
+        while (i + @sizeOf(Vec) <= input.len) {
+            const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+            const invalid_control = (bytes < control_limit) &
+                (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
+            if (@reduce(.Or, (bytes >= high_bit) | invalid_control)) break;
+            i += @sizeOf(Vec);
+        }
+        if (i == input.len) break;
+
         const first = input[i];
         if (first < 0x80) {
             if (first != '\t' and first != '\n' and first != '\r' and first < 0x20) return error.InvalidXmlCharacter;
@@ -110,8 +128,12 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
         }
         if (available < sequence_len) return i;
 
-        const codepoint = std.unicode.utf8Decode(input[i .. i + sequence_len]) catch return error.InvalidXmlCharacter;
-        if (!isXmlCharacter(codepoint)) return error.InvalidXmlCharacter;
+        // The UTF-8 shape/range checks above reject overlong encodings, surrogates,
+        // and values above U+10FFFF. Of the remaining non-ASCII scalar values XML
+        // only excludes U+FFFE and U+FFFF, whose encodings differ in the last byte.
+        if (first == 0xEF and input[i + 1] == 0xBF and input[i + 2] >= 0xBE) {
+            return error.InvalidXmlCharacter;
+        }
         i += sequence_len;
     }
     return input.len;
@@ -1410,6 +1432,9 @@ test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
         "<r><!--\xC0\xAF--></r>",
         "<?p \xC0\xAF?><r/>",
         "<r>\x01</r>",
+        "<r>\xEF\xBF\xBE</r>",
+        "<r>\xEF\xBF\xBF</r>",
+        "<r>\xED\xA0\x80</r>",
     };
 
     for (invalid) |input| {
