@@ -563,13 +563,20 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const name_start = i;
-                const name_scan = if (comptime validate_closing_tags) scanner.scanNameAndKey(input, i) else scanner.NameScan{
-                    .end = scanner.findNameEnd(input, i),
-                    .key = 0,
-                };
+                const name_scan = if (comptime validate_closing_tags)
+                    scanner.scanNameAndKey(input, i)
+                else if (comptime strict_mode) blk: {
+                    const scan = scanner.scanNameEnd(input, i);
+                    break :blk scanner.NameScan{
+                        .end = scan.end,
+                        .key = 0,
+                        .needs_unicode_validation = scan.needs_unicode_validation,
+                    };
+                } else
+                    scanner.NameScan{ .end = scanner.findNameEnd(input, i), .key = 0 };
                 const name_end = name_scan.end;
                 if (comptime strict_mode) {
-                    if (!document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
+                    if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
                 }
                 i = name_end;
                 const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
@@ -619,9 +626,17 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
 
                     const attr_name_start = i;
-                    var attr_i = scanner.findNameEnd(input, i);
+                    var attr_i: usize = undefined;
+                    const attr_name_needs_unicode_validation = if (comptime strict_mode) blk: {
+                        const scan = scanner.scanNameEnd(input, i);
+                        attr_i = scan.end;
+                        break :blk scan.needs_unicode_validation;
+                    } else blk: {
+                        attr_i = scanner.findNameEnd(input, i);
+                        break :blk false;
+                    };
                     if (comptime strict_mode) {
-                        if (!document.isValidXmlName(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
+                        if (attr_name_needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
                     }
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
                         const quote = input[attr_i + 1];
@@ -715,8 +730,9 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (i >= input.len) return error.UnexpectedEndOfData;
                         if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
                         const close_name_start = i;
-                        i = scanner.findNameEndAfterStart(input, i);
-                        if (!document.isValidXmlName(input[close_name_start..i])) return error.InvalidClosingTagName;
+                        const close_scan = scanner.scanNameEndAfterStart(input, i);
+                        i = close_scan.end;
+                        if (close_scan.needs_unicode_validation and !document.isValidXmlName(input[close_name_start..i])) return error.InvalidClosingTagName;
                         if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, true);
                         if (i >= input.len) return error.UnexpectedEndOfData;
                         if (input[i] != '>') return error.InvalidClosingTagName;
@@ -754,9 +770,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name_start = i;
                 const name_scan = scanner.scanNameAndKey(input, i);
                 const name_end = name_scan.end;
-                if (comptime strict_mode) {
-                    if (!document.isValidXmlName(input[name_start..name_end])) return error.InvalidClosingTagName;
-                }
+                // With closing-tag validation enabled, an exact match against the
+                // already validated opening name proves XML Name validity too.
                 i = name_end;
                 if (i < input.len and tables.isWhitespace(input[i])) {
                     @branchHint(.unlikely);
@@ -805,10 +820,17 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const target_start = i;
-                i = scanner.findNameEnd(input, i);
+                const target_needs_unicode_validation = if (comptime strict_mode) blk: {
+                    const scan = scanner.scanNameEnd(input, i);
+                    i = scan.end;
+                    break :blk scan.needs_unicode_validation;
+                } else blk: {
+                    i = scanner.findNameEnd(input, i);
+                    break :blk false;
+                };
                 const target_end = i;
                 if (comptime strict_mode) {
-                    if (!document.isValidXmlName(input[target_start..target_end])) return error.ExpectedPiTarget;
+                    if (target_needs_unicode_validation and !document.isValidXmlName(input[target_start..target_end])) return error.ExpectedPiTarget;
                 }
                 const xml_target = target_end - target_start == 3 and std.ascii.eqlIgnoreCase(input[target_start..target_end], "xml");
                 if (comptime strict_mode) {
@@ -1441,7 +1463,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
     if (comptime strict) {
-        if (!document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
+        if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
     }
     i = name_end;
     const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
@@ -1518,9 +1540,10 @@ fn scanStrictAttributeToken(input: []const u8, start: usize, end: usize) ParseEr
     if (i >= end) return null;
     if (!tables.isNameStart(input[i])) return error.ExpectedAttributeName;
     const name_start = i;
-    i = scanner.findNameEndAfterStart(input, i);
+    const name_scan = scanner.scanNameEndAfterStart(input, i);
+    i = name_scan.end;
     const name_end = i;
-    if (!document.isValidXmlName(input[name_start..name_end])) return error.ExpectedAttributeName;
+    if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedAttributeName;
     i = skipWsStrict(input, i);
     if (i >= end or input[i] != '=') return error.ExpectedEq;
     i += 1;
@@ -1561,7 +1584,7 @@ fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool, compti
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
     if (comptime strict) {
-        if (!document.isValidXmlName(input[name_start..name_end])) return error.InvalidClosingTagName;
+        if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.InvalidClosingTagName;
     }
     i = name_end;
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict);
@@ -1582,9 +1605,10 @@ fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incre
         }
         if (!tables.isNameStart(input[i])) return error.ExpectedPiTarget;
         const target_start = i;
-        i = scanner.findNameEndAfterStart(input, i);
+        const target_scan = scanner.scanNameEndAfterStart(input, i);
+        i = target_scan.end;
         const target = input[target_start..i];
-        if (!document.isValidXmlName(target)) return error.ExpectedPiTarget;
+        if (target_scan.needs_unicode_validation and !document.isValidXmlName(target)) return error.ExpectedPiTarget;
         if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml")) {
             if (!std.mem.eql(u8, target, "xml")) return error.ExpectedPiTarget;
             return error.InvalidDeclaration;

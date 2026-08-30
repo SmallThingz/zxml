@@ -28,6 +28,12 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
 pub const NameScan = struct {
     end: usize,
     key: u64,
+    needs_unicode_validation: bool = false,
+};
+
+pub const NameEndScan = struct {
+    end: usize,
+    needs_unicode_validation: bool,
 };
 
 pub inline fn prefixKey(input: []const u8) u64 {
@@ -56,29 +62,90 @@ pub inline fn prefixKey(input: []const u8) u64 {
 pub inline fn scanNameAndKey(input: []const u8, start: usize) NameScan {
     var i = start;
     var key: u64 = 0;
+    var high_bits: u8 = 0;
     inline for (0..8) |n| {
-        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{ .end = i, .key = key };
-        key |= @as(u64, input[i]) << @intCast(n * 8);
+        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{
+            .end = i,
+            .key = key,
+            .needs_unicode_validation = (high_bits & 0x80) != 0,
+        };
+        const c = input[i];
+        high_bits |= c;
+        key |= @as(u64, c) << @intCast(n * 8);
         i += 1;
     }
-    return .{ .end = findNameEnd(input, i), .key = key };
+    const tail = scanNameEnd(input, i);
+    return .{
+        .end = tail.end,
+        .key = key,
+        .needs_unicode_validation = (high_bits & 0x80) != 0 or tail.needs_unicode_validation,
+    };
 }
 
 pub inline fn scanNameAndKeyAfterStart(input: []const u8, start: usize) NameScan {
     std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
     var i = start + 1;
     var key: u64 = input[start];
+    var high_bits: u8 = input[start];
     inline for (1..8) |n| {
-        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{ .end = i, .key = key };
-        key |= @as(u64, input[i]) << @intCast(n * 8);
+        if (i >= input.len or !tables.NameCharTable[input[i]]) return .{
+            .end = i,
+            .key = key,
+            .needs_unicode_validation = (high_bits & 0x80) != 0,
+        };
+        const c = input[i];
+        high_bits |= c;
+        key |= @as(u64, c) << @intCast(n * 8);
         i += 1;
     }
-    return .{ .end = findNameEnd(input, i), .key = key };
+    const tail = scanNameEnd(input, i);
+    return .{
+        .end = tail.end,
+        .key = key,
+        .needs_unicode_validation = (high_bits & 0x80) != 0 or tail.needs_unicode_validation,
+    };
+}
+
+pub inline fn scanNameEndAfterStart(noalias input: []const u8, start: usize) NameEndScan {
+    std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
+    const tail = scanNameEnd(input, start + 1);
+    return .{
+        .end = tail.end,
+        .needs_unicode_validation = input[start] >= 0x80 or tail.needs_unicode_validation,
+    };
 }
 
 pub inline fn findNameEndAfterStart(noalias input: []const u8, start: usize) usize {
     std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
     return findNameEnd(input, start + 1);
+}
+
+pub inline fn scanNameEnd(noalias input: []const u8, start: usize) NameEndScan {
+    var i = start;
+    var high_bits: u8 = 0;
+    while (i + 8 <= input.len) : (i += 8) {
+        const c0 = input[i];
+        if (!tables.NameCharTable[c0]) return .{ .end = i, .needs_unicode_validation = (high_bits & 0x80) != 0 };
+        const c1 = input[i + 1];
+        if (!tables.NameCharTable[c1]) return .{ .end = i + 1, .needs_unicode_validation = ((high_bits | c0) & 0x80) != 0 };
+        const c2 = input[i + 2];
+        if (!tables.NameCharTable[c2]) return .{ .end = i + 2, .needs_unicode_validation = ((high_bits | c0 | c1) & 0x80) != 0 };
+        const c3 = input[i + 3];
+        if (!tables.NameCharTable[c3]) return .{ .end = i + 3, .needs_unicode_validation = ((high_bits | c0 | c1 | c2) & 0x80) != 0 };
+        const c4 = input[i + 4];
+        if (!tables.NameCharTable[c4]) return .{ .end = i + 4, .needs_unicode_validation = ((high_bits | c0 | c1 | c2 | c3) & 0x80) != 0 };
+        const c5 = input[i + 5];
+        if (!tables.NameCharTable[c5]) return .{ .end = i + 5, .needs_unicode_validation = ((high_bits | c0 | c1 | c2 | c3 | c4) & 0x80) != 0 };
+        const c6 = input[i + 6];
+        if (!tables.NameCharTable[c6]) return .{ .end = i + 6, .needs_unicode_validation = ((high_bits | c0 | c1 | c2 | c3 | c4 | c5) & 0x80) != 0 };
+        const c7 = input[i + 7];
+        if (!tables.NameCharTable[c7]) return .{ .end = i + 7, .needs_unicode_validation = ((high_bits | c0 | c1 | c2 | c3 | c4 | c5 | c6) & 0x80) != 0 };
+        high_bits |= c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7;
+    }
+    while (i < input.len and tables.NameCharTable[input[i]]) : (i += 1) {
+        high_bits |= input[i];
+    }
+    return .{ .end = i, .needs_unicode_validation = (high_bits & 0x80) != 0 };
 }
 
 pub inline fn findNameEnd(noalias input: []const u8, start: usize) usize {

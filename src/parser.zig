@@ -115,13 +115,20 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const name_start = self.i;
-            const name_scan = if (comptime validate_closing_tags) scanner.scanNameAndKeyAfterStart(self.input, self.i) else scanner.NameScan{
-                .end = scanner.findNameEnd(self.input, self.i),
-                .key = 0,
-            };
+            const name_scan = if (comptime validate_closing_tags)
+                scanner.scanNameAndKeyAfterStart(self.input, self.i)
+            else if (comptime strict_mode) blk: {
+                const scan = scanner.scanNameEndAfterStart(self.input, self.i);
+                break :blk scanner.NameScan{
+                    .end = scan.end,
+                    .key = 0,
+                    .needs_unicode_validation = scan.needs_unicode_validation,
+                };
+            } else
+                scanner.NameScan{ .end = scanner.findNameEnd(self.input, self.i), .key = 0 };
             const name_end = name_scan.end;
             if (comptime strict_mode) {
-                if (!document.isValidXmlName(self.input[name_start..name_end])) return error.ExpectedElementName;
+                if (name_scan.needs_unicode_validation and !document.isValidXmlName(self.input[name_start..name_end])) return error.ExpectedElementName;
             }
             self.i = name_end;
 
@@ -208,10 +215,17 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 const attr_name_start = self.i;
-                self.i = if (comptime strict_mode) scanner.findNameEndAfterStart(self.input, self.i) else scanner.findNameEnd(self.input, self.i);
+                const attr_name_needs_unicode_validation = if (comptime strict_mode) blk: {
+                    const scan = scanner.scanNameEndAfterStart(self.input, self.i);
+                    self.i = scan.end;
+                    break :blk scan.needs_unicode_validation;
+                } else blk: {
+                    self.i = scanner.findNameEnd(self.input, self.i);
+                    break :blk false;
+                };
                 const attr_name_end = self.i;
                 if (comptime strict_mode) {
-                    if (!document.isValidXmlName(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
+                    if (attr_name_needs_unicode_validation and !document.isValidXmlName(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
                     var prev_i: usize = attr_start_idx;
                     while (prev_i < self.doc.attrs.items.len) : (prev_i += 1) {
                         const prev_name = self.doc.attrs.items[prev_i].name.slice(self.input);
@@ -305,8 +319,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (self.i >= self.input.len) return error.UnexpectedEndOfData;
                     if (!tables.isNameStart(self.input[self.i])) return error.InvalidClosingTagName;
                     const close_name_start = self.i;
-                    self.i = scanner.findNameEndAfterStart(self.input, self.i);
-                    if (!document.isValidXmlName(self.input[close_name_start..self.i])) return error.InvalidClosingTagName;
+                    const close_scan = scanner.scanNameEndAfterStart(self.input, self.i);
+                    self.i = close_scan.end;
+                    if (close_scan.needs_unicode_validation and !document.isValidXmlName(self.input[close_name_start..self.i])) return error.InvalidClosingTagName;
                     if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) self.skipWhitespace();
                     if (self.i >= self.input.len) return error.UnexpectedEndOfData;
                     if (self.input[self.i] != '>') return error.InvalidClosingTagName;
@@ -392,15 +407,18 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const target_start = self.i;
-            if (comptime strict_mode) {
-                self.i = scanner.findNameEndAfterStart(self.input, self.i);
-            } else {
+            const target_needs_unicode_validation = if (comptime strict_mode) blk: {
+                const scan = scanner.scanNameEndAfterStart(self.input, self.i);
+                self.i = scan.end;
+                break :blk scan.needs_unicode_validation;
+            } else blk: {
                 self.i += 1;
                 self.i = scanner.findNameEnd(self.input, self.i);
-            }
+                break :blk false;
+            };
             const target_end = self.i;
             if (comptime strict_mode) {
-                if (!document.isValidXmlName(self.input[target_start..target_end])) return error.ExpectedPiTarget;
+                if (target_needs_unicode_validation and !document.isValidXmlName(self.input[target_start..target_end])) return error.ExpectedPiTarget;
             }
             const xml_target = target_end - target_start == 3 and
                 std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
