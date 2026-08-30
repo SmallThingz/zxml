@@ -941,6 +941,50 @@ test "strict validates internal parameter entity replacement text" {
     }
 }
 
+test "strict applies entity constraints to declarations from parameter entities" {
+    const invalid_entity = [_][]const u8{
+        "<!DOCTYPE r [<!NOTATION n SYSTEM 'n'><!ENTITY % p \"<!ENTITY e SYSTEM 'x' NDATA n>\">%p;]><r>&e;</r>",
+    };
+    inline for (invalid_entity) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    const invalid_attribute = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e SYSTEM 'x'>\">%p;]><r a='&e;'/>",
+        "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&#60;'>\">%p;]><r a='&e;'/>",
+    };
+    inline for (invalid_attribute) |source| {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+    }
+
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.RecursiveEntity,
+            doc.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>", .{ .mode = .strict }),
+        );
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidDoctype,
+            doc.parse("<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>", .{ .mode = .strict }),
+        );
+    }
+
+    var parsed = try parseTestDoc(
+        "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e 'ok'>\">%p;]><r>&e;</r>",
+        .{ .mode = .strict },
+    );
+    defer parsed.deinit();
+}
+
 test "strict parameter entity inclusion is iterative for deep chains" {
     var source = std.ArrayList(u8).empty;
     defer source.deinit(std.testing.allocator);

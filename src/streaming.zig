@@ -2035,6 +2035,36 @@ test "streaming strict validates internal parameter entity replacement text" {
     }
 }
 
+test "streaming strict applies entity constraints to declarations from parameter entities" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const cases = [_]struct { source: []const u8, err: ParseError }{
+        .{ .source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'n'><!ENTITY % p \"<!ENTITY e SYSTEM 'x' NDATA n>\">%p;]><r>&e;</r>", .err = error.InvalidNumericCharacterEntity },
+        .{ .source = "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e SYSTEM 'x'>\">%p;]><r a='&e;'/>", .err = error.InvalidAttributeValue },
+        .{ .source = "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&#60;'>\">%p;]><r a='&e;'/>", .err = error.InvalidAttributeValue },
+        .{ .source = "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>", .err = error.RecursiveEntity },
+        .{ .source = "<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>", .err = error.InvalidDoctype },
+    };
+    inline for (cases) |case| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(case.err, parser.parse(case.source, &ctx, Ctx.onNode));
+    }
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e 'ok'>\">%p;]><r>&e;</r>", &ctx, Ctx.onNode);
+}
+
 test "streaming strict validates DTD attribute default entity constraints" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     const ParserType = Types(opts).Parser;
