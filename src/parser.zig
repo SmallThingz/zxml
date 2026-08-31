@@ -163,7 +163,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     '/' => try self.parseClosingTag(),
                     '?' => try self.parsePiOrDeclaration(),
                     '!' => try self.parseBangNode(),
-                    else => try self.parseOpeningTag(),
+                    else => {
+                        @branchHint(.likely);
+                        try self.parseOpeningTag();
+                    },
                 }
             }
 
