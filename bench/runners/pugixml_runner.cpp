@@ -54,9 +54,9 @@ int main(int argc, char **argv) {
         return 2;
     }
     errno = 0;
-    char *end = nullptr;
-    const unsigned long long parsed_iterations = strtoull(argv[2], &end, 10);
-    if (errno == ERANGE || end == argv[2] || *end != '\0' || parsed_iterations == 0 || parsed_iterations > SIZE_MAX) {
+    char *parse_end = nullptr;
+    const unsigned long long parsed_iterations = strtoull(argv[2], &parse_end, 10);
+    if (errno == ERANGE || parse_end == argv[2] || *parse_end != '\0' || parsed_iterations == 0 || parsed_iterations > SIZE_MAX) {
         fprintf(stderr, "invalid iterations: %s\n", argv[2]);
         return 2;
     }
