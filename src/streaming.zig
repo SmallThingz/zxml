@@ -812,7 +812,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return if (gt < input.len) gt + 1 else gt;
                 }
                 const name_start = i;
-                const name_scan = scanner.scanNameAndKey(input, i);
+                const name_scan = scanner.scanNameAndKeyAfterStart(input, i);
                 const name_end = name_scan.end;
                 // With closing-tag validation enabled, an exact match against the
                 // already validated opening name proves XML Name validity too.
