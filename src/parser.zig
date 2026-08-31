@@ -54,13 +54,36 @@ noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const do
 
 noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
+    if (comptime table_capacity == 128) {
+        var slots = [_]u32{0} ** table_capacity;
+        for (attrs, 0..) |attr, attr_index| {
+            const name = attr.name.slice(input);
+            const hash = attributeNameHashLarge(name);
+            const fingerprint: u32 = @as(u32, @truncate(hash)) | 1;
+            var slot_index: usize = @intCast(hash >> 57);
+            while (true) {
+                if (slots[slot_index] == 0) {
+                    slots[slot_index] = fingerprint;
+                    break;
+                }
+                if (slots[slot_index] == fingerprint) {
+                    for (attrs[0..attr_index]) |previous| {
+                        if (std.mem.eql(u8, previous.name.slice(input), name)) return attr.name.start;
+                    }
+                }
+                slot_index = (slot_index + 1) & (table_capacity - 1);
+            }
+        }
+        return null;
+    }
+
     var slots: [table_capacity]u32 = undefined;
     var occupied = [_]u64{0} ** (table_capacity / 64);
     for (attrs, 0..) |attr, attr_index| {
         const name = attr.name.slice(input);
         const hash = attributeNameHashLarge(name);
         const fingerprint: u32 = @truncate(hash);
-        var slot_index: usize = @intCast(hash >> (if (table_capacity == 128) 57 else 56));
+        var slot_index: usize = @intCast(hash >> 56);
         while (true) {
             const word_index = slot_index >> 6;
             const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
