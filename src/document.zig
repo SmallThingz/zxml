@@ -258,7 +258,9 @@ fn validateCustomXmlReferencesUsingCatalog(
         const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';').?;
         const body = value[amp + 1 .. semi];
         if (body[0] != '#' and !isPredefinedEntityName(body)) {
-            try validateGeneralEntityUse(catalog, &states, &frames, body, require_declared_entities, context);
+            if (frames.capacity == 0 or !std.mem.eql(u8, frames.items.ptr[0].name, body)) {
+                try validateGeneralEntityUse(catalog, &states, &frames, body, require_declared_entities, context);
+            }
         }
         search_from = semi + 1;
     }
@@ -337,21 +339,19 @@ fn validateGeneralEntityUse(
     while (frames.items.len != 0) {
         const frame_index = frames.items.len - 1;
         const frame = &frames.items[frame_index];
-        const amp = std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '&') orelse {
-            if (context == .attribute and std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '<') != null) {
-                return error.InvalidAttributeValue;
+        const amp = std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '&');
+        if (context == .attribute) {
+            if (std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '<')) |lt| {
+                if (amp == null or lt < amp.?) return error.InvalidAttributeValue;
             }
+        }
+        const amp_pos = amp orelse {
             states.getPtr(frame.name).?.* = .done;
             frames.items.len -= 1;
             continue;
         };
-        if (context == .attribute) {
-            if (std.mem.indexOfScalarPos(u8, frame.replacement, frame.offset, '<')) |lt| {
-                if (lt < amp) return error.InvalidAttributeValue;
-            }
-        }
-        const semi = std.mem.indexOfScalarPos(u8, frame.replacement, amp + 1, ';') orelse return error.UnterminatedEntity;
-        const body = frame.replacement[amp + 1 .. semi];
+        const semi = std.mem.indexOfScalarPos(u8, frame.replacement, amp_pos + 1, ';') orelse return error.UnterminatedEntity;
+        const body = frame.replacement[amp_pos + 1 .. semi];
         if (!isValidXmlReferenceBody(body)) return error.InvalidNumericCharacterEntity;
         frame.offset = semi + 1;
         if (body[0] == '#' or isPredefinedEntityName(body)) continue;

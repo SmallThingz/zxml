@@ -67,7 +67,7 @@ noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const docume
     return null;
 }
 
-noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) ?usize {
+noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {
     var buckets: u64 = 0;
     for (attrs) |attr| {
         const name = attr.name.slice(input);
