@@ -17,7 +17,26 @@ inline fn attributeNameHash(name: []const u8) u64 {
     return mixed;
 }
 
-noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
+inline fn attributeNameHashLarge(name: []const u8) u64 {
+    const key: u64 = if (name.len <= 4) blk: {
+        const bytes: *align(1) const [4]u8 = @ptrCast(name.ptr);
+        const word = std.mem.readInt(u32, bytes, .little);
+        const shift: u5 = @intCast((4 - name.len) * 8);
+        break :blk word & (@as(u32, 0xffffffff) >> shift);
+    } else blk: {
+        const bytes: *align(1) const [8]u8 = @ptrCast(name.ptr);
+        const word = std.mem.readInt(u64, bytes, .little);
+        if (name.len >= 8) break :blk word;
+        const shift: u6 = @intCast((8 - name.len) * 8);
+        break :blk word & (@as(u64, 0xffffffffffffffff) >> shift);
+    };
+    var mixed = key ^ (@as(u64, name.len) << 56);
+    mixed *%= 0x9e3779b97f4a7c15;
+    mixed ^= mixed >> 32;
+    return mixed;
+}
+
+noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
     if (attrs.len >= 32 and attrs.len <= 128) {
         @branchHint(.unlikely);
@@ -39,7 +58,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
     var occupied = [_]u64{0} ** (table_capacity / 64);
     for (attrs, 0..) |attr, attr_index| {
         const name = attr.name.slice(input);
-        const hash = attributeNameHash(name);
+        const hash = attributeNameHashLarge(name);
         const fingerprint: u32 = @truncate(hash);
         var slot_index: usize = @intCast(hash >> (if (table_capacity == 128) 57 else 56));
         while (true) {
