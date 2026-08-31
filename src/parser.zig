@@ -21,7 +21,8 @@ noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const do
     @branchHint(.cold);
     if (attrs.len >= 32 and attrs.len <= 128) {
         @branchHint(.unlikely);
-        return findDuplicateAttributeLarge(input, attrs);
+        if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
+        return findDuplicateAttributeLarge(256, input, attrs);
     }
     for (attrs, 0..) |current, i| {
         const current_name = current.name.slice(input);
@@ -32,16 +33,15 @@ noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const do
     return null;
 }
 
-noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
+noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
-    const table_capacity = 256;
     var slots: [table_capacity]u32 = undefined;
     var occupied = [_]u64{0} ** (table_capacity / 64);
     for (attrs, 0..) |attr, attr_index| {
         const name = attr.name.slice(input);
         const hash = attributeNameHash(name);
         const fingerprint: u32 = @truncate(hash);
-        var slot_index: usize = @intCast(hash >> 56);
+        var slot_index: usize = @intCast(hash >> (if (table_capacity == 128) 57 else 56));
         while (true) {
             const word_index = slot_index >> 6;
             const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
@@ -64,7 +64,8 @@ noinline fn findDuplicateAttributeLarge(input: []const u8, attrs: []const docume
 noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {
     if (attrs.len >= 32 and attrs.len <= 128) {
         @branchHint(.unlikely);
-        return findDuplicateAttributeLarge(input, attrs);
+        if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
+        return findDuplicateAttributeLarge(256, input, attrs);
     }
     var buckets: u64 = 0;
     for (attrs) |attr| {
