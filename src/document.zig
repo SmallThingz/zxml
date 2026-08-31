@@ -569,7 +569,7 @@ pub fn isValidXmlName(name: []const u8) bool {
         i = 1;
     } else {
         const first = nextUtf8Codepoint(name, &i) orelse return false;
-        if (!isXmlNameStart(first)) return false;
+        if (!isXmlNonAsciiNameStart(first)) return false;
     }
 
     while (i < name.len) {
@@ -580,7 +580,7 @@ pub fn isValidXmlName(name: []const u8) bool {
             continue;
         }
         const codepoint = nextUtf8Codepoint(name, &i) orelse return false;
-        if (!isXmlNameChar(codepoint)) return false;
+        if (!isXmlNonAsciiNameChar(codepoint)) return false;
     }
     return true;
 }
@@ -607,6 +607,27 @@ inline fn isXmlCharacter(codepoint: u21) bool {
         (codepoint >= 0x20 and codepoint <= 0xD7FF) or
         (codepoint >= 0xE000 and codepoint <= 0xFFFD) or
         (codepoint >= 0x10000 and codepoint <= 0x10FFFF);
+}
+
+inline fn isXmlNonAsciiNameStart(codepoint: u21) bool {
+    return (codepoint >= 0xC0 and codepoint <= 0xD6) or
+        (codepoint >= 0xD8 and codepoint <= 0xF6) or
+        (codepoint >= 0xF8 and codepoint <= 0x2FF) or
+        (codepoint >= 0x370 and codepoint <= 0x37D) or
+        (codepoint >= 0x37F and codepoint <= 0x1FFF) or
+        (codepoint >= 0x200C and codepoint <= 0x200D) or
+        (codepoint >= 0x2070 and codepoint <= 0x218F) or
+        (codepoint >= 0x2C00 and codepoint <= 0x2FEF) or
+        (codepoint >= 0x3001 and codepoint <= 0xD7FF) or
+        (codepoint >= 0xF900 and codepoint <= 0xFDCF) or
+        (codepoint >= 0xFDF0 and codepoint <= 0xFFFD) or
+        (codepoint >= 0x10000 and codepoint <= 0xEFFFF);
+}
+
+inline fn isXmlNonAsciiNameChar(codepoint: u21) bool {
+    return isXmlNonAsciiNameStart(codepoint) or codepoint == 0xB7 or
+        (codepoint >= 0x0300 and codepoint <= 0x036F) or
+        (codepoint >= 0x203F and codepoint <= 0x2040);
 }
 
 inline fn isXmlNameStart(codepoint: u21) bool {
