@@ -395,9 +395,18 @@ fn pushGeneralEntity(
 }
 
 inline fn isPredefinedEntityName(name: []const u8) bool {
-    return std.mem.eql(u8, name, "amp") or std.mem.eql(u8, name, "lt") or
-        std.mem.eql(u8, name, "gt") or std.mem.eql(u8, name, "apos") or
-        std.mem.eql(u8, name, "quot");
+    return switch (name.len) {
+        2 => blk: {
+            const key = std.mem.readInt(u16, name[0..2], .little);
+            break :blk key == 0x746c or key == 0x7467; // lt, gt
+        },
+        3 => std.mem.readInt(u24, name[0..3], .little) == 0x706d61, // amp
+        4 => blk: {
+            const key = std.mem.readInt(u32, name[0..4], .little);
+            break :blk key == 0x736f7061 or key == 0x746f7571; // apos, quot
+        },
+        else => false,
+    };
 }
 
 fn doctypeGeneralEntityKind(doctype_value: []const u8, target: []const u8) ParseError!?GeneralEntityKind {
