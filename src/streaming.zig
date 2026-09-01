@@ -1674,9 +1674,23 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
 const attribute_filter_collision = @as(u64, 1) << 63;
 
 inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
+    if (name.len == 1) {
+        addAttributeNameFilterBucket(filter, oneByteAttributeNameBucket(name[0]));
+        return;
+    }
     const hash = attributeNameHash(name);
     var bucket: u6 = @intCast(hash >> 58);
     if (bucket == 63) bucket = 62;
+    addAttributeNameFilterBucket(filter, bucket);
+}
+
+inline fn oneByteAttributeNameBucket(c: u8) u6 {
+    // Strict one-byte XML names are ASCII NameStart bytes. Their low six bits
+    // are unique except ':' and 'z'; bucket zero is otherwise unused.
+    return if (c == ':') 0 else @intCast(c & 63);
+}
+
+inline fn addAttributeNameFilterBucket(filter: *u64, bucket: u6) void {
     const bit = @as(u64, 1) << bucket;
     if (filter.* & bit != 0) filter.* |= attribute_filter_collision;
     filter.* |= bit;
@@ -1692,14 +1706,16 @@ noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_star
 }
 
 inline fn addAttributeNameFilterKey(filter: *u64, key: u64, name_len: usize) void {
+    if (name_len == 1) {
+        addAttributeNameFilterBucket(filter, oneByteAttributeNameBucket(@truncate(key)));
+        return;
+    }
     var mixed = key ^ (@as(u64, name_len) << 56);
     mixed *%= 0x9e3779b97f4a7c15;
     mixed ^= mixed >> 32;
     var bucket: u6 = @intCast(mixed >> 58);
     if (bucket == 63) bucket = 62;
-    const bit = @as(u64, 1) << bucket;
-    if (filter.* & bit != 0) filter.* |= attribute_filter_collision;
-    filter.* |= bit;
+    addAttributeNameFilterBucket(filter, bucket);
 }
 
 inline fn attributeNameHash(name: []const u8) u64 {
@@ -3208,6 +3224,11 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     // Distinct names that land in the same hash-table bucket must probe rather
     // than false-positive as duplicates.
     try parser.parse("<r h='1' ab='2' z='3'/>", &ctx, Ctx.onNode);
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r a='1' b='2' c='3' a='4'/>", &ctx, Ctx.onNode));
+    // ':' and 'z' share the same low six bits, so the one-byte fast bucket
+    // must keep them distinct while still catching a repeated ':'.
+    try parser.parse("<r :='1' z='2' a='3'/>", &ctx, Ctx.onNode);
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r :='1' z='2' a='3' :='4'/>", &ctx, Ctx.onNode));
 
     var many = std.ArrayList(u8).empty;
     defer many.deinit(std.testing.allocator);
