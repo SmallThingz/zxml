@@ -1875,9 +1875,6 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     defer alloc.free(json);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
-    if (std.mem.eql(u8, profile.name, "stable")) {
-        try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
-    }
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -1937,6 +1934,13 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     if (write_baseline) {
         try common.writeFile(io, baseline, json);
         std.debug.print("wrote baseline {s}\n", .{baseline});
+    }
+
+    // README tables are publication output, unlike latest.json/latest.md which
+    // are useful diagnostics even for a failed run. Publish only after every
+    // stable gate and baseline-drift check has succeeded.
+    if (std.mem.eql(u8, profile.name, "stable")) {
+        try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     }
 }
 
