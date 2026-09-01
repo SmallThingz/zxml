@@ -421,7 +421,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     const prior_count = self.doc.attrs.items.len - @as(usize, attr_start_idx);
                     if (prior_count == 1) {
                         const first_name = self.doc.attrs.items[@as(usize, attr_start_idx)].name.slice(self.input);
-                        if (std.mem.eql(u8, first_name, self.input[attr_name_start..attr_name_end])) return error.DuplicateAttribute;
+                        const attr_name = self.input[attr_name_start..attr_name_end];
+                        if (first_name.len == 1 and attr_name.len == 1) {
+                            if (first_name[0] == attr_name[0]) return error.DuplicateAttribute;
+                        } else if (std.mem.eql(u8, first_name, attr_name)) {
+                            return error.DuplicateAttribute;
+                        }
                     }
                 }
                 const input = self.input;
