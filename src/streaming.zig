@@ -1967,46 +1967,90 @@ noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize
 }
 
 noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
-    const table_capacity = 256;
+    const primary_capacity = 256;
+    const total_capacity = 512;
     const NameSlot = struct {
         hash: u64,
         start: usize,
         end: usize,
     };
 
-    var slots: [table_capacity]NameSlot = undefined;
-    var occupied: [4]u64 = @splat(0);
+    var slots: [total_capacity]NameSlot = undefined;
+    var primary_occupied: [4]u64 = @splat(0);
+    var overflow_occupied: [4]u64 = @splat(0);
     var seen_count: usize = 0;
     var i = start;
     while (try scanValidatedAttributeTokenHuge(input, i, end)) |current| {
-        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
-
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHash(current_name);
-        var slot_index: usize = @intCast(hash >> (64 - 8));
-        while (true) {
-            const word_index = slot_index >> 6;
-            const bit_index: u6 = @intCast(slot_index & 63);
-            const bit = @as(u64, 1) << bit_index;
-            if (occupied[word_index] & bit == 0) {
-                slots[slot_index] = .{
-                    .hash = hash,
-                    .start = current.name_start,
-                    .end = current.name_end,
-                };
-                occupied[word_index] |= bit;
-                break;
+
+        if (seen_count < primary_capacity) {
+            var slot_index: usize = @intCast(hash >> (64 - 8));
+            while (true) {
+                const word_index = slot_index >> 6;
+                const bit_index: u6 = @intCast(slot_index & 63);
+                const bit = @as(u64, 1) << bit_index;
+                if (primary_occupied[word_index] & bit == 0) {
+                    slots[slot_index] = .{
+                        .hash = hash,
+                        .start = current.name_start,
+                        .end = current.name_end,
+                    };
+                    primary_occupied[word_index] |= bit;
+                    break;
+                }
+
+                const previous = slots[slot_index];
+                if (previous.hash == hash and
+                    previous.end - previous.start == current_name.len and
+                    std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                {
+                    return error.DuplicateAttribute;
+                }
+                slot_index = (slot_index + 1) & (primary_capacity - 1);
+            }
+        } else {
+            const overflow_count = seen_count - primary_capacity;
+            if (overflow_count == primary_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+
+            // The primary table is full at this point, so there is no empty
+            // sentinel to terminate a lookup. Scan its hashes once to rule out
+            // duplicates against the first 256 names.
+            for (slots[0..primary_capacity]) |previous| {
+                if (previous.hash == hash and
+                    previous.end - previous.start == current_name.len and
+                    std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                {
+                    return error.DuplicateAttribute;
+                }
             }
 
-            const previous = slots[slot_index];
-            if (previous.hash == hash and
-                previous.end - previous.start == current.name_end - current.name_start and
-                std.mem.eql(u8, input[previous.start..previous.end], current_name))
-            {
-                return error.DuplicateAttribute;
+            var overflow_index: usize = @intCast(hash >> (64 - 8));
+            while (true) {
+                const word_index = overflow_index >> 6;
+                const bit_index: u6 = @intCast(overflow_index & 63);
+                const bit = @as(u64, 1) << bit_index;
+                if (overflow_occupied[word_index] & bit == 0) {
+                    slots[primary_capacity + overflow_index] = .{
+                        .hash = hash,
+                        .start = current.name_start,
+                        .end = current.name_end,
+                    };
+                    overflow_occupied[word_index] |= bit;
+                    break;
+                }
+
+                const previous = slots[primary_capacity + overflow_index];
+                if (previous.hash == hash and
+                    previous.end - previous.start == current_name.len and
+                    std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                {
+                    return error.DuplicateAttribute;
+                }
+                overflow_index = (overflow_index + 1) & (primary_capacity - 1);
             }
-            slot_index = (slot_index + 1) & (table_capacity - 1);
         }
+
         seen_count += 1;
         i = current.next;
     }
