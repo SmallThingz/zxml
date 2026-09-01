@@ -64,6 +64,13 @@ pub fn build(b: *std.Build) void {
     b.installArtifact(ours_runner_exe);
     b.installArtifact(tools_exe);
 
+    // The benchmark tool rebuilds only the parser runner in ReleaseFast before
+    // timing. Rebuilding every installed artifact here used to compile the
+    // tools executable recursively and made benchmark setup needlessly slow.
+    const install_ours_runner = b.addInstallArtifact(ours_runner_exe, .{});
+    const bench_runner_build_step = b.step("bench-runner-build", "Build and install only the zxml benchmark runner");
+    bench_runner_build_step.dependOn(&install_ours_runner.step);
+
     const bench_step = b.step("bench", "Run local zxml benchmark");
     const tools_step = b.step("tools", "Run zxml-tools utility");
     const bench_compare_step = b.step("bench-compare", "Run parser comparison benchmarks");

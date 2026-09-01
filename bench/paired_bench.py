@@ -14,6 +14,7 @@ import math
 import os
 import statistics
 import subprocess
+from collections import Counter
 
 
 def positive_int(text: str) -> int:
@@ -128,6 +129,14 @@ def summarize_case(args, case):
     }
 
 
+def save_results(path, results):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as file:
+        json.dump(results, file, indent=2)
+        file.write("\n")
+    os.replace(tmp, path)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--base", required=True)
@@ -156,16 +165,30 @@ def main():
                 parser.error(f"CPU {core} is outside this process's affinity set")
 
     cases = load_cases(args.cases_json)
+    seen_paths = set()
     for case in cases:
         if not os.path.isfile(case["path"]):
             parser.error(f"case path is not a file: {case['path']}")
+        real_path = os.path.realpath(case["path"])
+        if real_path in seen_paths:
+            parser.error(f"duplicate case path: {case['path']}")
+        seen_paths.add(real_path)
+
+    name_counts = Counter(case.get("name", os.path.basename(case["path"])) for case in cases)
     results = []
     for case in cases:
         row = summarize_case(args, case)
         results.append(row)
+        if args.out:
+            # Keep a valid partial result after every completed case so a long
+            # run interrupted by the environment does not lose its evidence.
+            save_results(args.out, results)
         spread = row["max"] - row["min"]
+        label = row["name"]
+        if name_counts[label] > 1:
+            label = f"{label} [{row['path']}]"
         print(
-            f"{row['name']:34s} {row['ratio']:.6f} "
+            f"{label:34s} {row['ratio']:.6f} "
             f"gm={row['ratio_gm']:.6f} spread={spread:.6f}",
             flush=True,
         )
@@ -176,9 +199,7 @@ def main():
     print(f"SUM {summed:.6f}")
 
     if args.out:
-        with open(args.out, "w", encoding="utf-8") as file:
-            json.dump(results, file, indent=2)
-            file.write("\n")
+        save_results(args.out, results)
 
 
 if __name__ == "__main__":

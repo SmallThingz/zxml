@@ -25,12 +25,6 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
     });
     const input = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .unlimited);
     defer alloc.free(input);
-    var doc = Document.init(alloc);
-    defer doc.deinit();
-    var strict_stream = StreamStrict.StreamingParser.init(alloc);
-    defer strict_stream.deinit();
-    var turbo_stream = StreamTurbo.StreamingParser.init(alloc);
-    defer turbo_stream.deinit();
 
     var final_checksum: u64 = 0;
     var final_count: u64 = 0;
@@ -39,6 +33,8 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
         .strict => {
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
+                var doc = Document.init(alloc);
+                defer doc.deinit();
                 try doc.parse(input, .{
                     .mode = .strict,
                     .validate_closing_tags = true,
@@ -58,6 +54,8 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
         .turbo => {
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
+                var doc = Document.init(alloc);
+                defer doc.deinit();
                 try doc.parse(input, .{
                     .mode = .turbo,
                     .include_misc_nodes = true,
@@ -89,6 +87,8 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
             var ctx: Context = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
+                var strict_stream = StreamStrict.StreamingParser.init(alloc);
+                defer strict_stream.deinit();
                 try strict_stream.parse(input, &ctx, Context.onNode);
             }
             final_checksum = ctx.checksum;
@@ -116,6 +116,8 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
             var ctx: Context = .{};
             var i: usize = 0;
             while (i < iterations) : (i += 1) {
+                var turbo_stream = StreamTurbo.StreamingParser.init(alloc);
+                defer turbo_stream.deinit();
                 try turbo_stream.parse(input, &ctx, Context.onNode);
             }
             final_checksum = ctx.checksum;

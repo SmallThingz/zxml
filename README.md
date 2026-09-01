@@ -18,24 +18,8 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`stable` profile).
+Benchmark snapshot invalidated by methodology v2. Cross-library runs now use fresh parser/document allocations for every implementation and interleave parser samples. Run `zig build tools -- run-benchmarks --profile stable --write-baseline` to publish a new stable snapshot.
 
-### Parse Throughput (Average Across Fixtures)
-
-```text
-stream-turbo  │████████████████████│ 3428.34 MB/s (100.00%)
-stream-strict │██████████████████░░│ 3098.08 MB/s (90.37%)
-ours-turbo    │██████████████████░░│ 2999.85 MB/s (87.50%)
-ours-strict   │█████████████████░░░│ 2838.36 MB/s (82.79%)
-rapidxml      │████████░░░░░░░░░░░░│ 1373.49 MB/s (40.06%)
-pugixml       │████████░░░░░░░░░░░░│ 1334.58 MB/s (38.93%)
-```
-
-### Stable Gate Snapshot
-
-| Profile | Passed | Rule |
-|---|---:|---|
-| `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start

@@ -24,14 +24,14 @@ pub fn main(init: std.process.Init) !void {
         else
             return error.InvalidBenchMode;
         const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
-        const total_ns = try run_parse.runParseFile(init.io, alloc, args.items[3], iterations, mode);
+        const total_ns = try run_parse.runParseFile(init.io, init.gpa, args.items[3], iterations, mode);
         try printMeasurement(init.io, total_ns);
         return;
     }
 
     if (args.items.len == 3) {
         const iterations = try std.fmt.parseInt(usize, args.items[2], 10);
-        const total_ns = try run_parse.runParseFile(init.io, alloc, args.items[1], iterations, .turbo);
+        const total_ns = try run_parse.runParseFile(init.io, init.gpa, args.items[1], iterations, .turbo);
         try printMeasurement(init.io, total_ns);
         return;
     }
