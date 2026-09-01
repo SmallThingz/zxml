@@ -152,6 +152,56 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
+        inline fn scanOpeningName(input: []const u8, start: usize) scanner.NameScan {
+            std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
+            var i = start + 1;
+            var key: u64 = input[start];
+            var high_bits: u8 = input[start];
+            inline for (1..4) |n| {
+                if (i >= input.len or !tables.NameCharTable[input[i]]) return .{
+                    .end = i,
+                    .key = key,
+                    .needs_unicode_validation = (high_bits & 0x80) != 0,
+                };
+                const c = input[i];
+                high_bits |= c;
+                key |= @as(u64, c) << @intCast(n * 8);
+                i += 1;
+            }
+            if (i + 4 > input.len) return scanOpeningNameNearEnd(input, start, i, key, high_bits);
+            inline for (4..8) |n| {
+                if (!tables.NameCharTable[input[i]]) return .{
+                    .end = i,
+                    .key = key,
+                    .needs_unicode_validation = (high_bits & 0x80) != 0,
+                };
+                const c = input[i];
+                high_bits |= c;
+                key |= @as(u64, c) << @intCast(n * 8);
+                i += 1;
+            }
+            const tail = scanner.scanNameEnd(input, i);
+            return .{
+                .end = tail.end,
+                .key = key,
+                .needs_unicode_validation = (high_bits & 0x80) != 0 or tail.needs_unicode_validation,
+            };
+        }
+
+        noinline fn scanOpeningNameNearEnd(input: []const u8, start: usize, initial_i: usize, initial_key: u64, initial_high_bits: u8) scanner.NameScan {
+            @branchHint(.cold);
+            var i = initial_i;
+            var key = initial_key;
+            var high_bits = initial_high_bits;
+            while (i < input.len) : (i += 1) {
+                const c = input[i];
+                if (!tables.NameCharTable[c]) break;
+                high_bits |= c;
+                key |= @as(u64, c) << @intCast((i - start) * 8);
+            }
+            return .{ .end = i, .key = key, .needs_unicode_validation = (high_bits & 0x80) != 0 };
+        }
+
         fn parse(noalias self: *Self) align(128) ParseError!void {
             try self.doc.reserveForInput(self.input.len);
             if (comptime validate_closing_tags) {
@@ -239,7 +289,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             const name_start = self.i;
             const name_scan = if (comptime validate_closing_tags)
-                scanner.scanNameAndKeyAfterStart(self.input, self.i)
+                scanOpeningName(self.input, self.i)
             else if (comptime strict_mode) blk: {
                 const scan = scanner.scanNameEndAfterStart(self.input, self.i);
                 break :blk scanner.NameScan{
