@@ -2100,15 +2100,15 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
     }
 }
 
-
 noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
     const table_capacity = 1024;
     const NameSlot = struct {
         hash: u64,
-        start: usize,
-        end: usize,
+        start_rel: u32,
+        len: u32,
     };
 
+    if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var slots: [table_capacity]NameSlot = undefined;
     var occupied: [table_capacity / 64]u64 = @splat(0);
     var seen_count: usize = 0;
@@ -2126,19 +2126,19 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
             if (occupied[word_index] & bit == 0) {
                 slots[slot_index] = .{
                     .hash = hash,
-                    .start = current.name_start,
-                    .end = current.name_end,
+                    .start_rel = @intCast(current.name_start - start),
+                    .len = @intCast(current_name.len),
                 };
                 occupied[word_index] |= bit;
                 break;
             }
 
             const previous = slots[slot_index];
-            if (previous.hash == hash and
-                previous.end - previous.start == current_name.len and
-                std.mem.eql(u8, input[previous.start..previous.end], current_name))
-            {
-                return error.DuplicateAttribute;
+            if (previous.hash == hash and previous.len == current_name.len) {
+                const previous_start = start + previous.start_rel;
+                if (std.mem.eql(u8, input[previous_start .. previous_start + previous.len], current_name)) {
+                    return error.DuplicateAttribute;
+                }
             }
             slot_index = (slot_index + 1) & (table_capacity - 1);
         }
