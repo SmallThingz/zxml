@@ -1727,6 +1727,31 @@ fn scanValidatedAttributeTokenVeryLarge(input: []const u8, start: usize, end: us
     return scanValidatedAttributeToken(input, start, end);
 }
 
+fn scanValidatedAttributeTokenHuge(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
+    if (start >= end) return null;
+    if (input[start] == ' ' and start + 4 < end) {
+        const name_start = start + 1;
+        var name_end: usize = undefined;
+        if (input[name_start + 1] == '=') {
+            name_end = name_start + 1;
+        } else if (name_start + 2 < end and input[name_start + 2] == '=') {
+            name_end = name_start + 2;
+        } else if (name_start + 3 < end and input[name_start + 3] == '=') {
+            name_end = name_start + 3;
+        } else if (name_start + 4 < end and input[name_start + 4] == '=') {
+            name_end = name_start + 4;
+        } else {
+            return scanValidatedAttributeToken(input, start, end);
+        }
+        const quote = input[name_end + 1];
+        if (quote == '\'' or quote == '"') {
+            const quote_pos = scanner.findByte(input[0..end], name_end + 2, quote) orelse unreachable;
+            return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+        }
+    }
+    return scanValidatedAttributeToken(input, start, end);
+}
+
 const attribute_filter_collision = @as(u64, 1) << 63;
 
 inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
@@ -1914,9 +1939,7 @@ noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize
     var i = start;
     while (try scanValidatedAttributeTokenVeryLarge(input, i, end)) |current| {
         if (seen_count == table_capacity) {
-            // Extremely attribute-heavy tags are outside the fast-path budget.
-            // Re-run the exact bounded-memory checker rather than allocating.
-            return validateUniqueAttributesQuadratic(input, start, end);
+            return validateUniqueAttributesRawHuge(input, start, end);
         }
 
         const current_name = input[current.name_start..current.name_end];
@@ -1938,6 +1961,52 @@ noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize
             .end = current.name_end,
         };
         occupied |= @as(u128, 1) << @as(u7, @intCast(slot_index));
+        seen_count += 1;
+        i = current.next;
+    }
+}
+
+noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+    const table_capacity = 256;
+    const NameSlot = struct {
+        hash: u64,
+        start: usize,
+        end: usize,
+    };
+
+    var slots: [table_capacity]NameSlot = undefined;
+    var occupied: [4]u64 = @splat(0);
+    var seen_count: usize = 0;
+    var i = start;
+    while (try scanValidatedAttributeTokenHuge(input, i, end)) |current| {
+        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+
+        const current_name = input[current.name_start..current.name_end];
+        const hash = attributeNameHash(current_name);
+        var slot_index: usize = @intCast(hash >> (64 - 8));
+        while (true) {
+            const word_index = slot_index >> 6;
+            const bit_index: u6 = @intCast(slot_index & 63);
+            const bit = @as(u64, 1) << bit_index;
+            if (occupied[word_index] & bit == 0) {
+                slots[slot_index] = .{
+                    .hash = hash,
+                    .start = current.name_start,
+                    .end = current.name_end,
+                };
+                occupied[word_index] |= bit;
+                break;
+            }
+
+            const previous = slots[slot_index];
+            if (previous.hash == hash and
+                previous.end - previous.start == current.name_end - current.name_start and
+                std.mem.eql(u8, input[previous.start..previous.end], current_name))
+            {
+                return error.DuplicateAttribute;
+            }
+            slot_index = (slot_index + 1) & (table_capacity - 1);
+        }
         seen_count += 1;
         i = current.next;
     }
