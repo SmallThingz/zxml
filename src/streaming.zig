@@ -666,7 +666,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         } else if (attr_count == 1) {
                             const first_len = first_attr_end - first_attr_start;
                             const current_len = attr_i - attr_name_start;
-                            if (first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..attr_i])) {
+                            const duplicate = if (first_len == 1 and current_len == 1)
+                                input[first_attr_start] == input[attr_name_start]
+                            else
+                                first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..attr_i]);
+                            if (duplicate) {
                                 @branchHint(.unlikely);
                                 return error.DuplicateAttribute;
                             }
