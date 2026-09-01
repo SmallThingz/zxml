@@ -1663,7 +1663,7 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
         quote = input[i];
         if (quote != '\'' and quote != '"') return error.ExpectedQuote;
     }
-    const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse return error.ExpectedQuote;
+    const quote_pos = scanner.findByte(input[0..end], i + 1, quote) orelse unreachable;
     return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
 }
 
