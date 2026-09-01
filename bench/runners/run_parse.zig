@@ -46,6 +46,13 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
                     // nodes makes some real-world feeds artificially cheap.
                     .include_misc_nodes = true,
                 });
+                // Keep the produced DOM observably live. This is deliberately
+                // O(1): walking the tree would benchmark traversal as well as
+                // parsing, while leaving the result entirely unused gives an
+                // optimizer room to discard dead construction work.
+                final_count +%= 1;
+                final_checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+                final_checksum +%= @as(u64, @intCast(doc.attrs.items.len));
             }
         },
         .turbo => {
@@ -55,6 +62,9 @@ pub fn runParseFile(io: std.Io, alloc: std.mem.Allocator, path: []const u8, iter
                     .mode = .turbo,
                     .include_misc_nodes = true,
                 });
+                final_count +%= 1;
+                final_checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+                final_checksum +%= @as(u64, @intCast(doc.attrs.items.len));
             }
         },
         .stream_strict => {
@@ -124,4 +134,10 @@ test "runParseFile rejects zero iterations before file access" {
         error.InvalidIterations,
         runParseFile(std.testing.io, std.testing.allocator, "does-not-exist.xml", 0, .turbo),
     );
+}
+
+test "all benchmark modes parse the smoke fixture" {
+    inline for (std.meta.tags(BenchMode)) |mode| {
+        _ = try runParseFile(std.testing.io, std.testing.allocator, "bench/smoke.xml", 2, mode);
+    }
 }

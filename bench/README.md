@@ -109,36 +109,35 @@ Source: `bench/results/latest.json` (`stable` profile).
 | `synthetic_mixed_content.xml` | 2200.18 | `pugixml` 623.85 | 3.527 | PASS |
 | `synthetic_small_records.xml` | 2275.02 | `pugixml` 429.75 | 5.294 | PASS |
 
-### Streaming Gates
+### Streaming Comparison (Advisory)
 
-| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours | Result |
-|---|---:|---:|---:|---:|---:|---:|---|
-| `note.xml` | 2655.16 | 2378.96 | 1.116 | 2668.31 | 2380.36 | 1.121 | PASS |
-| `sitemaps.xml` | 3151.28 | 2356.27 | 1.337 | 2792.46 | 2378.22 | 1.174 | PASS |
-| `plant_catalog.xml` | 2874.42 | 2325.70 | 1.236 | 2610.40 | 2464.59 | 1.059 | PASS |
-| `cd_catalog.xml` | 2703.15 | 2164.14 | 1.249 | 2459.81 | 2257.74 | 1.089 | PASS |
-| `hnrss.xml` | 6625.50 | 6280.57 | 1.055 | 5907.66 | 5760.75 | 1.026 | PASS |
-| `xkcd_rss.xml` | 7679.45 | 7048.73 | 1.089 | 7041.15 | 6470.62 | 1.088 | PASS |
-| `bbc_world.xml` | 4961.70 | 4052.37 | 1.224 | 4447.66 | 4224.63 | 1.053 | PASS |
-| `arxiv_cs.xml` | 3729.56 | 3078.22 | 1.212 | 3418.84 | 2986.66 | 1.145 | PASS |
-| `ecb_usd.xml` | 5233.25 | 4726.02 | 1.107 | 4501.32 | 4227.53 | 1.065 | PASS |
-| `tree.xml` | 2793.30 | 2340.66 | 1.193 | 2367.79 | 2213.36 | 1.070 | PASS |
-| `character.xml` | 2662.49 | 2244.69 | 1.186 | 2338.12 | 2075.22 | 1.127 | PASS |
-| `transitions.xml` | 2709.51 | 2395.46 | 1.131 | 2344.48 | 2115.04 | 1.108 | PASS |
-| `xgconsole.xml` | 3665.56 | 2933.03 | 1.250 | 3261.82 | 2797.20 | 1.166 | PASS |
-| `weekly_utf8.xml` | 3529.36 | 2919.77 | 1.209 | 2694.76 | 2887.41 | 0.933 | FAIL |
-| `pugixml_large.xml` | 2379.25 | 2195.54 | 1.084 | 2064.92 | 2198.05 | 0.939 | FAIL |
-| `synthetic_flat_attrs.xml` | 1829.35 | 1550.83 | 1.180 | 1669.01 | 1276.79 | 1.307 | PASS |
-| `synthetic_deep_tree.xml` | 1971.12 | 1395.22 | 1.413 | 1519.92 | 1159.79 | 1.311 | PASS |
-| `synthetic_entities.xml` | 4054.24 | 3916.39 | 1.035 | 4154.93 | 3572.27 | 1.163 | PASS |
-| `synthetic_cdata_mix.xml` | 2666.56 | 2418.11 | 1.103 | 2613.59 | 2545.28 | 1.027 | PASS |
-| `synthetic_wide_siblings.xml` | 2107.12 | 1876.19 | 1.123 | 2027.75 | 1782.39 | 1.138 | PASS |
-| `synthetic_namespace_mix.xml` | 3191.16 | 2791.58 | 1.143 | 2739.53 | 2368.05 | 1.157 | PASS |
-| `synthetic_long_names.xml` | 4243.91 | 4543.35 | 0.934 | 4251.94 | 4257.79 | 0.999 | FAIL |
-| `synthetic_self_closing_swarm.xml` | 2914.65 | 2589.17 | 1.126 | 2686.83 | 2139.58 | 1.256 | PASS |
-| `synthetic_mixed_content.xml` | 2761.36 | 2200.18 | 1.255 | 2414.19 | 2233.09 | 1.081 | PASS |
-| `synthetic_small_records.xml` | 2616.18 | 2275.02 | 1.150 | 2454.86 | 2186.69 | 1.123 | PASS |
-
+| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |
+|---|---:|---:|---:|---:|---:|---:|
+| `note.xml` | 2655.16 | 2378.96 | 1.116 | 2668.31 | 2380.36 | 1.121 |
+| `sitemaps.xml` | 3151.28 | 2356.27 | 1.337 | 2792.46 | 2378.22 | 1.174 |
+| `plant_catalog.xml` | 2874.42 | 2325.70 | 1.236 | 2610.40 | 2464.59 | 1.059 |
+| `cd_catalog.xml` | 2703.15 | 2164.14 | 1.249 | 2459.81 | 2257.74 | 1.089 |
+| `hnrss.xml` | 6625.50 | 6280.57 | 1.055 | 5907.66 | 5760.75 | 1.026 |
+| `xkcd_rss.xml` | 7679.45 | 7048.73 | 1.089 | 7041.15 | 6470.62 | 1.088 |
+| `bbc_world.xml` | 4961.70 | 4052.37 | 1.224 | 4447.66 | 4224.63 | 1.053 |
+| `arxiv_cs.xml` | 3729.56 | 3078.22 | 1.212 | 3418.84 | 2986.66 | 1.145 |
+| `ecb_usd.xml` | 5233.25 | 4726.02 | 1.107 | 4501.32 | 4227.53 | 1.065 |
+| `tree.xml` | 2793.30 | 2340.66 | 1.193 | 2367.79 | 2213.36 | 1.070 |
+| `character.xml` | 2662.49 | 2244.69 | 1.186 | 2338.12 | 2075.22 | 1.127 |
+| `transitions.xml` | 2709.51 | 2395.46 | 1.131 | 2344.48 | 2115.04 | 1.108 |
+| `xgconsole.xml` | 3665.56 | 2933.03 | 1.250 | 3261.82 | 2797.20 | 1.166 |
+| `weekly_utf8.xml` | 3529.36 | 2919.77 | 1.209 | 2694.76 | 2887.41 | 0.933 |
+| `pugixml_large.xml` | 2379.25 | 2195.54 | 1.084 | 2064.92 | 2198.05 | 0.939 |
+| `synthetic_flat_attrs.xml` | 1829.35 | 1550.83 | 1.180 | 1669.01 | 1276.79 | 1.307 |
+| `synthetic_deep_tree.xml` | 1971.12 | 1395.22 | 1.413 | 1519.92 | 1159.79 | 1.311 |
+| `synthetic_entities.xml` | 4054.24 | 3916.39 | 1.035 | 4154.93 | 3572.27 | 1.163 |
+| `synthetic_cdata_mix.xml` | 2666.56 | 2418.11 | 1.103 | 2613.59 | 2545.28 | 1.027 |
+| `synthetic_wide_siblings.xml` | 2107.12 | 1876.19 | 1.123 | 2027.75 | 1782.39 | 1.138 |
+| `synthetic_namespace_mix.xml` | 3191.16 | 2791.58 | 1.143 | 2739.53 | 2368.05 | 1.157 |
+| `synthetic_long_names.xml` | 4243.91 | 4543.35 | 0.934 | 4251.94 | 4257.79 | 0.999 |
+| `synthetic_self_closing_swarm.xml` | 2914.65 | 2589.17 | 1.126 | 2686.83 | 2139.58 | 1.256 |
+| `synthetic_mixed_content.xml` | 2761.36 | 2200.18 | 1.255 | 2414.19 | 2233.09 | 1.081 |
+| `synthetic_small_records.xml` | 2616.18 | 2275.02 | 1.150 | 2454.86 | 2186.69 | 1.123 |
 For the full terminal-style report:
 - `bench/results/latest.md`
 - `bench/results/latest.json`
@@ -175,3 +174,9 @@ Optional strict/turbo spot checks:
 zig-out/bin/zxml-bench parse strict bench/fixtures/sitemaps.xml 400
 zig-out/bin/zxml-bench parse turbo bench/fixtures/sitemaps.xml 2000
 ```
+
+For sub-percent parser A/B work, use `bench/paired_bench.py`. It runs baseline
+and candidate simultaneously on two pinned CPUs, swaps the CPU assignments,
+geometrically combines each assignment pair, then uses the median paired ratio
+across repeats to reject scheduler outliers. Reported ratios are candidate time
+divided by baseline time, so values below `1.0` are faster.

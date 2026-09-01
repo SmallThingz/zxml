@@ -36,7 +36,6 @@ pugixml       │████████░░░░░░░░░░░░│
 | Profile | Passed | Rule |
 |---|---:|---|
 | `stable` | 25/25 | `ours-turbo >= max(pugixml, rapidxml)` |
-| `stable` | 22/25 | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start

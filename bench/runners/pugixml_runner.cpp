@@ -12,6 +12,17 @@ static uint64_t now_ns() {
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
 }
 
+static inline void consume_document(const pugi::xml_document *doc) {
+#if defined(__GNUC__) || defined(__clang__)
+    // The benchmark measures construction, not traversal. Make the complete
+    // document observable without walking it inside the timed region.
+    __asm__ __volatile__("" : : "g"(doc) : "memory");
+#else
+    volatile const pugi::xml_document *sink = doc;
+    (void)sink;
+#endif
+}
+
 static char *read_file(const char *path, size_t *out_len) {
     FILE *f = fopen(path, "rb");
     if (!f) return nullptr;
@@ -72,11 +83,21 @@ int main(int argc, char **argv) {
     const uint64_t start = now_ns();
     for (size_t i = 0; i < iterations; i++) {
         pugi::xml_document doc;
-        pugi::xml_parse_result r = doc.load_buffer(input, len, pugi::parse_default | pugi::parse_ws_pcdata_single);
+        // Match zxml's zero-copy/raw-value DOM semantics. Build all node kinds
+        // benchmarked by zxml, but leave entity expansion, EOL conversion and
+        // attribute-value normalization disabled; zxml performs those lazily.
+        // Whitespace-only PCDATA stays disabled, matching zxml's default.
+        constexpr unsigned int flags = pugi::parse_cdata |
+                                       pugi::parse_pi |
+                                       pugi::parse_comments |
+                                       pugi::parse_declaration |
+                                       pugi::parse_doctype;
+        pugi::xml_parse_result r = doc.load_buffer(input, len, flags);
         if (!r) {
             free(input);
             return 1;
         }
+        consume_document(&doc);
     }
     const uint64_t end = now_ns();
 

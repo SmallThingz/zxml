@@ -2,7 +2,6 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <time.h>
 
 #include "rapidxml.hpp"
@@ -11,6 +10,18 @@ static uint64_t now_ns() {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000000ULL + (uint64_t)ts.tv_nsec;
+}
+
+template <class T>
+static inline void consume_document(const T *doc) {
+#if defined(__GNUC__) || defined(__clang__)
+    // RapidXML is header-only, so without an optimization barrier the compiler
+    // can see both construction and destruction and may discard dead DOM work.
+    __asm__ __volatile__("" : : "g"(doc) : "memory");
+#else
+    volatile const T *sink = doc;
+    (void)sink;
+#endif
 }
 
 static char *read_file(const char *path, size_t *out_len) {
@@ -55,9 +66,9 @@ int main(int argc, char **argv) {
         return 2;
     }
     errno = 0;
-    char *end = nullptr;
-    const unsigned long long parsed_iterations = strtoull(argv[2], &end, 10);
-    if (errno == ERANGE || end == argv[2] || *end != '\0' || parsed_iterations == 0 || parsed_iterations > SIZE_MAX) {
+    char *parse_end = nullptr;
+    const unsigned long long parsed_iterations = strtoull(argv[2], &parse_end, 10);
+    if (errno == ERANGE || parse_end == argv[2] || *parse_end != '\0' || parsed_iterations == 0 || parsed_iterations > SIZE_MAX) {
         fprintf(stderr, "invalid iterations: %s\n", argv[2]);
         return 2;
     }
@@ -70,28 +81,29 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    char *working = (char *)malloc(len + 1);
-    if (!working) {
-        free(input);
-        return 1;
-    }
-
     const uint64_t start = now_ns();
     for (size_t i = 0; i < iterations; i++) {
-        memcpy(working, input, len + 1);
         rapidxml::xml_document<> doc;
         try {
-            doc.parse<rapidxml::parse_default>(working);
+            // Match zxml's zero-copy/raw-value DOM semantics. Non-destructive
+            // mode avoids string terminators and entity translation, so the
+            // source buffer can be reused without timing an unrelated memcpy.
+            // Keep closing-tag validation off because this is the turbo peer.
+            constexpr int flags = rapidxml::parse_non_destructive |
+                                  rapidxml::parse_declaration_node |
+                                  rapidxml::parse_comment_nodes |
+                                  rapidxml::parse_doctype_node |
+                                  rapidxml::parse_pi_nodes;
+            doc.parse<flags>(input);
         } catch (const rapidxml::parse_error &) {
-            free(working);
             free(input);
             return 1;
         }
+        consume_document(&doc);
     }
     const uint64_t end = now_ns();
 
     printf("%llu\n", (unsigned long long)(end - start));
-    free(working);
     free(input);
     return 0;
 }

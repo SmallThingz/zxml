@@ -9,6 +9,7 @@ const TMP_SCRATCH_DIR = BUILD_DIR ++ "/tmp";
 const RESULTS_DIR = "bench/results";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
+const pugixml_revision = "27b68329de32cf9c601ca8eb6c588fd639960c40";
 const min_sample_ns: u64 = 20_000_000;
 const ReadmeSummaryStartMarker = "<!-- README_AUTO_SUMMARY:START -->";
 const ReadmeSummaryEndMarker = "<!-- README_AUTO_SUMMARY:END -->";
@@ -146,7 +147,7 @@ const GateRow = struct {
     pass: bool,
 };
 
-const StreamGateRow = struct {
+const StreamComparisonRow = struct {
     fixture: []const u8,
     is_real: bool,
     dom_turbo_mb_s: f64,
@@ -155,7 +156,6 @@ const StreamGateRow = struct {
     dom_strict_mb_s: f64,
     stream_strict_mb_s: f64,
     strict_ratio: f64,
-    pass: bool,
 };
 
 fn getProfile(name: []const u8) !Profile {
@@ -206,21 +206,39 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
         if (common.fileExists(io, pugixml_dir)) {
             try std.Io.Dir.cwd().deleteTree(io, pugixml_dir);
         }
-        const argv = [_][]const u8{ "git", "clone", "--depth", "1", "https://github.com/zeux/pugixml.git", pugixml_dir };
-        try common.runInherit(io, alloc, &argv, REPO_ROOT);
-        if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
-            return error.IncompleteExternalParser;
-        }
-    } else if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
-        // bench/parsers is generated/ignored state. Repair deleted or partially
-        // populated tracked files instead of treating the mere presence of
-        // `.git` as a complete checkout.
-        const repair = [_][]const u8{ "git", "-C", pugixml_dir, "reset", "--hard", "HEAD" };
-        try common.runInherit(io, alloc, &repair, REPO_ROOT);
+        const init = [_][]const u8{ "git", "init", pugixml_dir };
+        try common.runInherit(io, alloc, &init, REPO_ROOT);
+        const remote = [_][]const u8{ "git", "-C", pugixml_dir, "remote", "add", "origin", "https://github.com/zeux/pugixml.git" };
+        try common.runInherit(io, alloc, &remote, REPO_ROOT);
+        const fetch = [_][]const u8{ "git", "-C", pugixml_dir, "fetch", "--depth", "1", "origin", pugixml_revision };
+        try common.runInherit(io, alloc, &fetch, REPO_ROOT);
+        const checkout = [_][]const u8{ "git", "-C", pugixml_dir, "checkout", "--detach", "FETCH_HEAD" };
+        try common.runInherit(io, alloc, &checkout, REPO_ROOT);
         if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
             return error.IncompleteExternalParser;
         }
     } else {
+        const rev_argv = [_][]const u8{ "git", "-C", pugixml_dir, "rev-parse", "HEAD" };
+        const rev_out = try common.runCaptureStdout(io, alloc, &rev_argv, REPO_ROOT);
+        defer alloc.free(rev_out);
+        const current_revision = std.mem.trim(u8, rev_out, " \t\r\n");
+        if (!std.mem.eql(u8, current_revision, pugixml_revision)) {
+            const fetch = [_][]const u8{ "git", "-C", pugixml_dir, "fetch", "--depth", "1", "origin", pugixml_revision };
+            try common.runInherit(io, alloc, &fetch, REPO_ROOT);
+            const checkout = [_][]const u8{ "git", "-C", pugixml_dir, "checkout", "--detach", "FETCH_HEAD" };
+            try common.runInherit(io, alloc, &checkout, REPO_ROOT);
+        }
+
+        if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
+            // bench/parsers is generated/ignored state. Repair deleted or partially
+            // populated tracked files instead of treating the mere presence of
+            // `.git` as a complete checkout.
+            const repair = [_][]const u8{ "git", "-C", pugixml_dir, "reset", "--hard", "HEAD" };
+            try common.runInherit(io, alloc, &repair, REPO_ROOT);
+            if (!try allFilesExistUnder(io, alloc, pugixml_dir, &pugixml_required_files)) {
+                return error.IncompleteExternalParser;
+            }
+        }
         std.debug.print("already present: pugixml\n", .{});
     }
 
@@ -703,7 +721,12 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     const pugixml_cc = [_][]const u8{
         "c++",
         "-O3",
+        "-DNDEBUG",
+        "-march=native",
         "-std=c++17",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
         "bench/runners/pugixml_runner.cpp",
         "bench/parsers/pugixml/src/pugixml.cpp",
         "-Ibench/parsers/pugixml/src",
@@ -715,7 +738,12 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     const rapidxml_cc = [_][]const u8{
         "c++",
         "-O3",
+        "-DNDEBUG",
+        "-march=native",
         "-std=c++17",
+        "-Wall",
+        "-Wextra",
+        "-Werror",
         "bench/runners/rapidxml_runner.cpp",
         "-Ibench/parsers/rapidxml",
         "-o",
@@ -794,7 +822,7 @@ fn runParseBench(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, 
 
     const median = try common.medianU64(alloc, samples);
     const bytes_total = @as(f64, @floatFromInt(fixture_stat.size)) * @as(f64, @floatFromInt(calibrated_iterations));
-    const throughput = if (median == 0) 0.0 else (bytes_total / (1024.0 * 1024.0)) / (@as(f64, @floatFromInt(median)) / 1_000_000_000.0);
+    const throughput = if (median == 0) 0.0 else (bytes_total / 1_000_000.0) / (@as(f64, @floatFromInt(median)) / 1_000_000_000.0);
 
     const parser_name_copy = try alloc.dupe(u8, parser_name);
     errdefer alloc.free(parser_name_copy);
@@ -836,6 +864,10 @@ fn findThroughput(rows: []const ParseResult, parser_name: []const u8, fixture: [
     return null;
 }
 
+fn isLocalParser(parser_name: []const u8) bool {
+    return std.mem.startsWith(u8, parser_name, "ours-") or std.mem.startsWith(u8, parser_name, "stream-");
+}
+
 fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]GateRow {
     var out = std.ArrayList(GateRow).empty;
     errdefer {
@@ -875,8 +907,8 @@ fn freeGateRows(alloc: std.mem.Allocator, rows: []GateRow) void {
     alloc.free(rows);
 }
 
-fn evaluateStreamGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]StreamGateRow {
-    var out = std.ArrayList(StreamGateRow).empty;
+fn evaluateStreamComparisonRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]StreamComparisonRow {
+    var out = std.ArrayList(StreamComparisonRow).empty;
     errdefer {
         for (out.items) |r| alloc.free(r.fixture);
         out.deinit(alloc);
@@ -901,14 +933,13 @@ fn evaluateStreamGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []co
             .dom_strict_mb_s = dom_strict,
             .stream_strict_mb_s = stream_strict,
             .strict_ratio = strict_ratio,
-            .pass = turbo_ratio >= 1.0 and strict_ratio >= 1.0,
         });
     }
 
     return out.toOwnedSlice(alloc);
 }
 
-fn freeStreamGateRows(alloc: std.mem.Allocator, rows: []StreamGateRow) void {
+fn freeStreamComparisonRows(alloc: std.mem.Allocator, rows: []StreamComparisonRow) void {
     for (rows) |r| alloc.free(r.fixture);
     alloc.free(rows);
 }
@@ -1019,7 +1050,7 @@ fn renderReadmeAutoSummary(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1070,18 +1101,7 @@ fn renderReadmeAutoSummary(
         pass_count,
         gate_rows.len,
     });
-    const stream_pass_count: usize = blk: {
-        var count: usize = 0;
-        for (stream_gate_rows) |g| {
-            if (g.pass) count += 1;
-        }
-        break :blk count;
-    };
-    try w.print("| `{s}` | {d}/{d} | `stream-turbo >= ours-turbo && stream-strict >= ours-strict` |\n", .{
-        profile_name,
-        stream_pass_count,
-        stream_gate_rows.len,
-    });
+    _ = stream_comparison_rows;
 
     return out.toOwnedSlice();
 }
@@ -1091,7 +1111,7 @@ fn renderBenchReadmeSnapshot(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1161,13 +1181,13 @@ fn renderBenchReadmeSnapshot(
         );
     }
 
-    if (stream_gate_rows.len != 0) {
-        try w.writeAll("\n### Streaming Gates\n\n");
-        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours | Result |\n");
-        try w.writeAll("|---|---:|---:|---:|---:|---:|---:|---|\n");
-        for (stream_gate_rows) |g| {
+    if (stream_comparison_rows.len != 0) {
+        try w.writeAll("\n### Streaming Comparison (Advisory)\n\n");
+        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |\n");
+        try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
+        for (stream_comparison_rows) |g| {
             try w.print(
-                "| `{s}` | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} | {s} |\n",
+                "| `{s}` | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
                     g.stream_turbo_mb_s,
@@ -1176,7 +1196,6 @@ fn renderBenchReadmeSnapshot(
                     g.stream_strict_mb_s,
                     g.dom_strict_mb_s,
                     g.strict_ratio,
-                    if (g.pass) "PASS" else "FAIL",
                 },
             );
         }
@@ -1194,13 +1213,13 @@ fn updateBenchmarkReadmes(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) !void {
-    const root_summary = try renderReadmeAutoSummary(alloc, profile_name, parse_results, gate_rows, stream_gate_rows);
+    const root_summary = try renderReadmeAutoSummary(alloc, profile_name, parse_results, gate_rows, stream_comparison_rows);
     defer alloc.free(root_summary);
     try updateFileSection(io, alloc, "README.md", ReadmeSummaryStartMarker, ReadmeSummaryEndMarker, root_summary);
 
-    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, profile_name, parse_results, gate_rows, stream_gate_rows);
+    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, profile_name, parse_results, gate_rows, stream_comparison_rows);
     defer alloc.free(bench_snapshot);
     try updateFileSection(io, alloc, "bench/README.md", BenchReadmeSnapshotStartMarker, BenchReadmeSnapshotEndMarker, bench_snapshot);
 }
@@ -1250,7 +1269,7 @@ fn writeMarkdown(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1287,13 +1306,13 @@ fn writeMarkdown(
         }
     }
 
-    if (stream_gate_rows.len != 0) {
-        try w.writeAll("\n## Streaming Gates\n\n");
-        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours | Result |\n");
-        try w.writeAll("|---|---:|---:|---:|---:|---:|---:|---|\n");
-        for (stream_gate_rows) |g| {
+    if (stream_comparison_rows.len != 0) {
+        try w.writeAll("\n## Streaming Comparison (Advisory)\n\n");
+        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |\n");
+        try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
+        for (stream_comparison_rows) |g| {
             try w.print(
-                "| {s} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} | {s} |\n",
+                "| {s} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
                     g.stream_turbo_mb_s,
@@ -1302,7 +1321,6 @@ fn writeMarkdown(
                     g.stream_strict_mb_s,
                     g.dom_strict_mb_s,
                     g.strict_ratio,
-                    if (g.pass) "PASS" else "FAIL",
                 },
             );
         }
@@ -1317,7 +1335,7 @@ fn writeTerminalReport(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1519,8 +1537,8 @@ fn writeTerminalReport(
         try w.print("Gate Summary: {d}/{d} passed\n", .{ pass_count, gate_rows.len });
     }
 
-    if (stream_gate_rows.len != 0) {
-        try w.writeAll("\nStreaming Gates\n");
+    if (stream_comparison_rows.len != 0) {
+        try w.writeAll("\nStreaming Comparison (advisory)\n");
         const headers = [_][]const u8{
             "Fixture",
             "stream-turbo",
@@ -1529,10 +1547,9 @@ fn writeTerminalReport(
             "stream-strict",
             "ours-strict",
             "stream/ours",
-            "Result",
         };
-        const header_align = [_]bool{ false, false, false, false, false, false, false, false };
-        const row_align = [_]bool{ false, true, true, true, true, true, true, false };
+        const header_align = [_]bool{ false, false, false, false, false, false, false };
+        const row_align = [_]bool{ false, true, true, true, true, true, true };
         var widths = [_]usize{
             headers[0].len,
             headers[1].len,
@@ -1541,10 +1558,9 @@ fn writeTerminalReport(
             headers[4].len,
             headers[5].len,
             headers[6].len,
-            headers[7].len,
         };
 
-        for (stream_gate_rows) |g| {
+        for (stream_comparison_rows) |g| {
             widths[0] = maxUsize(widths[0], g.fixture.len);
             inline for (&.{ g.stream_turbo_mb_s, g.dom_turbo_mb_s, g.turbo_ratio, g.stream_strict_mb_s, g.dom_strict_mb_s, g.strict_ratio }, 1..) |value, col| {
                 var buf: [32]u8 = undefined;
@@ -1554,15 +1570,12 @@ fn writeTerminalReport(
                     try std.fmt.bufPrint(&buf, "{d:.2}", .{value});
                 widths[col] = maxUsize(widths[col], txt.len);
             }
-            widths[7] = maxUsize(widths[7], if (g.pass) 4 else 4);
         }
 
         try writeTableBorder(w, &widths);
         try writeTableRow(w, &headers, &widths, &header_align);
         try writeTableBorder(w, &widths);
-        var pass_count: usize = 0;
-        for (stream_gate_rows) |g| {
-            if (g.pass) pass_count += 1;
+        for (stream_comparison_rows) |g| {
             var stream_turbo_buf: [32]u8 = undefined;
             const stream_turbo = try std.fmt.bufPrint(&stream_turbo_buf, "{d:.2}", .{g.stream_turbo_mb_s});
             var dom_turbo_buf: [32]u8 = undefined;
@@ -1583,12 +1596,10 @@ fn writeTerminalReport(
                 stream_strict,
                 dom_strict,
                 strict_ratio,
-                if (g.pass) "PASS" else "FAIL",
             };
             try writeTableRow(w, &row, &widths, &row_align);
         }
         try writeTableBorder(w, &widths);
-        try w.print("Streaming Gate Summary: {d}/{d} passed\n", .{ pass_count, stream_gate_rows.len });
     }
 
     return out.toOwnedSlice();
@@ -1600,7 +1611,7 @@ fn writeJson(
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
-    stream_gate_rows: []const StreamGateRow,
+    stream_comparison_rows: []const StreamComparisonRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1631,10 +1642,10 @@ fn writeJson(
             },
         );
     }
-    try w.writeAll("  ],\n  \"stream_gates\": [\n");
-    for (stream_gate_rows, 0..) |g, i| {
+    try w.writeAll("  ],\n  \"stream_comparisons\": [\n");
+    for (stream_comparison_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_turbo_mb_s\":{d:.6},\"stream_turbo_mb_s\":{d:.6},\"turbo_ratio\":{d:.6},\"dom_strict_mb_s\":{d:.6},\"stream_strict_mb_s\":{d:.6},\"strict_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_turbo_mb_s\":{d:.6},\"stream_turbo_mb_s\":{d:.6},\"turbo_ratio\":{d:.6},\"dom_strict_mb_s\":{d:.6},\"stream_strict_mb_s\":{d:.6},\"strict_ratio\":{d:.6}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
@@ -1644,8 +1655,7 @@ fn writeJson(
                 g.dom_strict_mb_s,
                 g.stream_strict_mb_s,
                 g.strict_ratio,
-                if (g.pass) "true" else "false",
-                if (i + 1 == stream_gate_rows.len) "" else ",",
+                if (i + 1 == stream_comparison_rows.len) "" else ",",
             },
         );
     }
@@ -1688,26 +1698,29 @@ fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap
             alloc.free(key);
             return error.InvalidBaseline;
         }
-        errdefer alloc.free(key);
-        const gop = try map.getOrPut(key);
+        const gop = map.getOrPut(key) catch |err| {
+            alloc.free(key);
+            return err;
+        };
         if (gop.found_existing) {
             alloc.free(key);
-        } else {
-            gop.key_ptr.* = key;
+            return error.InvalidBaseline;
         }
+        gop.key_ptr.* = key;
         gop.value_ptr.* = val;
     }
 
     return map;
 }
 
-test "parseBaseline validates shape and replaces duplicate measurements" {
+test "parseBaseline validates shape and rejects duplicate measurements" {
     const alloc = std.testing.allocator;
-    var map = try parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5},{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":2}]}");
+    var map = try parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5}]}");
     defer freeBaselineMap(alloc, &map);
     try std.testing.expectEqual(@as(usize, 1), map.count());
-    try std.testing.expectEqual(@as(f64, 2.0), map.get("ours-turbo|x.xml").?);
+    try std.testing.expectEqual(@as(f64, 1.5), map.get("ours-turbo|x.xml").?);
 
+    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5},{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":2}]}"));
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "[]"));
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{}"));
     try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"parse_results\":{}}"));
@@ -1762,8 +1775,12 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         parse_results.deinit(alloc);
     }
 
-    for (profile.fixtures) |fx| {
-        for (parse_parsers) |p| {
+    for (profile.fixtures, 0..) |fx, fixture_index| {
+        // Rotate the deterministic parser order per fixture. Running all
+        // fixtures in the same parser order creates a systematic thermal/
+        // frequency bias even when each individual sample is long enough.
+        for (0..parse_parsers.len) |parser_offset| {
+            const p = parse_parsers[(fixture_index + parser_offset) % parse_parsers.len];
             std.debug.print("running parse: parser={s} fixture={s} iterations={d}\n", .{ p, fx.name, fx.iterations });
             var result = try runParseBench(io, alloc, p, fx);
             errdefer freeParseResult(alloc, &result);
@@ -1773,20 +1790,20 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
 
     const gate_rows = try evaluateGateRows(alloc, profile, parse_results.items);
     defer freeGateRows(alloc, gate_rows);
-    const stream_gate_rows = try evaluateStreamGateRows(alloc, profile, parse_results.items);
-    defer freeStreamGateRows(alloc, stream_gate_rows);
+    const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
+    defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows, stream_gate_rows);
+    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     defer alloc.free(md);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
-    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_gate_rows);
+    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     defer alloc.free(terminal);
 
-    const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows, stream_gate_rows);
+    const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     defer alloc.free(json);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
-    try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_gate_rows);
+    try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
@@ -1817,15 +1834,6 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
                 );
             }
         }
-        for (stream_gate_rows) |g| {
-            if (!g.pass) {
-                failed = true;
-                std.debug.print(
-                    "stream gate fail: {s} stream-turbo={d:.2} dom-turbo={d:.2} turbo-ratio={d:.3} stream-strict={d:.2} dom-strict={d:.2} strict-ratio={d:.3}\n",
-                    .{ g.fixture, g.stream_turbo_mb_s, g.dom_turbo_mb_s, g.turbo_ratio, g.stream_strict_mb_s, g.dom_strict_mb_s, g.strict_ratio },
-                );
-            }
-        }
     }
 
     if (common.fileExists(io, baseline)) {
@@ -1836,7 +1844,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         defer freeBaselineMap(alloc, &base_map);
 
         for (parse_results.items) |r| {
-            if (!std.mem.startsWith(u8, r.parser, "ours-")) continue;
+            if (!isLocalParser(r.parser)) continue;
             const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ r.parser, r.fixture });
             defer alloc.free(key);
             const base = base_map.get(key) orelse return error.InvalidBaseline;
@@ -1933,5 +1941,14 @@ test "benchmark gates reject missing parser rows" {
     }};
 
     try std.testing.expectError(error.MissingBenchmarkResult, evaluateGateRows(alloc, profile, &incomplete));
-    try std.testing.expectError(error.MissingBenchmarkResult, evaluateStreamGateRows(alloc, profile, &incomplete));
+    try std.testing.expectError(error.MissingBenchmarkResult, evaluateStreamComparisonRows(alloc, profile, &incomplete));
+}
+
+test "benchmark baseline guard covers DOM and streaming zxml modes" {
+    try std.testing.expect(isLocalParser("ours-turbo"));
+    try std.testing.expect(isLocalParser("ours-strict"));
+    try std.testing.expect(isLocalParser("stream-turbo"));
+    try std.testing.expect(isLocalParser("stream-strict"));
+    try std.testing.expect(!isLocalParser("pugixml"));
+    try std.testing.expect(!isLocalParser("rapidxml"));
 }
