@@ -666,16 +666,24 @@ pub fn Types(comptime options: ParseOptions) type {
                         } else if (attr_count == 1) {
                             const first_len = first_attr_end - first_attr_start;
                             const current_len = attr_i - attr_name_start;
-                            const duplicate = if (first_len == 1 and current_len == 1)
-                                input[first_attr_start] == input[attr_name_start]
-                            else
-                                first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..attr_i]);
-                            if (duplicate) {
-                                @branchHint(.unlikely);
-                                return error.DuplicateAttribute;
+                            if (first_len == 1 and current_len == 1) {
+                                if (input[first_attr_start] == input[attr_name_start]) {
+                                    @branchHint(.unlikely);
+                                    return error.DuplicateAttribute;
+                                }
+                                // Reversed bounds mark that the first two names are
+                                // both one byte. Their exact starts are unnecessary
+                                // once the direct duplicate check above has passed.
+                                first_attr_start = attr_i;
+                                first_attr_end = attr_name_start;
+                            } else {
+                                if (first_len == current_len and std.mem.eql(u8, input[first_attr_start..first_attr_end], input[attr_name_start..attr_i])) {
+                                    @branchHint(.unlikely);
+                                    return error.DuplicateAttribute;
+                                }
+                                first_attr_start = attr_name_start;
+                                first_attr_end = attr_i;
                             }
-                            first_attr_start = attr_name_start;
-                            first_attr_end = attr_i;
                         } else {
                             if (attr_count == 2) self.attribute_name_filter = initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
                             addAttributeNameFilter(&self.attribute_name_filter, input[attr_name_start..attr_i]);
@@ -1699,6 +1707,11 @@ inline fn addAttributeNameFilterBucket(filter: *u64, bucket: u6) void {
 noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) u64 {
     var filter: u64 = 0;
     const first_start = skipWsStrict(input, start);
+    if (second_start > second_end) {
+        const first_bucket = oneByteAttributeNameBucket(input[first_start]);
+        const second_bucket = oneByteAttributeNameBucket(input[second_end]);
+        return (@as(u64, 1) << first_bucket) | (@as(u64, 1) << second_bucket);
+    }
     const first = scanner.scanNameAndKeyAfterStart(input, first_start);
     addAttributeNameFilterKey(&filter, first.key, first.end - first_start);
     addAttributeNameFilter(&filter, input[second_start..second_end]);
