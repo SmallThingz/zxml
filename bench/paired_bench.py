@@ -194,7 +194,14 @@ def main():
         )
 
     overall = gm([row["ratio"] for row in results])
-    summed = sum(row["cand_ns"] for row in results) / sum(row["base_ns"] for row in results)
+    # Each case uses an independently calibrated iteration count. Summing the
+    # raw sample durations would therefore weight fixtures by calibration, not
+    # by the runtime of one parse. Normalize each median timing back to one
+    # parse before forming the corpus-wide summed-time ratio.
+    summed = (
+        sum(row["cand_ns"] / row["iterations"] for row in results)
+        / sum(row["base_ns"] / row["iterations"] for row in results)
+    )
     print(f"GM {overall:.6f}")
     print(f"SUM {summed:.6f}")
 
