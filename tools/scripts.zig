@@ -1891,11 +1891,9 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     defer alloc.free(baseline_default);
     const baseline = baseline_path orelse baseline_default;
 
-    if (write_baseline) {
-        try common.writeFile(io, baseline, json);
-        std.debug.print("wrote baseline {s}\n", .{baseline});
-    }
-
+    // Do not overwrite the old baseline before validating the new run. Doing
+    // so makes --write-baseline compare the run against itself and can bless a
+    // regression by erasing the evidence before the drift check executes.
     var failed = false;
 
     if (std.mem.eql(u8, profile.name, "stable")) {
@@ -1935,6 +1933,11 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     std.debug.print("wrote {s}/latest.md and {s}/latest.json\n", .{ RESULTS_DIR, RESULTS_DIR });
 
     if (failed) return error.BenchmarkGateFailed;
+
+    if (write_baseline) {
+        try common.writeFile(io, baseline, json);
+        std.debug.print("wrote baseline {s}\n", .{baseline});
+    }
 }
 
 fn usage() void {
