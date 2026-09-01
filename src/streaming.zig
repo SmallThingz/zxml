@@ -1752,6 +1752,31 @@ fn scanValidatedAttributeTokenHuge(input: []const u8, start: usize, end: usize) 
     return scanValidatedAttributeToken(input, start, end);
 }
 
+fn scanValidatedAttributeTokenMassive(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
+    if (start >= end) return null;
+    if (input[start] == ' ' and start + 4 < end) {
+        const name_start = start + 1;
+        var name_end: usize = undefined;
+        if (input[name_start + 1] == '=') {
+            name_end = name_start + 1;
+        } else if (name_start + 2 < end and input[name_start + 2] == '=') {
+            name_end = name_start + 2;
+        } else if (name_start + 3 < end and input[name_start + 3] == '=') {
+            name_end = name_start + 3;
+        } else if (name_start + 4 < end and input[name_start + 4] == '=') {
+            name_end = name_start + 4;
+        } else {
+            return scanValidatedAttributeToken(input, start, end);
+        }
+        const quote = input[name_end + 1];
+        if (quote == '\'' or quote == '"') {
+            const quote_pos = scanner.findByte(input[0..end], name_end + 2, quote) orelse unreachable;
+            return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+        }
+    }
+    return scanValidatedAttributeToken(input, start, end);
+}
+
 const attribute_filter_collision = @as(u64, 1) << 63;
 
 inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
@@ -1810,6 +1835,25 @@ inline fn attributeNameHash(name: []const u8) u64 {
     // 64-slot local table. One multiply is sufficient and materially cheaper
     // than a full general-purpose 64-bit finalizer.
     var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) << 56);
+    mixed *%= 0x9e3779b97f4a7c15;
+    mixed ^= mixed >> 32;
+    return mixed;
+}
+
+inline fn attributeNameHashMassive(name: []const u8) u64 {
+    const key: u64 = if (name.len <= 4) blk: {
+        const bytes: *align(1) const [4]u8 = @ptrCast(name.ptr);
+        const word = std.mem.readInt(u32, bytes, .little);
+        const shift: u5 = @intCast((4 - name.len) * 8);
+        break :blk word & (@as(u32, 0xffffffff) >> shift);
+    } else blk: {
+        const bytes: *align(1) const [8]u8 = @ptrCast(name.ptr);
+        const word = std.mem.readInt(u64, bytes, .little);
+        if (name.len >= 8) break :blk word;
+        const shift: u6 = @intCast((8 - name.len) * 8);
+        break :blk word & (@as(u64, 0xffffffffffffffff) >> shift);
+    };
+    var mixed = key ^ (@as(u64, name.len) << 56);
     mixed *%= 0x9e3779b97f4a7c15;
     mixed ^= mixed >> 32;
     return mixed;
@@ -2011,7 +2055,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
             }
         } else {
             const overflow_count = seen_count - primary_capacity;
-            if (overflow_count == primary_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+            if (overflow_count == primary_capacity) return validateUniqueAttributesRawMassive(input, start, end);
 
             // The primary table is full at this point, so there is no empty
             // sentinel to terminate a lookup. Scan its hashes once to rule out
@@ -2049,6 +2093,54 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
                 }
                 overflow_index = (overflow_index + 1) & (primary_capacity - 1);
             }
+        }
+
+        seen_count += 1;
+        i = current.next;
+    }
+}
+
+
+noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+    const table_capacity = 1024;
+    const NameSlot = struct {
+        hash: u64,
+        start: usize,
+        end: usize,
+    };
+
+    var slots: [table_capacity]NameSlot = undefined;
+    var occupied: [table_capacity / 64]u64 = @splat(0);
+    var seen_count: usize = 0;
+    var i = start;
+    while (try scanValidatedAttributeTokenMassive(input, i, end)) |current| {
+        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+
+        const current_name = input[current.name_start..current.name_end];
+        const hash = attributeNameHashMassive(current_name);
+        var slot_index: usize = @intCast(hash >> (64 - 10));
+        while (true) {
+            const word_index = slot_index >> 6;
+            const bit_index: u6 = @intCast(slot_index & 63);
+            const bit = @as(u64, 1) << bit_index;
+            if (occupied[word_index] & bit == 0) {
+                slots[slot_index] = .{
+                    .hash = hash,
+                    .start = current.name_start,
+                    .end = current.name_end,
+                };
+                occupied[word_index] |= bit;
+                break;
+            }
+
+            const previous = slots[slot_index];
+            if (previous.hash == hash and
+                previous.end - previous.start == current_name.len and
+                std.mem.eql(u8, input[previous.start..previous.end], current_name))
+            {
+                return error.DuplicateAttribute;
+            }
+            slot_index = (slot_index + 1) & (table_capacity - 1);
         }
 
         seen_count += 1;
