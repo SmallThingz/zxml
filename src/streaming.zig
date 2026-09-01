@@ -1713,6 +1713,8 @@ fn scanValidatedAttributeTokenVeryLarge(input: []const u8, start: usize, end: us
             name_end = name_start + 2;
         } else if (name_start + 3 < end and input[name_start + 3] == '=') {
             name_end = name_start + 3;
+        } else if (name_start + 4 < end and input[name_start + 4] == '=') {
+            name_end = name_start + 4;
         } else {
             return scanValidatedAttributeToken(input, start, end);
         }
