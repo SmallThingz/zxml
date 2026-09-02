@@ -2528,7 +2528,7 @@ test "streaming parseAvailable accepts references split at every byte" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
-    const source = "<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;</r>";
+    const source = "<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;&#x10FFFF;&#x00010FFFF;</r>";
 
     const Ctx = struct {
         fn onNode(_: *@This(), _: Event) bool {

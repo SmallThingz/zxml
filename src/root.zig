@@ -797,7 +797,7 @@ test "strict rejects malformed and XML-invalid references during parse" {
         );
     }
 
-    var parsed = try parseTestDoc("<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;</r>", .{ .mode = .strict });
+    var parsed = try parseTestDoc("<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;&#x10FFFF;&#x00010FFFF;</r>", .{ .mode = .strict });
     defer parsed.deinit();
 }
 

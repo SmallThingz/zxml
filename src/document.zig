@@ -352,7 +352,11 @@ fn validateXmlReferenceSyntax(value: []const u8, allow_trailing_partial: bool) P
                     c - 'A' + 10
                 else
                     return error.InvalidNumericCharacterEntity;
-                if (numeric > (0x10FFFF - @as(u32, digit)) / base) return error.InvalidNumericCharacterEntity;
+                if (base == 16) {
+                    if (numeric > 0x10fff) return error.InvalidNumericCharacterEntity;
+                } else if (numeric > (0x10FFFF - @as(u32, digit)) / 10) {
+                    return error.InvalidNumericCharacterEntity;
+                }
                 numeric = numeric * base + @as(u32, digit);
                 digits += 1;
             }
