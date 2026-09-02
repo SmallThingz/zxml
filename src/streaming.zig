@@ -2212,7 +2212,7 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
 }
 
 noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize, end: usize) linksection(".zxml_enormous") ParseError!void {
-    const table_capacity = 16384;
+    const table_capacity = 32768;
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var hashes: [table_capacity]u64 = undefined;
     var starts: [table_capacity]u32 = undefined;
@@ -2224,7 +2224,7 @@ noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize,
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
-        var slot_index: usize = @intCast(hash >> (64 - 14));
+        var slot_index: usize = @intCast(hash >> (64 - 15));
         while (true) {
             const word_index = slot_index >> 6;
             const bit_index: u6 = @intCast(slot_index & 63);
@@ -3784,6 +3784,20 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     many.items.len -= 2;
     try many.appendSlice(std.testing.allocator, " mdc='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
+
+    // The helper itself uses usize/u32 offsets rather than IndexInt, so test
+    // the former 16385 saturation boundary directly. This keeps the boundary
+    // covered even when the public parser is instantiated with u16 offsets.
+    many.clearRetainingCapacity();
+    for (0..16385) |index| {
+        const hi: u8 = @intCast((index / (26 * 26)) % 26);
+        const mid: u8 = @intCast((index / 26) % 26);
+        const lo: u8 = @intCast(index % 26);
+        try many.print(std.testing.allocator, " {c}{c}{c}=''", .{ 'a' + hi, 'a' + mid, 'a' + lo });
+    }
+    try validateUniqueAttributesRawEnormous(many.items, 0, many.items.len);
+    try many.appendSlice(std.testing.allocator, " mdc='duplicate'");
+    try std.testing.expectError(error.DuplicateAttribute, validateUniqueAttributesRawEnormous(many.items, 0, many.items.len));
 
     ctx.skip_root = true;
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r><x a='1' a='2'/></r>", &ctx, Ctx.onNode));
