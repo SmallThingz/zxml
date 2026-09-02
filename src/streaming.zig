@@ -892,7 +892,11 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (comptime strict_mode) {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                     if (xml_target and start != 0) return error.InvalidDeclaration;
-                    if (xml_target and (target_end >= input.len or !tables.isWhitespace(input[target_end]))) return error.InvalidDeclaration;
+                    if (xml_target and target_end >= input.len) {
+                        if (incremental) return error.UnexpectedEndOfData;
+                        return error.InvalidDeclaration;
+                    }
+                    if (xml_target and !tables.isWhitespace(input[target_end])) return error.InvalidDeclaration;
                     if (!xml_target) {
                         if (target_end >= input.len) return error.UnexpectedEndOfData;
                         if (!tables.isWhitespace(input[target_end])) {
@@ -3645,6 +3649,27 @@ test "streaming strict validates processing instruction separators" {
 
     try parser.parse("<?pi?><r/>", &ctx, Ctx.onNode);
     try parser.parse("<?pi data?><r/>", &ctx, Ctx.onNode);
+}
+
+test "streaming strict incremental XML declaration survives every byte boundary" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    const source = "<?xml version='1.0'?><r/>";
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    for (1..source.len + 1) |end| {
+        _ = try parser.parseAvailable(source[0..end], &ctx, Ctx.onNode);
+    }
+    try parser.finish();
 }
 
 test "streaming strict save restore preserves document-level state" {
