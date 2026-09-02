@@ -307,22 +307,70 @@ noinline fn validateXmlReferencesWithDoctypeAlloc(
     }
 }
 
+inline fn predefinedReferenceEnd(value: []const u8, amp: usize) ?usize {
+    const remaining = value.len - amp;
+    if (remaining >= 4) {
+        const key4 = std.mem.readInt(u32, value[amp..][0..4], .little);
+        if (key4 == 0x3b746c26 or key4 == 0x3b746726) return amp + 4; // &lt; &gt;
+    }
+    if (remaining >= 5 and std.mem.readInt(u40, value[amp..][0..5], .little) == 0x3b706d6126) return amp + 5; // &amp;
+    if (remaining >= 6) {
+        const key6 = std.mem.readInt(u48, value[amp..][0..6], .little);
+        if (key6 == 0x3b736f706126 or key6 == 0x3b746f757126) return amp + 6; // &apos; &quot;
+    }
+    return null;
+}
+
 fn validateXmlReferenceSyntax(value: []const u8, allow_trailing_partial: bool) ParseError!bool {
     var has_custom_reference = false;
     var search_from: usize = 0;
     while (std.mem.indexOfScalarPos(u8, value, search_from, '&')) |amp| {
+        if (predefinedReferenceEnd(value, amp)) |end| {
+            search_from = end;
+            continue;
+        }
+        if (amp + 1 < value.len and value[amp + 1] == '#') {
+            var i = amp + 2;
+            var base: u32 = 10;
+            if (i < value.len and value[i] == 'x') {
+                base = 16;
+                i += 1;
+            }
+            if (i >= value.len) {
+                if (allow_trailing_partial) return error.UnexpectedEndOfData;
+                return error.UnterminatedEntity;
+            }
+            var numeric: u32 = 0;
+            var digits: usize = 0;
+            while (i < value.len and value[i] != ';') : (i += 1) {
+                const c = value[i];
+                const digit: u8 = if (c >= '0' and c <= '9')
+                    c - '0'
+                else if (base == 16 and c >= 'a' and c <= 'f')
+                    c - 'a' + 10
+                else if (base == 16 and c >= 'A' and c <= 'F')
+                    c - 'A' + 10
+                else
+                    return error.InvalidNumericCharacterEntity;
+                if (numeric > (0x10FFFF - @as(u32, digit)) / base) return error.InvalidNumericCharacterEntity;
+                numeric = numeric * base + @as(u32, digit);
+                digits += 1;
+            }
+            if (i == value.len) {
+                if (allow_trailing_partial) return error.UnexpectedEndOfData;
+                return error.UnterminatedEntity;
+            }
+            if (digits == 0 or numeric > 0x10FFFF or !isXmlCharacter(@intCast(numeric))) return error.InvalidNumericCharacterEntity;
+            search_from = i + 1;
+            continue;
+        }
         const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
             if (allow_trailing_partial) return error.UnexpectedEndOfData;
             return error.UnterminatedEntity;
         };
         const body = value[amp + 1 .. semi];
-        if (body.len == 0) return error.InvalidNumericCharacterEntity;
-        if (body[0] == '#') {
-            if (xmlNumericReferenceValue(body) == null) return error.InvalidNumericCharacterEntity;
-        } else if (!isPredefinedEntityName(body)) {
-            if (!isValidXmlName(body)) return error.InvalidNumericCharacterEntity;
-            has_custom_reference = true;
-        }
+        if (body.len == 0 or !isValidXmlName(body)) return error.InvalidNumericCharacterEntity;
+        has_custom_reference = true;
         search_from = semi + 1;
     }
     return has_custom_reference;
@@ -654,6 +702,54 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
 
 pub fn validateXmlCharacters(input: []const u8) ParseError!void {
     if (try xmlValidPrefixLen(input) != input.len) return error.InvalidXmlCharacter;
+}
+
+/// Validates XML Name codepoint ranges when UTF-8 shape has already been
+/// validated by the strict parser's whole-input XML character pass.
+pub fn isValidXmlNameAssumeValidUtf8(name: []const u8) bool {
+    if (name.len == 0) return false;
+
+    var i: usize = 0;
+    if (name[0] < 0x80) {
+        if (!tables.isNameStart(name[0])) return false;
+        i = 1;
+    } else {
+        const first = nextValidUtf8Codepoint(name, &i);
+        if (!isXmlNonAsciiNameStart(first)) return false;
+    }
+
+    while (i < name.len) {
+        const c = name[i];
+        if (c < 0x80) {
+            if (!tables.isNameChar(c)) return false;
+            i += 1;
+            continue;
+        }
+        if (!isXmlNonAsciiNameChar(nextValidUtf8Codepoint(name, &i))) return false;
+    }
+    return true;
+}
+
+inline fn nextValidUtf8Codepoint(input: []const u8, i: *usize) u21 {
+    const first = input[i.*];
+    if (first < 0xE0) {
+        const value = (@as(u21, first & 0x1F) << 6) | @as(u21, input[i.* + 1] & 0x3F);
+        i.* += 2;
+        return value;
+    }
+    if (first < 0xF0) {
+        const value = (@as(u21, first & 0x0F) << 12) |
+            (@as(u21, input[i.* + 1] & 0x3F) << 6) |
+            @as(u21, input[i.* + 2] & 0x3F);
+        i.* += 3;
+        return value;
+    }
+    const value = (@as(u21, first & 0x07) << 18) |
+        (@as(u21, input[i.* + 1] & 0x3F) << 12) |
+        (@as(u21, input[i.* + 2] & 0x3F) << 6) |
+        @as(u21, input[i.* + 3] & 0x3F);
+    i.* += 4;
+    return value;
 }
 
 pub fn isValidXmlName(name: []const u8) bool {
