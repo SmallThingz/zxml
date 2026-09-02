@@ -2022,7 +2022,8 @@ noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize
 
 noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
     const primary_capacity = 256;
-    const total_capacity = 512;
+    const overflow_capacity = 16;
+    const total_capacity = primary_capacity + overflow_capacity;
     const NameSlot = struct {
         hash: u64,
         start: usize,
@@ -2030,8 +2031,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
     };
 
     var slots: [total_capacity]NameSlot = undefined;
-    var primary_occupied: [4]u64 = @splat(0);
-    var overflow_occupied: [4]u64 = @splat(0);
+    var primary_occupied: [primary_capacity / 64]u64 = @splat(0);
     var seen_count: usize = 0;
     var i = start;
     while (try scanValidatedAttributeTokenHuge(input, i, end)) |current| {
@@ -2065,11 +2065,11 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
             }
         } else {
             const overflow_count = seen_count - primary_capacity;
-            if (overflow_count == primary_capacity) return validateUniqueAttributesRawMassive(input, start, end);
+            if (overflow_count == overflow_capacity) return validateUniqueAttributesRawMassive(input, start, end);
 
             // The primary table is full at this point, so there is no empty
-            // sentinel to terminate a lookup. Scan its hashes once to rule out
-            // duplicates against the first 256 names.
+            // sentinel to terminate a lookup. Scan it once to rule out a
+            // duplicate against the first 256 names.
             for (slots[0..primary_capacity]) |previous| {
                 if (previous.hash == hash and
                     previous.end - previous.start == current_name.len and
@@ -2079,30 +2079,22 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
                 }
             }
 
-            var overflow_index: usize = @intCast(hash >> (64 - 8));
-            while (true) {
-                const word_index = overflow_index >> 6;
-                const bit_index: u6 = @intCast(overflow_index & 63);
-                const bit = @as(u64, 1) << bit_index;
-                if (overflow_occupied[word_index] & bit == 0) {
-                    slots[primary_capacity + overflow_index] = .{
-                        .hash = hash,
-                        .start = current.name_start,
-                        .end = current.name_end,
-                    };
-                    overflow_occupied[word_index] |= bit;
-                    break;
-                }
-
-                const previous = slots[primary_capacity + overflow_index];
+            // Only a handful of overflow names are cheaper than restarting in
+            // the massive 2048-slot checker, so keep this tail linear and
+            // hand off as soon as its crossover point is reached.
+            for (slots[primary_capacity .. primary_capacity + overflow_count]) |previous| {
                 if (previous.hash == hash and
                     previous.end - previous.start == current_name.len and
                     std.mem.eql(u8, input[previous.start..previous.end], current_name))
                 {
                     return error.DuplicateAttribute;
                 }
-                overflow_index = (overflow_index + 1) & (primary_capacity - 1);
             }
+            slots[primary_capacity + overflow_count] = .{
+                .hash = hash,
+                .start = current.name_start,
+                .end = current.name_end,
+            };
         }
 
         seen_count += 1;
@@ -3607,6 +3599,23 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
         error.DuplicateAttribute,
         parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/>", &ctx, Ctx.onNode),
     );
+
+    // Exercise the 257-272 linear overflow window and the exact handoff to
+    // the massive checker on attribute 273.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..271) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, " a260='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
+
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..272) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a17='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     // Exercise the >512-attribute exact table, including its stored-name
     // equality path after the table has been rebuilt from the whole tag.
