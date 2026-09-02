@@ -70,7 +70,10 @@ pub fn build(b: *std.Build) void {
 
     const tools_step = b.step("tools", "Run zxml-tools utility");
     const bench_compare_step = b.step("bench-compare", "Benchmark against external parser implementations");
+    const bench_interleaved_step = b.step("bench-interleaved", "Compare two checkouts with interleaved benchmark runs");
     const conformance_step = b.step("conformance", "Run XML conformance suites");
+    const docs_check_step = b.step("docs-check", "Validate markdown links and documented commands");
+    const examples_check_step = b.step("examples-check", "Compile and run all examples in test mode");
 
     const tools_cmd = b.addRunArtifact(tools_exe);
 
@@ -85,23 +88,41 @@ pub fn build(b: *std.Build) void {
     compare_cmd.addArg("run-benchmarks");
     compare_cmd.step.dependOn(&setup_fixtures_cmd.step);
 
+    const interleaved_cmd = b.addRunArtifact(tools_exe);
+    interleaved_cmd.addArg("compare-worktrees");
+
     const conformance_cmd = b.addRunArtifact(tools_exe);
     conformance_cmd.addArg("run-conformance");
 
+    const docs_check_cmd = b.addRunArtifact(tools_exe);
+    docs_check_cmd.addArg("docs-check");
+
+    const examples_check_cmd = b.addRunArtifact(tools_exe);
+    examples_check_cmd.addArg("examples-check");
+
     tools_step.dependOn(&tools_cmd.step);
     bench_compare_step.dependOn(&compare_cmd.step);
+    bench_interleaved_step.dependOn(&interleaved_cmd.step);
     conformance_step.dependOn(&conformance_cmd.step);
+    docs_check_step.dependOn(&docs_check_cmd.step);
+    examples_check_step.dependOn(&examples_check_cmd.step);
 
     tools_cmd.step.dependOn(b.getInstallStep());
     setup_parsers_cmd.step.dependOn(b.getInstallStep());
     setup_fixtures_cmd.step.dependOn(b.getInstallStep());
     compare_cmd.step.dependOn(b.getInstallStep());
+    interleaved_cmd.step.dependOn(b.getInstallStep());
     conformance_cmd.step.dependOn(b.getInstallStep());
+    docs_check_cmd.step.dependOn(b.getInstallStep());
+    examples_check_cmd.step.dependOn(b.getInstallStep());
 
     if (b.args) |args| {
         tools_cmd.addArgs(args);
         compare_cmd.addArgs(args);
+        interleaved_cmd.addArgs(args);
         conformance_cmd.addArgs(args);
+        docs_check_cmd.addArgs(args);
+        examples_check_cmd.addArgs(args);
     }
 
     const mod_tests = b.addTest(.{
@@ -195,4 +216,9 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_tools_common_tests.step);
     test_step.dependOn(&run_conformance_tests.step);
     test_step.dependOn(&run_public_api_tests.step);
+
+    const ship_check_step = b.step("ship-check", "Run release-readiness checks (test + docs + examples)");
+    ship_check_step.dependOn(test_step);
+    ship_check_step.dependOn(docs_check_step);
+    ship_check_step.dependOn(examples_check_step);
 }

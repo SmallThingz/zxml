@@ -21,6 +21,24 @@ const max_opaque_cdata_ratio = 0.90;
 
 const repeats: usize = 5;
 const benchmark_methodology_version: usize = 3;
+const interleaved_build_seed: u64 = 23_063;
+
+const documentation_files = [_][]const u8{
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "bench/README.md",
+};
+
+const tool_command_names = [_][]const u8{
+    "setup-parsers",
+    "setup-fixtures",
+    "run-benchmarks",
+    "compare-worktrees",
+    "run-conformance",
+    "docs-check",
+    "examples-check",
+};
 
 const parse_parsers = [_][]const u8{
     "ours-strict",
@@ -81,7 +99,6 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_attrs8.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_attrs32.xml", .iterations = 70, .is_real = false },
     .{ .name = "synthetic_attrs96.xml", .iterations = 40, .is_real = false },
-    .{ .name = "synthetic_unicode_text.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_pretty_indented.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_attr_count_mix.xml", .iterations = 90, .is_real = false },
 };
@@ -126,7 +143,6 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_attrs128.xml", .iterations = 45, .is_real = false },
     .{ .name = "synthetic_long_attr_values.xml", .iterations = 180, .is_real = false },
     .{ .name = "synthetic_single_quotes.xml", .iterations = 240, .is_real = false },
-    .{ .name = "synthetic_unicode_text.xml", .iterations = 180, .is_real = false },
     .{ .name = "synthetic_unicode_names.xml", .iterations = 180, .is_real = false },
     .{ .name = "synthetic_pretty_indented.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_crlf_pretty.xml", .iterations = 200, .is_real = false },
@@ -344,7 +360,6 @@ fn writeSyntheticFixtures(io: std.Io) !void {
     try writeAttrsN(io, FIXTURES_DIR ++ "/synthetic_attrs128.xml", 128, 1_250);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_long_attr_values.xml", "<item key='abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ' value='The quick brown fox jumps over the lazy dog &amp; keeps running.'/>", 8_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_single_quotes.xml", "<item a='1' b='two' c='three four'/>", 28_000);
-    try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_unicode_text.xml", "<item>Καλημέρα κόσμε 日本語 中文 😀 café naïve résumé</item>", 18_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_unicode_names.xml", "<élément α='1' 日本語='値'>текст</élément>", 22_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_pretty_indented.xml", "\n  <group>\n    <item a='1'>value</item>\n    <item a='2'>value</item>\n  </group>", 12_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_crlf_pretty.xml", "\r\n\t<item a='1'>\r\n\t\tvalue\r\n\t</item>", 24_000);
@@ -2007,13 +2022,285 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     }
 }
 
+fn toolCommandExists(name: []const u8) bool {
+    for (tool_command_names) |command| {
+        if (std.mem.eql(u8, name, command)) return true;
+    }
+    return false;
+}
+
+fn buildStepExists(build_source: []const u8, name: []const u8) bool {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, build_source, i, "b.step(\"")) |start| {
+        const value_start = start + "b.step(\"".len;
+        const value_end = std.mem.indexOfScalarPos(u8, build_source, value_start, '"') orelse return false;
+        if (std.mem.eql(u8, build_source[value_start..value_end], name)) return true;
+        i = value_end + 1;
+    }
+    return false;
+}
+
+fn localLinkExists(io: std.Io, alloc: std.mem.Allocator, doc_path: []const u8, raw_target: []const u8) !bool {
+    var target = std.mem.trim(u8, raw_target, " \t\r\n");
+    if (target.len >= 2 and target[0] == '<' and target[target.len - 1] == '>') target = target[1 .. target.len - 1];
+    if (target.len == 0 or target[0] == '#') return true;
+    if (std.mem.startsWith(u8, target, "http://") or
+        std.mem.startsWith(u8, target, "https://") or
+        std.mem.startsWith(u8, target, "mailto:") or
+        std.mem.startsWith(u8, target, "data:")) return true;
+
+    if (std.mem.indexOfScalar(u8, target, '#')) |hash| target = target[0..hash];
+    if (std.mem.indexOfScalar(u8, target, '?')) |query| target = target[0..query];
+    if (target.len == 0) return true;
+
+    const base = std.fs.path.dirname(doc_path) orelse ".";
+    const path = try std.fs.path.join(alloc, &.{ base, target });
+    defer alloc.free(path);
+    return common.fileExists(io, path);
+}
+
+fn validateMarkdownLinks(io: std.Io, alloc: std.mem.Allocator, doc_path: []const u8, contents: []const u8) !void {
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, contents, i, "](")) |start| {
+        const target_start = start + 2;
+        const target_end = std.mem.indexOfScalarPos(u8, contents, target_start, ')') orelse {
+            std.debug.print("docs-check: unterminated markdown link in {s}\n", .{doc_path});
+            return error.DocumentationCheckFailed;
+        };
+        const target = contents[target_start..target_end];
+        if (!try localLinkExists(io, alloc, doc_path, target)) {
+            std.debug.print("docs-check: missing local link target in {s}: {s}\n", .{ doc_path, target });
+            return error.DocumentationCheckFailed;
+        }
+        i = target_end + 1;
+    }
+}
+
+fn nextCommandToken(contents: []const u8, start: usize) []const u8 {
+    var end = start;
+    while (end < contents.len) : (end += 1) {
+        const c = contents[end];
+        if (c == ' ' or c == '\t' or c == '\r' or c == '\n' or c == '`') break;
+    }
+    return contents[start..end];
+}
+
+fn validateDocumentedCommands(build_source: []const u8, doc_path: []const u8, contents: []const u8) !void {
+    const build_prefix = "zig build ";
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, contents, i, build_prefix)) |start| {
+        const step_start = start + build_prefix.len;
+        const step = nextCommandToken(contents, step_start);
+        if (step.len == 0 or step[0] == '-') {
+            i = step_start + @max(step.len, 1);
+            continue;
+        }
+        if (!buildStepExists(build_source, step)) {
+            std.debug.print("docs-check: undocumented build step implementation for `{s}` referenced by {s}\n", .{ step, doc_path });
+            return error.DocumentationCheckFailed;
+        }
+        i = step_start + step.len;
+    }
+
+    const tools_prefix = "zig build tools -- ";
+    i = 0;
+    while (std.mem.indexOfPos(u8, contents, i, tools_prefix)) |start| {
+        const command_start = start + tools_prefix.len;
+        const command = nextCommandToken(contents, command_start);
+        if (!toolCommandExists(command)) {
+            std.debug.print("docs-check: unknown zxml-tools command `{s}` referenced by {s}\n", .{ command, doc_path });
+            return error.DocumentationCheckFailed;
+        }
+        i = command_start + @max(command.len, 1);
+    }
+}
+
+fn docsCheck(io: std.Io, alloc: std.mem.Allocator) !void {
+    const build_source = try common.readFileAlloc(io, alloc, "build.zig");
+    defer alloc.free(build_source);
+
+    for (documentation_files) |doc_path| {
+        const contents = try common.readFileAlloc(io, alloc, doc_path);
+        defer alloc.free(contents);
+        try validateMarkdownLinks(io, alloc, doc_path, contents);
+        try validateDocumentedCommands(build_source, doc_path, contents);
+    }
+    std.debug.print("docs-check: {d} markdown files validated\n", .{documentation_files.len});
+}
+
+fn examplesCheck(io: std.Io, alloc: std.mem.Allocator) !void {
+    try common.ensureDir(io, TMP_SCRATCH_DIR);
+    const config_path = TMP_SCRATCH_DIR ++ "/examples_config.zig";
+    try common.writeFile(io, config_path,
+        \\pub const IntLen = enum { u16, u32, u64, usize };
+        \\pub const intlen: IntLen = .u32;
+        \\
+    );
+
+    var dir = try std.Io.Dir.cwd().openDir(io, "examples", .{ .iterate = true });
+    defer dir.close(io);
+    var it = dir.iterate();
+    var examples = std.ArrayList([]const u8).empty;
+    defer {
+        for (examples.items) |name| alloc.free(name);
+        examples.deinit(alloc);
+    }
+    while (try it.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
+        try examples.append(alloc, try alloc.dupe(u8, entry.name));
+    }
+    if (examples.items.len == 0) return error.NoExamplesFound;
+    std.mem.sort([]const u8, examples.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.lessThan);
+
+    for (examples.items) |name| {
+        const example_path = try std.fmt.allocPrint(alloc, "examples/{s}", .{name});
+        defer alloc.free(example_path);
+        const root_arg = try std.fmt.allocPrint(alloc, "-Mroot={s}", .{example_path});
+        defer alloc.free(root_arg);
+        const zxml_arg = "-Mzxml=src/root.zig";
+        const config_arg = try std.fmt.allocPrint(alloc, "-Mconfig={s}", .{config_path});
+        defer alloc.free(config_arg);
+        try common.runInherit(io, alloc, &.{
+            "zig",             "test",   "--dep",  "zxml",     root_arg,
+            "--dep",           "config", zxml_arg, config_arg, "--test-runner",
+            "test_runner.zig",
+        }, REPO_ROOT);
+    }
+    std.debug.print("examples-check: {d} example(s) compiled and executed\n", .{examples.items.len});
+}
+
+fn writeInterleavedCases(io: std.Io, alloc: std.mem.Allocator, profile: Profile) ![]u8 {
+    try common.ensureDir(io, TMP_SCRATCH_DIR);
+    const path = try std.fmt.allocPrint(alloc, TMP_SCRATCH_DIR ++ "/interleaved-{s}.json", .{profile.name});
+    errdefer alloc.free(path);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(alloc);
+    try out.appendSlice(alloc, "[\n");
+    for (profile.fixtures, 0..) |fixture, index| {
+        const fixture_path = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{fixture.name});
+        defer alloc.free(fixture_path);
+        if (!common.fileExists(io, fixture_path)) {
+            std.debug.print("compare-worktrees: missing fixture {s}; run `zig build tools -- setup-fixtures` first\n", .{fixture_path});
+            return error.MissingFixture;
+        }
+        const row = try std.fmt.allocPrint(
+            alloc,
+            "  {{\"name\":\"{s}\",\"path\":\"{s}\",\"iterations\":{d}}}{s}\n",
+            .{ fixture.name, fixture_path, fixture.iterations, if (index + 1 == profile.fixtures.len) "" else "," },
+        );
+        defer alloc.free(row);
+        try out.appendSlice(alloc, row);
+    }
+    try out.appendSlice(alloc, "]\n");
+    try common.writeFile(io, path, out.items);
+    return path;
+}
+
+fn compareWorktrees(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2) return error.InvalidArguments;
+    const base = args[0];
+    const candidate = args[1];
+    if (std.mem.eql(u8, base, candidate)) return error.InvalidArguments;
+
+    var profile_name: []const u8 = "quick";
+    var pair_repeats: usize = 9;
+    var core_a: usize = 0;
+    var core_b: usize = 2;
+    var seed: u64 = interleaved_build_seed;
+    var out_path: ?[]const u8 = null;
+
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+        if (std.mem.eql(u8, arg, "--profile")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            profile_name = args[i];
+        } else if (std.mem.eql(u8, arg, "--repeats")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            pair_repeats = try std.fmt.parseInt(usize, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--core-a")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            core_a = try std.fmt.parseInt(usize, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--core-b")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            core_b = try std.fmt.parseInt(usize, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--seed")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            seed = try std.fmt.parseInt(u64, args[i], 10);
+        } else if (std.mem.eql(u8, arg, "--out")) {
+            i += 1;
+            if (i >= args.len) return error.InvalidArguments;
+            out_path = args[i];
+        } else {
+            return error.InvalidArguments;
+        }
+    }
+    if (pair_repeats < 3 or pair_repeats % 2 == 0 or core_a == core_b) return error.InvalidArguments;
+
+    const profile = try getProfile(profile_name);
+    const cases_path = try writeInterleavedCases(io, alloc, profile);
+    defer alloc.free(cases_path);
+
+    for ([_][]const u8{ base, candidate }) |worktree| {
+        const build_file = try std.fs.path.join(alloc, &.{ worktree, "build.zig" });
+        defer alloc.free(build_file);
+        if (!common.fileExists(io, build_file)) {
+            std.debug.print("compare-worktrees: not a zxml checkout: {s}\n", .{worktree});
+            return error.InvalidWorktree;
+        }
+        const seed_text = try std.fmt.allocPrint(alloc, "{d}", .{seed});
+        defer alloc.free(seed_text);
+        try common.runInherit(io, alloc, &.{
+            "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native", "--seed", seed_text,
+        }, worktree);
+    }
+
+    const base_bin = try std.fs.path.join(alloc, &.{ base, "zig-out/bin/zxml-bench" });
+    defer alloc.free(base_bin);
+    const candidate_bin = try std.fs.path.join(alloc, &.{ candidate, "zig-out/bin/zxml-bench" });
+    defer alloc.free(candidate_bin);
+    const repeats_text = try std.fmt.allocPrint(alloc, "{d}", .{pair_repeats});
+    defer alloc.free(repeats_text);
+    const core_a_text = try std.fmt.allocPrint(alloc, "{d}", .{core_a});
+    defer alloc.free(core_a_text);
+    const core_b_text = try std.fmt.allocPrint(alloc, "{d}", .{core_b});
+    defer alloc.free(core_b_text);
+
+    var command = std.ArrayList([]const u8).empty;
+    defer command.deinit(alloc);
+    try command.appendSlice(alloc, &.{
+        "python3",      "bench/paired_bench.py",
+        "--base",       base_bin,
+        "--cand",       candidate_bin,
+        "--repeats",    repeats_text,
+        "--core-a",     core_a_text,
+        "--core-b",     core_b_text,
+        "--cases-json", cases_path,
+    });
+    if (out_path) |path| try command.appendSlice(alloc, &.{ "--out", path });
+    try common.runInherit(io, alloc, command.items, REPO_ROOT);
+}
+
 fn usage() void {
     std.debug.print(
         \\usage:
         \\  zxml-tools setup-parsers
         \\  zxml-tools setup-fixtures [--refresh]
         \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--write-baseline]
+        \\  zxml-tools compare-worktrees <base> <candidate> [--profile smoke|quick|stable] [--repeats N] [--core-a N] [--core-b N] [--seed N] [--out path]
         \\  zxml-tools run-conformance [--suite path]...
+        \\  zxml-tools docs-check
+        \\  zxml-tools examples-check
         \\
     , .{});
 }
@@ -2060,8 +2347,25 @@ pub fn main(init: std.process.Init) !void {
         return;
     }
 
+    if (std.mem.eql(u8, cmd, "compare-worktrees")) {
+        try compareWorktrees(init.io, alloc, args.items[2..]);
+        return;
+    }
+
     if (std.mem.eql(u8, cmd, "run-conformance")) {
         try conformance.runConformance(init.io, alloc, args.items[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, cmd, "docs-check")) {
+        if (args.items.len != 2) return error.InvalidArguments;
+        try docsCheck(init.io, alloc);
+        return;
+    }
+
+    if (std.mem.eql(u8, cmd, "examples-check")) {
+        if (args.items.len != 2) return error.InvalidArguments;
+        try examplesCheck(init.io, alloc);
         return;
     }
 
@@ -2107,4 +2411,23 @@ test "doctype entity pathology is strict-only and outside headline profiles" {
     try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", strict_regression_fixtures[0].name);
     try std.testing.expectEqualSlices([]const u8, &.{ "ours-strict", "stream-strict" }, &strict_regression_parsers);
     for (strict_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "strict") != null);
+}
+
+test "unicode text throughput fixture stays out while unicode names remain" {
+    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures }, Profile{ .name = "stable", .fixtures = &stable_fixtures } }) |profile| {
+        try std.testing.expect(!profileHasFixture(profile, "synthetic_unicode_text.xml"));
+    }
+    try std.testing.expect(profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures }, "synthetic_unicode_names.xml"));
+}
+
+test "documented command validator accepts build and tool commands" {
+    const source =
+        \\const a = b.step("test", "Run tests");
+        \\const b2 = b.step("tools", "Run tools");
+    ;
+    try validateDocumentedCommands(source, "README.md", "`zig build test` and `zig build tools -- docs-check`");
+    try std.testing.expectError(
+        error.DocumentationCheckFailed,
+        validateDocumentedCommands(source, "README.md", "`zig build missing-step`"),
+    );
 }

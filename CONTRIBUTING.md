@@ -11,6 +11,9 @@
 zig fmt --check build.zig src/*.zig tools/*.zig examples/*.zig test_runner.zig bench/*.zig bench/runners/*.zig
 zig build test
 zig build conformance
+zig build docs-check
+zig build examples-check
+zig build ship-check
 ```
 
 Use these additional commands when touching performance/conformance code:

@@ -24,6 +24,7 @@ zig build tools -- setup-fixtures
 # full setup + comparison, matching zhtml
 zig build bench-compare
 zig build bench-compare -- --profile stable
+zig build bench-interleaved -- ../zxml-base ../zxml-candidate --profile quick --repeats 9 --core-a 0 --core-b 2
 zig build conformance
 
 # direct tool invocation after setup, when needed
