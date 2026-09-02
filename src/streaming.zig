@@ -1765,6 +1765,8 @@ fn scanValidatedAttributeTokenMassive(input: []const u8, start: usize, end: usiz
             name_end = name_start + 3;
         } else if (name_start + 4 < end and input[name_start + 4] == '=') {
             name_end = name_start + 4;
+        } else if (name_start + 5 < end and input[name_start + 5] == '=') {
+            name_end = name_start + 5;
         } else {
             return scanValidatedAttributeToken(input, start, end);
         }
