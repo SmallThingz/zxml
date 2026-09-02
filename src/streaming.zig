@@ -1854,7 +1854,7 @@ inline fn attributeNameHashMassive(name: []const u8) u64 {
         break :blk word & (@as(u64, 0xffffffffffffffff) >> shift);
     };
     var mixed = key ^ (@as(u64, name.len) << 56);
-    mixed *%= 0x9e3779b97f4a7c15;
+    mixed *%= 0xdb6d0a4d457f74e1;
     mixed ^= mixed >> 32;
     return mixed;
 }
