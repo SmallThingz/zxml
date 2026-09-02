@@ -642,6 +642,24 @@ fn xmlNumericReferenceValue(body: []const u8) ?u21 {
     return @intCast(value);
 }
 
+noinline fn xmlAsciiPrefixLenWide(input: []const u8) usize {
+    const Vec = @Vector(64, u8);
+    const high_bit: Vec = @splat(0x80);
+    const control_limit: Vec = @splat(0x20);
+    const tab: Vec = @splat('\t');
+    const newline: Vec = @splat('\n');
+    const carriage_return: Vec = @splat('\r');
+
+    var i: usize = 0;
+    while (i + @sizeOf(Vec) <= input.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+        const invalid_control = (bytes < control_limit) &
+            (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
+        if (@reduce(.Or, (bytes >= high_bit) | invalid_control)) break;
+    }
+    return i;
+}
+
 pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
     const Vec = @Vector(xml_scan_vector_len, u8);
     const high_bit: Vec = @splat(0x80);
@@ -650,7 +668,11 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
     const newline: Vec = @splat('\n');
     const carriage_return: Vec = @splat('\r');
 
-    var i: usize = 0;
+    var i: usize = if (comptime (builtin.cpu.arch == .x86 or builtin.cpu.arch == .x86_64) and
+        std.Target.x86.featureSetHas(builtin.cpu.features, .avx512bw))
+        xmlAsciiPrefixLenWide(input)
+    else
+        0;
     while (i < input.len) {
         // XML is overwhelmingly ASCII. Validate full SIMD-width runs at once and
         // drop to the scalar path only for non-ASCII or forbidden controls.
