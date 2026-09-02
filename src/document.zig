@@ -212,12 +212,95 @@ fn validateXmlReferencesInContextAlloc(
     require_declared_entities: bool,
     context: XmlReferenceContext,
 ) ParseError!void {
-    if (!try validateXmlReferenceSyntax(value, allow_trailing_partial)) return;
+    // Without a DTD, the syntax-only scan is the whole common path for
+    // predefined and numeric references. Keep it compact and allocation-free.
+    if (doctype_value == null) {
+        if (!try validateXmlReferenceSyntax(value, allow_trailing_partial)) return;
+        if (require_declared_entities) return error.InvalidNumericCharacterEntity;
+        return;
+    }
 
+    return validateXmlReferencesWithDoctypeAlloc(
+        allocator,
+        value,
+        allow_trailing_partial,
+        doctype_value.?,
+        require_declared_entities,
+        context,
+    );
+}
+
+/// DTD-aware reference validation is intentionally out of line. Most strict XML
+/// never declares custom entities, so keeping this larger path separate avoids
+/// perturbing the common predefined/numeric reference scanner.
+noinline fn validateXmlReferencesWithDoctypeAlloc(
+    allocator: std.mem.Allocator,
+    value: []const u8,
+    allow_trailing_partial: bool,
+    doctype_value: []const u8,
+    require_declared_entities: bool,
+    context: XmlReferenceContext,
+) ParseError!void {
+    // Parse reference syntax and validate custom entities in one pass. The old
+    // path first scanned every reference for syntax, then rescanned the whole
+    // value to validate custom names. Build the DTD catalog lazily on the first
+    // custom reference so DTDs that use only predefined/numeric references do
+    // not pay catalog construction cost.
     var catalog = GeneralEntityCatalog.init(allocator);
     defer catalog.deinit();
-    if (doctype_value) |doctype| try buildGeneralEntityCatalog(&catalog, doctype);
-    try validateCustomXmlReferencesUsingCatalog(allocator, value, &catalog, require_declared_entities, context);
+    var catalog_ready = false;
+
+    var states = std.StringHashMap(EntityValidationState).init(allocator);
+    defer states.deinit();
+    var frames = std.ArrayList(EntityValidationFrame).empty;
+    defer frames.deinit(allocator);
+
+    var last_custom_name: ?[]const u8 = null;
+    var search_from: usize = 0;
+    while (search_from < value.len) {
+        // Dense entity text often has only one or two ordinary bytes between
+        // references. Peel those cases before calling the general byte search,
+        // whose setup cost dominates at such short distances.
+        const amp = if (value[search_from] == '&')
+            search_from
+        else if (search_from + 1 < value.len and value[search_from + 1] == '&')
+            search_from + 1
+        else if (search_from + 2 < value.len)
+            std.mem.indexOfScalarPos(u8, value, search_from + 2, '&') orelse break
+        else
+            break;
+        // Once a custom name has been fully validated against the immutable DTD,
+        // identical following references need no delimiter search, name check,
+        // or hash-table lookup.
+        if (last_custom_name) |last_name| {
+            const semi = amp + 1 + last_name.len;
+            if (semi < value.len and value[semi] == ';' and
+                std.mem.eql(u8, value[amp + 1 .. semi], last_name))
+            {
+                search_from = semi + 1;
+                continue;
+            }
+        }
+
+        const semi = std.mem.indexOfScalarPos(u8, value, amp + 1, ';') orelse {
+            if (allow_trailing_partial) return error.UnexpectedEndOfData;
+            return error.UnterminatedEntity;
+        };
+        const body = value[amp + 1 .. semi];
+        if (body.len == 0) return error.InvalidNumericCharacterEntity;
+        if (body[0] == '#') {
+            if (xmlNumericReferenceValue(body) == null) return error.InvalidNumericCharacterEntity;
+        } else if (!isPredefinedEntityName(body)) {
+            if (!isValidXmlName(body)) return error.InvalidNumericCharacterEntity;
+            if (!catalog_ready) {
+                try buildGeneralEntityCatalog(&catalog, doctype_value);
+                catalog_ready = true;
+            }
+            try validateGeneralEntityUse(&catalog, &states, &frames, body, require_declared_entities, context);
+            last_custom_name = body;
+        }
+        search_from = semi + 1;
+    }
 }
 
 fn validateXmlReferenceSyntax(value: []const u8, allow_trailing_partial: bool) ParseError!bool {

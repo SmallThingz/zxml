@@ -857,6 +857,40 @@ test "strict enforces declared parsed general entities" {
     }
 }
 
+test "strict repeated custom entity fast path preserves later validation" {
+    {
+        var parsed = try parseTestDoc(
+            "<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&a;&a;&a;&a;</r>",
+            .{ .mode = .strict },
+        );
+        defer parsed.deinit();
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&#0;</r>", .{ .mode = .strict }),
+        );
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&missing;</r>", .{ .mode = .strict }),
+        );
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.UnterminatedEntity,
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a</r>", .{ .mode = .strict }),
+        );
+    }
+}
+
 test "strict validates used entity replacement graphs" {
     const invalid_entity = [_][]const u8{
         "<!DOCTYPE r [<!ENTITY a '&missing;'>]><r>&a;</r>",
