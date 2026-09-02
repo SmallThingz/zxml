@@ -2102,14 +2102,9 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
 
 noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
     const table_capacity = 2048;
-    const NameSlot = struct {
-        hash: u64,
-        start_rel: u32,
-        len: u32,
-    };
-
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
-    var slots: [table_capacity]NameSlot = undefined;
+    var hashes: [table_capacity]u64 = undefined;
+    var starts: [table_capacity]u32 = undefined;
     var occupied: [table_capacity / 64]u64 = @splat(0);
     var seen_count: usize = 0;
     var i = start;
@@ -2124,19 +2119,19 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
             const bit_index: u6 = @intCast(slot_index & 63);
             const bit = @as(u64, 1) << bit_index;
             if (occupied[word_index] & bit == 0) {
-                slots[slot_index] = .{
-                    .hash = hash,
-                    .start_rel = @intCast(current.name_start - start),
-                    .len = @intCast(current_name.len),
-                };
+                hashes[slot_index] = hash;
+                starts[slot_index] = @intCast(current.name_start - start);
                 occupied[word_index] |= bit;
                 break;
             }
 
-            const previous = slots[slot_index];
-            if (previous.hash == hash and previous.len == current_name.len) {
-                const previous_start = start + previous.start_rel;
-                if (std.mem.eql(u8, input[previous_start .. previous_start + previous.len], current_name)) {
+            if (hashes[slot_index] == hash) {
+                const previous_start = start + starts[slot_index];
+                const previous_end = previous_start + current_name.len;
+                if (previous_end < input.len and
+                    !tables.NameCharTable[input[previous_end]] and
+                    std.mem.eql(u8, input[previous_start..previous_end], current_name))
+                {
                     return error.DuplicateAttribute;
                 }
             }
@@ -3602,6 +3597,17 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
         error.DuplicateAttribute,
         parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/>", &ctx, Ctx.onNode),
     );
+
+    // Exercise the >512-attribute exact table, including its stored-name
+    // equality path after the table has been rebuilt from the whole tag.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..513) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a17='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     ctx.skip_root = true;
     try std.testing.expectError(error.DuplicateAttribute, parser.parse("<r><x a='1' a='2'/></r>", &ctx, Ctx.onNode));
