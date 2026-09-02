@@ -2118,7 +2118,7 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
-        var slot_index: usize = @intCast(hash >> (64 - 10));
+        var slot_index: usize = @intCast(hash >> (64 - 11));
         while (true) {
             const word_index = slot_index >> 6;
             const bit_index: u6 = @intCast(slot_index & 63);
