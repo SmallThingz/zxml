@@ -2101,7 +2101,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
 }
 
 noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
-    const table_capacity = 1024;
+    const table_capacity = 2048;
     const NameSlot = struct {
         hash: u64,
         start_rel: u32,
