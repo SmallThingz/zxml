@@ -274,11 +274,15 @@ noinline fn validateXmlReferencesWithDoctypeAlloc(
         // or hash-table lookup.
         if (last_custom_name) |last_name| {
             const semi = amp + 1 + last_name.len;
-            if (semi < value.len and value[semi] == ';' and
-                std.mem.eql(u8, value[amp + 1 .. semi], last_name))
-            {
-                search_from = semi + 1;
-                continue;
+            if (semi < value.len and value[semi] == ';') {
+                const same_name = if (last_name.len == 1)
+                    value[amp + 1] == last_name[0]
+                else
+                    std.mem.eql(u8, value[amp + 1 .. semi], last_name);
+                if (same_name) {
+                    search_from = semi + 1;
+                    continue;
+                }
             }
         }
 
