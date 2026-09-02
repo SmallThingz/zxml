@@ -1757,16 +1757,16 @@ fn scanValidatedAttributeTokenMassive(input: []const u8, start: usize, end: usiz
     if (input[start] == ' ' and start + 4 < end) {
         const name_start = start + 1;
         var name_end: usize = undefined;
-        if (input[name_start + 1] == '=') {
-            name_end = name_start + 1;
-        } else if (name_start + 2 < end and input[name_start + 2] == '=') {
-            name_end = name_start + 2;
-        } else if (name_start + 3 < end and input[name_start + 3] == '=') {
-            name_end = name_start + 3;
-        } else if (name_start + 4 < end and input[name_start + 4] == '=') {
+        if (name_start + 4 < end and input[name_start + 4] == '=') {
             name_end = name_start + 4;
         } else if (name_start + 5 < end and input[name_start + 5] == '=') {
             name_end = name_start + 5;
+        } else if (input[name_start + 3] == '=') {
+            name_end = name_start + 3;
+        } else if (input[name_start + 2] == '=') {
+            name_end = name_start + 2;
+        } else if (input[name_start + 1] == '=') {
+            name_end = name_start + 1;
         } else {
             return scanValidatedAttributeToken(input, start, end);
         }
