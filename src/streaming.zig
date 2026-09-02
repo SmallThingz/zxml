@@ -2032,6 +2032,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
 
     var slots: [total_capacity]NameSlot = undefined;
     var primary_occupied: [primary_capacity / 64]u64 = @splat(0);
+    var primary_filter: [16]u64 = undefined;
     var seen_count: usize = 0;
     var i = start;
     while (try scanValidatedAttributeTokenHuge(input, i, end)) |current| {
@@ -2068,14 +2069,42 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
             if (overflow_count == overflow_capacity) return validateUniqueAttributesRawMassive(input, start, end);
 
             // The primary table is full at this point, so there is no empty
-            // sentinel to terminate a lookup. Scan it once to rule out a
-            // duplicate against the first 256 names.
-            for (slots[0..primary_capacity]) |previous| {
-                if (previous.hash == hash and
-                    previous.end - previous.start == current_name.len and
-                    std.mem.eql(u8, input[previous.start..previous.end], current_name))
-                {
-                    return error.DuplicateAttribute;
+            // sentinel to terminate a lookup. Build a small lazy fingerprint
+            // while checking the first overflow name; later overflow names can
+            // skip the 256-slot scan when their fingerprint bit is absent.
+            const filter_index: u10 = @truncate(hash);
+            const filter_word = @as(usize, filter_index >> 6);
+            const filter_bit = @as(u64, 1) << @as(u6, @truncate(filter_index));
+            if (overflow_count == 0) {
+                for (slots[0..primary_capacity]) |previous| {
+                    if (previous.hash == hash and
+                        previous.end - previous.start == current_name.len and
+                        std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                    {
+                        return error.DuplicateAttribute;
+                    }
+                }
+            } else if (overflow_count == 1) {
+                @memset(&primary_filter, 0);
+                for (slots[0..primary_capacity]) |previous| {
+                    const previous_filter_index: u10 = @truncate(previous.hash);
+                    primary_filter[@as(usize, previous_filter_index >> 6)] |=
+                        @as(u64, 1) << @as(u6, @truncate(previous_filter_index));
+                    if (previous.hash == hash and
+                        previous.end - previous.start == current_name.len and
+                        std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                    {
+                        return error.DuplicateAttribute;
+                    }
+                }
+            } else if (primary_filter[filter_word] & filter_bit != 0) {
+                for (slots[0..primary_capacity]) |previous| {
+                    if (previous.hash == hash and
+                        previous.end - previous.start == current_name.len and
+                        std.mem.eql(u8, input[previous.start..previous.end], current_name))
+                    {
+                        return error.DuplicateAttribute;
+                    }
                 }
             }
 
@@ -3599,6 +3628,14 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
         error.DuplicateAttribute,
         parser.parse("<r a0='0' a1='1' a2='2' a3='3' a4='4' a5='5' a6='6' a7='7' a8='8' a9='9' a8='x'/>", &ctx, Ctx.onNode),
     );
+
+    // After the lazy primary fingerprint has been built, a repeated name
+    // from the original 256-slot table must still force the exact-name scan.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..260) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, " a17='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     // Exercise the 257-272 linear overflow window and the exact handoff to
     // the massive checker on attribute 273.
