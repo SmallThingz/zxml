@@ -2212,7 +2212,7 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
 }
 
 noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize, end: usize) linksection(".zxml_enormous") ParseError!void {
-    const table_capacity = 8192;
+    const table_capacity = 16384;
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var hashes: [table_capacity]u64 = undefined;
     var starts: [table_capacity]u32 = undefined;
@@ -2224,7 +2224,7 @@ noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize,
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
-        var slot_index: usize = @intCast(hash >> (64 - 13));
+        var slot_index: usize = @intCast(hash >> (64 - 14));
         while (true) {
             const word_index = slot_index >> 6;
             const bit_index: u6 = @intCast(slot_index & 63);
@@ -3766,6 +3766,23 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     try parser.parse(many.items, &ctx, Ctx.onNode);
     many.items.len -= 2;
     try many.appendSlice(std.testing.allocator, " a4096='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
+
+    // The enormous table now spans 16384 slots. Exercise the former 8193
+    // saturation boundary directly so unique tags no longer fall back to the
+    // quadratic validator and duplicates remain exact beyond 8192 names.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..8193) |index| {
+        const hi: u8 = @intCast((index / (26 * 26)) % 26);
+        const mid: u8 = @intCast((index / 26) % 26);
+        const lo: u8 = @intCast(index % 26);
+        try many.print(std.testing.allocator, " {c}{c}{c}=''", .{ 'a' + hi, 'a' + mid, 'a' + lo });
+    }
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " mdc='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     ctx.skip_root = true;
