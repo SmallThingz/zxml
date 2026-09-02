@@ -1786,6 +1786,43 @@ fn scanValidatedAttributeTokenMassive(input: []const u8, start: usize, end: usiz
     }
     return scanValidatedAttributeToken(input, start, end);
 }
+// Deliberately clone the massive scanner for this colder tier. Sharing the
+// helper makes LLVM outline it into ordinary .text, which perturbs the hot
+// streaming parser even though this path is unreachable below 4097 attributes.
+fn scanValidatedAttributeTokenEnormous(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
+    if (start >= end) return null;
+    if (input[start] == ' ' and start + 4 < end) {
+        const name_start = start + 1;
+        var name_end: usize = undefined;
+        if (name_start + 4 < end and input[name_start + 4] == '=') {
+            name_end = name_start + 4;
+        } else if (name_start + 5 < end and input[name_start + 5] == '=') {
+            name_end = name_start + 5;
+        } else if (input[name_start + 3] == '=') {
+            name_end = name_start + 3;
+        } else if (input[name_start + 2] == '=') {
+            name_end = name_start + 2;
+        } else if (input[name_start + 1] == '=') {
+            name_end = name_start + 1;
+        } else {
+            return scanValidatedAttributeToken(input, start, end);
+        }
+        const quote = input[name_end + 1];
+        if (quote == '\'' or quote == '"') {
+            const value_start = name_end + 2;
+            if (value_start + 4 < end) {
+                if (input[value_start + 3] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 4 };
+                if (input[value_start + 4] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 5 };
+                if (input[value_start + 2] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 3 };
+                if (input[value_start + 1] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 2 };
+                if (input[value_start] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 1 };
+            }
+            const quote_pos = scanner.findByte(input[0..end], value_start, quote) orelse unreachable;
+            return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+        }
+    }
+    return scanValidatedAttributeToken(input, start, end);
+}
 
 const attribute_filter_collision = @as(u64, 1) << 63;
 
@@ -2140,11 +2177,54 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
     var seen_count: usize = 0;
     var i = start;
     while (try scanValidatedAttributeTokenMassive(input, i, end)) |current| {
-        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+        if (seen_count == table_capacity) return validateUniqueAttributesRawEnormous(input, start, end);
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
         var slot_index: usize = @intCast(hash >> (64 - 12));
+        while (true) {
+            const word_index = slot_index >> 6;
+            const bit_index: u6 = @intCast(slot_index & 63);
+            const bit = @as(u64, 1) << bit_index;
+            if (occupied[word_index] & bit == 0) {
+                hashes[slot_index] = hash;
+                starts[slot_index] = @intCast(current.name_start - start);
+                occupied[word_index] |= bit;
+                break;
+            }
+
+            if (hashes[slot_index] == hash) {
+                const previous_start = start + starts[slot_index];
+                const previous_end = previous_start + current_name.len;
+                if (previous_end < input.len and
+                    !tables.NameCharTable[input[previous_end]] and
+                    std.mem.eql(u8, input[previous_start..previous_end], current_name))
+                {
+                    return error.DuplicateAttribute;
+                }
+            }
+            slot_index = (slot_index + 1) & (table_capacity - 1);
+        }
+
+        seen_count += 1;
+        i = current.next;
+    }
+}
+
+noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize, end: usize) linksection(".zxml_enormous") ParseError!void {
+    const table_capacity = 8192;
+    if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
+    var hashes: [table_capacity]u64 = undefined;
+    var starts: [table_capacity]u32 = undefined;
+    var occupied: [table_capacity / 64]u64 = @splat(0);
+    var seen_count: usize = 0;
+    var i = start;
+    while (try scanValidatedAttributeTokenEnormous(input, i, end)) |current| {
+        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+
+        const current_name = input[current.name_start..current.name_end];
+        const hash = attributeNameHashMassive(current_name);
+        var slot_index: usize = @intCast(hash >> (64 - 13));
         while (true) {
             const word_index = slot_index >> 6;
             const bit_index: u6 = @intCast(slot_index & 63);
@@ -3674,6 +3754,18 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     try parser.parse(many.items, &ctx, Ctx.onNode);
     many.items.len -= 2;
     try many.appendSlice(std.testing.allocator, " a2048='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
+
+    // Cross the 4096-slot saturation boundary into the isolated enormous
+    // checker. Keep both unique parsing and duplicate detection exact after
+    // the massive table hands the whole tag to the 8192-slot tier.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..4097) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a4096='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     ctx.skip_root = true;
