@@ -234,6 +234,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                         self.i = run.lt_index;
                     } else {
+                        if (comptime drop_whitespace_text_nodes) {
+                            if (tables.WhitespaceTable[self.input[self.i]]) {
+                                const whitespace_end = scanner.skipWhitespace(self.input, self.i);
+                                if (whitespace_end >= self.input.len or self.input[whitespace_end] == '<') {
+                                    self.i = whitespace_end;
+                                    continue;
+                                }
+                            }
+                        }
                         const run = scanner.scanTextRun(self.input, self.i);
                         if (run.lt_index > self.i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
                             const parent_idx = self.topIndex();
