@@ -2132,7 +2132,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
 }
 
 noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
-    const table_capacity = 2048;
+    const table_capacity = 4096;
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var hashes: [table_capacity]u64 = undefined;
     var starts: [table_capacity]u32 = undefined;
@@ -2144,7 +2144,7 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
-        var slot_index: usize = @intCast(hash >> (64 - 11));
+        var slot_index: usize = @intCast(hash >> (64 - 12));
         while (true) {
             const word_index = slot_index >> 6;
             const bit_index: u6 = @intCast(slot_index & 63);
@@ -3663,6 +3663,17 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     try parser.parse(many.items, &ctx, Ctx.onNode);
     many.items.len -= 2;
     try many.appendSlice(std.testing.allocator, " a17='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
+
+    // Cross the former 2048-slot saturation boundary and keep exact duplicate
+    // detection for names stored near the end of the enlarged table.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..2049) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try parser.parse(many.items, &ctx, Ctx.onNode);
+    many.items.len -= 2;
+    try many.appendSlice(std.testing.allocator, " a2048='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, parser.parse(many.items, &ctx, Ctx.onNode));
 
     ctx.skip_root = true;
