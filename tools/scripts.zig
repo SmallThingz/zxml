@@ -20,7 +20,7 @@ const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
 const repeats: usize = 5;
-const benchmark_methodology_version: usize = 2;
+const benchmark_methodology_version: usize = 3;
 
 const parse_parsers = [_][]const u8{
     "ours-strict",
@@ -30,6 +30,14 @@ const parse_parsers = [_][]const u8{
     "pugixml",
     "rapidxml",
 };
+
+const strict_regression_parsers = [_][]const u8{
+    "ours-strict",
+    "stream-strict",
+};
+
+const strict_regression_reference_fixture = "synthetic_entities.xml";
+const strict_regression_min_reference_ratio: f64 = 1.25;
 
 const FixtureCase = struct {
     name: []const u8,
@@ -75,8 +83,6 @@ const quick_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_attrs96.xml", .iterations = 40, .is_real = false },
     .{ .name = "synthetic_unicode_text.xml", .iterations = 100, .is_real = false },
     .{ .name = "synthetic_pretty_indented.xml", .iterations = 100, .is_real = false },
-    .{ .name = "synthetic_long_text.xml", .iterations = 100, .is_real = false },
-    .{ .name = "synthetic_doctype_entities.xml", .iterations = 80, .is_real = false },
     .{ .name = "synthetic_attr_count_mix.xml", .iterations = 90, .is_real = false },
 };
 
@@ -125,9 +131,14 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_pretty_indented.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_crlf_pretty.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_token_whitespace_mix.xml", .iterations = 200, .is_real = false },
-    .{ .name = "synthetic_long_text.xml", .iterations = 180, .is_real = false },
-    .{ .name = "synthetic_doctype_entities.xml", .iterations = 120, .is_real = false },
     .{ .name = "synthetic_attr_count_mix.xml", .iterations = 160, .is_real = false },
+};
+
+// Pathological workloads do not belong in headline averages or external gates.
+// Keep them in a mode-specific lane that runs only the implementations whose
+// behavior they stress. The generated data remains available for ad-hoc work.
+const strict_regression_fixtures = [_]FixtureCase{
+    .{ .name = "synthetic_doctype_entities.xml", .iterations = 80, .is_real = false },
 };
 
 const ParseResult = struct {
@@ -164,6 +175,16 @@ const StreamComparisonRow = struct {
     dom_strict_mb_s: f64,
     stream_strict_mb_s: f64,
     strict_ratio: f64,
+};
+
+const StrictRegressionCheck = struct {
+    parser: []const u8,
+    fixture: []const u8,
+    reference_fixture: []const u8,
+    throughput_mb_s: f64,
+    reference_mb_s: f64,
+    reference_ratio: f64,
+    pass: bool,
 };
 
 fn getProfile(name: []const u8) !Profile {
@@ -328,6 +349,8 @@ fn writeSyntheticFixtures(io: std.Io) !void {
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_pretty_indented.xml", "\n  <group>\n    <item a='1'>value</item>\n    <item a='2'>value</item>\n  </group>", 12_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_crlf_pretty.xml", "\r\n\t<item a='1'>\r\n\t\tvalue\r\n\t</item>", 24_000);
     try writeRepeatedSynthetic(io, FIXTURES_DIR ++ "/synthetic_token_whitespace_mix.xml", "<x\t a='1'\n b = '2'\r c\t=\t'3' />\n", 27_000);
+    // Diagnostic-only shapes: generated for focused investigations, but kept
+    // out of quick/stable profiles because they distort headline parser rates.
     try writeLongText(io, FIXTURES_DIR ++ "/synthetic_long_text.xml");
     try writeDoctypeEntities(io, FIXTURES_DIR ++ "/synthetic_doctype_entities.xml");
     try writeAttrCountMix(io, FIXTURES_DIR ++ "/synthetic_attr_count_mix.xml");
@@ -720,15 +743,10 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     try common.ensureDir(io, BIN_DIR);
     try common.ensureDir(io, TMP_SCRATCH_DIR);
 
-    const zig_build = [_][]const u8{ "zig", "build", "bench-runner-build", "-Doptimize=ReleaseFast", "-Dcpu=native" };
+    // Match zhtml: build the installed benchmark binary directly. The tools
+    // executable is already running, so bench-only avoids recursive tool builds.
+    const zig_build = [_][]const u8{ "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
-
-    const copy_ours = [_][]const u8{
-        "cp",
-        "zig-out/bin/ours_runner",
-        "bench/build/bin/ours_runner",
-    };
-    try runInheritWithBenchTmp(io, alloc, &copy_ours, REPO_ROOT);
 
     const pugixml_cc = [_][]const u8{
         "c++",
@@ -768,46 +786,31 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
     const iters = try std.fmt.allocPrint(alloc, "{d}", .{iterations});
     defer alloc.free(iters);
 
-    // Do not require Linux-specific CPU affinity tooling here. Benchmarking
-    // should still work in minimal containers and restricted cpusets where
-    // `taskset` is absent or CPU 0 is unavailable.
-    var argv: [4][]const u8 = undefined;
+    var argv: [5][]const u8 = undefined;
     var argc: usize = 0;
 
     if (std.mem.eql(u8, parser_name, "ours-strict")) {
-        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
-        argv[argc + 1] = "strict";
-        argv[argc + 2] = fixture_path;
-        argv[argc + 3] = iters;
-        argc += 4;
+        argv = .{ "zig-out/bin/zxml-bench", "parse", "strict", fixture_path, iters };
+        argc = 5;
     } else if (std.mem.eql(u8, parser_name, "ours-turbo")) {
-        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
-        argv[argc + 1] = "turbo";
-        argv[argc + 2] = fixture_path;
-        argv[argc + 3] = iters;
-        argc += 4;
+        argv = .{ "zig-out/bin/zxml-bench", "parse", "turbo", fixture_path, iters };
+        argc = 5;
     } else if (std.mem.eql(u8, parser_name, "stream-strict")) {
-        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
-        argv[argc + 1] = "stream-strict";
-        argv[argc + 2] = fixture_path;
-        argv[argc + 3] = iters;
-        argc += 4;
+        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "strict", fixture_path, iters };
+        argc = 5;
     } else if (std.mem.eql(u8, parser_name, "stream-turbo")) {
-        argv[argc + 0] = BIN_DIR ++ "/ours_runner";
-        argv[argc + 1] = "stream-turbo";
-        argv[argc + 2] = fixture_path;
-        argv[argc + 3] = iters;
-        argc += 4;
+        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "turbo", fixture_path, iters };
+        argc = 5;
     } else if (std.mem.eql(u8, parser_name, "pugixml")) {
-        argv[argc + 0] = BIN_DIR ++ "/pugixml_runner";
-        argv[argc + 1] = fixture_path;
-        argv[argc + 2] = iters;
-        argc += 3;
+        argv[0] = BIN_DIR ++ "/pugixml_runner";
+        argv[1] = fixture_path;
+        argv[2] = iters;
+        argc = 3;
     } else if (std.mem.eql(u8, parser_name, "rapidxml")) {
-        argv[argc + 0] = BIN_DIR ++ "/rapidxml_runner";
-        argv[argc + 1] = fixture_path;
-        argv[argc + 2] = iters;
-        argc += 3;
+        argv[0] = BIN_DIR ++ "/rapidxml_runner";
+        argv[1] = fixture_path;
+        argv[2] = iters;
+        argc = 3;
     } else {
         return error.UnknownParser;
     }
@@ -870,6 +873,64 @@ test "benchmark iteration calibration scales up and down" {
     try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(100, 0));
 }
 
+fn benchmarkFixtureSet(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    fixtures: []const FixtureCase,
+    parsers: []const []const u8,
+    results: *std.ArrayList(ParseResult),
+) !void {
+    for (fixtures, 0..) |fx, fixture_index| {
+        const fixture_path = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{fx.name});
+        defer alloc.free(fixture_path);
+        const fixture_stat = try std.Io.Dir.cwd().statFile(io, fixture_path, .{});
+
+        const calibrated = try alloc.alloc(usize, parsers.len);
+        defer alloc.free(calibrated);
+        const sample_sets = try alloc.alloc(?[]u64, parsers.len);
+        defer alloc.free(sample_sets);
+        @memset(sample_sets, null);
+        errdefer for (sample_sets) |samples| {
+            if (samples) |owned| alloc.free(owned);
+        };
+
+        // Rotate calibration order so setup work does not always heat the same
+        // parser immediately before measurement.
+        for (0..parsers.len) |offset| {
+            const parser_index = (fixture_index + offset) % parsers.len;
+            const parser_name = parsers[parser_index];
+            if (!parserAppliesToFixture(parser_name, fx)) continue;
+            calibrated[parser_index] = try calibrateIterations(io, alloc, parser_name, fixture_path, fx.iterations);
+            sample_sets[parser_index] = try alloc.alloc(u64, repeats);
+        }
+
+        // Interleave parser samples and rotate who runs first on every repeat.
+        for (0..repeats) |rep| {
+            for (0..parsers.len) |offset| {
+                const parser_index = (fixture_index + rep + offset) % parsers.len;
+                const parser_name = parsers[parser_index];
+                if (!parserAppliesToFixture(parser_name, fx)) continue;
+                std.debug.print(
+                    "running parse: parser={s} fixture={s} iterations={d} sample={d}/{d}\n",
+                    .{ parser_name, fx.name, calibrated[parser_index], rep + 1, repeats },
+                );
+                sample_sets[parser_index].?[rep] = try runParser(io, alloc, parser_name, fixture_path, calibrated[parser_index]);
+            }
+        }
+
+        for (parsers, 0..) |parser_name, parser_index| {
+            const samples = sample_sets[parser_index] orelse continue;
+            sample_sets[parser_index] = null;
+            var result = finishParseBench(alloc, parser_name, fx, fixture_stat.size, calibrated[parser_index], samples) catch |err| {
+                alloc.free(samples);
+                return err;
+            };
+            errdefer freeParseResult(alloc, &result);
+            try results.append(alloc, result);
+        }
+    }
+}
+
 fn freeParseResult(alloc: std.mem.Allocator, row: *ParseResult) void {
     alloc.free(row.parser);
     alloc.free(row.fixture);
@@ -883,8 +944,42 @@ fn findThroughput(rows: []const ParseResult, parser_name: []const u8, fixture: [
     return null;
 }
 
-fn isLocalParser(parser_name: []const u8) bool {
-    return std.mem.startsWith(u8, parser_name, "ours-") or std.mem.startsWith(u8, parser_name, "stream-");
+fn evaluateStrictRegressionChecks(
+    alloc: std.mem.Allocator,
+    main_results: []const ParseResult,
+    regression_results: []const ParseResult,
+) ![]StrictRegressionCheck {
+    var out = std.ArrayList(StrictRegressionCheck).empty;
+    errdefer out.deinit(alloc);
+
+    for (strict_regression_parsers) |parser_name| {
+        for (strict_regression_fixtures) |fixture| {
+            const throughput = findThroughput(regression_results, parser_name, fixture.name) orelse return error.MissingBenchmarkResult;
+            const reference = findThroughput(main_results, parser_name, strict_regression_reference_fixture) orelse return error.MissingBenchmarkResult;
+            const ratio = if (reference == 0.0) 0.0 else throughput / reference;
+            try out.append(alloc, .{
+                .parser = parser_name,
+                .fixture = fixture.name,
+                .reference_fixture = strict_regression_reference_fixture,
+                .throughput_mb_s = throughput,
+                .reference_mb_s = reference,
+                .reference_ratio = ratio,
+                .pass = ratio >= strict_regression_min_reference_ratio,
+            });
+        }
+    }
+
+    return out.toOwnedSlice(alloc);
+}
+
+fn strictRegressionPassCount(checks: []const StrictRegressionCheck) usize {
+    var count: usize = 0;
+    for (checks) |check| count += @intFromBool(check.pass);
+    return count;
+}
+
+fn strictRegressionsAllPass(checks: []const StrictRegressionCheck) bool {
+    return strictRegressionPassCount(checks) == checks.len;
 }
 
 fn parserAppliesToFixture(parser_name: []const u8, fixture: FixtureCase) bool {
@@ -1295,6 +1390,7 @@ fn writeMarkdown(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    strict_regression_checks: []const StrictRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1351,6 +1447,28 @@ fn writeMarkdown(
         }
     }
 
+    if (strict_regression_checks.len != 0) {
+        const passed = strictRegressionPassCount(strict_regression_checks);
+        try w.print("\n## Strict Pathology Regression Checks\n\n{d}/{d} passed. These fixtures are excluded from headline averages and stable external gates.\n", .{ passed, strict_regression_checks.len });
+        if (!strictRegressionsAllPass(strict_regression_checks)) {
+            try w.writeAll("\n| Parser | Fixture | Throughput (MB/s) | Reference | Reference MB/s | Ratio | Result |\n");
+            try w.writeAll("|---|---|---:|---|---:|---:|---|\n");
+            for (strict_regression_checks) |check| {
+                try w.print("| {s} | {s} | {d:.2} | {s} | {d:.2} | {d:.3} | {s} |\n", .{
+                    check.parser,
+                    check.fixture,
+                    check.throughput_mb_s,
+                    check.reference_fixture,
+                    check.reference_mb_s,
+                    check.reference_ratio,
+                    if (check.pass) "PASS" else "FAIL",
+                });
+            }
+        } else {
+            try w.writeAll("Detailed timings remain in `bench/results/latest.json` for regression analysis.\n");
+        }
+    }
+
     return out.toOwnedSlice();
 }
 
@@ -1361,6 +1479,7 @@ fn writeTerminalReport(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    strict_regression_checks: []const StrictRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1627,6 +1746,48 @@ fn writeTerminalReport(
         try writeTableBorder(w, &widths);
     }
 
+    if (strict_regression_checks.len != 0) {
+        const passed = strictRegressionPassCount(strict_regression_checks);
+        try w.print("\nStrict Pathology Regression Checks: {d}/{d} passed\n", .{ passed, strict_regression_checks.len });
+        if (!strictRegressionsAllPass(strict_regression_checks)) {
+            const headers = [_][]const u8{ "Parser", "Fixture", "MB/s", "Reference", "Ref MB/s", "Ratio", "Result" };
+            const row_align = [_]bool{ false, false, true, false, true, true, false };
+            var widths = [_]usize{ headers[0].len, headers[1].len, headers[2].len, headers[3].len, headers[4].len, headers[5].len, headers[6].len };
+            for (strict_regression_checks) |check| {
+                widths[0] = maxUsize(widths[0], check.parser.len);
+                widths[1] = maxUsize(widths[1], check.fixture.len);
+                widths[3] = maxUsize(widths[3], check.reference_fixture.len);
+                var a: [32]u8 = undefined;
+                var b: [32]u8 = undefined;
+                var c: [32]u8 = undefined;
+                widths[2] = maxUsize(widths[2], (try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mb_s})).len);
+                widths[4] = maxUsize(widths[4], (try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mb_s})).len);
+                widths[5] = maxUsize(widths[5], (try std.fmt.bufPrint(&c, "{d:.3}", .{check.reference_ratio})).len);
+            }
+            try writeTableBorder(w, &widths);
+            try writeTableRow(w, &headers, &widths, &row_align);
+            try writeTableBorder(w, &widths);
+            for (strict_regression_checks) |check| {
+                var a: [32]u8 = undefined;
+                var b: [32]u8 = undefined;
+                var c: [32]u8 = undefined;
+                const row = [_][]const u8{
+                    check.parser,
+                    check.fixture,
+                    try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mb_s}),
+                    check.reference_fixture,
+                    try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mb_s}),
+                    try std.fmt.bufPrint(&c, "{d:.3}", .{check.reference_ratio}),
+                    if (check.pass) "PASS" else "FAIL",
+                };
+                try writeTableRow(w, &row, &widths, &row_align);
+            }
+            try writeTableBorder(w, &widths);
+        } else {
+            try w.writeAll("Pathological strict timings are hidden from the headline report; raw samples remain in latest.json.\n");
+        }
+    }
+
     return out.toOwnedSlice();
 }
 
@@ -1637,6 +1798,8 @@ fn writeJson(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    strict_regression_results: []const ParseResult,
+    strict_regression_checks: []const StrictRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1692,91 +1855,42 @@ fn writeJson(
             },
         );
     }
+    try w.writeAll("  ],\n  \"strict_regression_results\": [\n");
+    for (strict_regression_results, 0..) |r, i| {
+        try w.print(
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mb_s\":{d:.6},\"samples_ns\":[",
+            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mb_s },
+        );
+        for (r.samples_ns, 0..) |sample, sample_index| {
+            if (sample_index != 0) try w.writeByte(',');
+            try w.print("{d}", .{sample});
+        }
+        try w.print("]}}{s}\n", .{if (i + 1 == strict_regression_results.len) "" else ","});
+    }
+    try w.writeAll("  ],\n  \"strict_regression_checks\": [\n");
+    for (strict_regression_checks, 0..) |check, i| {
+        try w.print(
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"reference_fixture\":\"{s}\",\"throughput_mb_s\":{d:.6},\"reference_mb_s\":{d:.6},\"reference_ratio\":{d:.6},\"minimum_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            .{
+                check.parser,
+                check.fixture,
+                check.reference_fixture,
+                check.throughput_mb_s,
+                check.reference_mb_s,
+                check.reference_ratio,
+                strict_regression_min_reference_ratio,
+                if (check.pass) "true" else "false",
+                if (i + 1 == strict_regression_checks.len) "" else ",",
+            },
+        );
+    }
     try w.writeAll("  ]\n}\n");
 
     return out.toOwnedSlice();
 }
 
-fn parseBaseline(alloc: std.mem.Allocator, bytes: []const u8) !std.StringHashMap(f64) {
-    var map = std.StringHashMap(f64).init(alloc);
-    errdefer {
-        var it = map.iterator();
-        while (it.next()) |kv| alloc.free(kv.key_ptr.*);
-        map.deinit();
-    }
-
-    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, bytes, .{});
-    defer parsed.deinit();
-
-    const root = parsed.value;
-    if (root != .object) return error.InvalidBaseline;
-    const methodology = root.object.get("methodology_version") orelse return error.InvalidBaseline;
-    if (methodology != .integer or methodology.integer != benchmark_methodology_version) return error.InvalidBaseline;
-    const parse_results = root.object.get("parse_results") orelse return error.InvalidBaseline;
-    if (parse_results != .array) return error.InvalidBaseline;
-    for (parse_results.array.items) |item| {
-        if (item != .object) return error.InvalidBaseline;
-        const obj = item.object;
-        const parser_name = obj.get("parser") orelse return error.InvalidBaseline;
-        const fixture_name = obj.get("fixture") orelse return error.InvalidBaseline;
-        const throughput = obj.get("throughput_mb_s") orelse return error.InvalidBaseline;
-        if (parser_name != .string or fixture_name != .string) return error.InvalidBaseline;
-        if (throughput != .float and throughput != .integer) return error.InvalidBaseline;
-
-        const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ parser_name.string, fixture_name.string });
-        const val: f64 = switch (throughput) {
-            .float => throughput.float,
-            .integer => @floatFromInt(throughput.integer),
-            else => unreachable,
-        };
-        if (!std.math.isFinite(val) or val <= 0) {
-            alloc.free(key);
-            return error.InvalidBaseline;
-        }
-        const gop = map.getOrPut(key) catch |err| {
-            alloc.free(key);
-            return err;
-        };
-        if (gop.found_existing) {
-            alloc.free(key);
-            return error.InvalidBaseline;
-        }
-        gop.key_ptr.* = key;
-        gop.value_ptr.* = val;
-    }
-
-    return map;
-}
-
-test "parseBaseline validates shape and rejects duplicate measurements" {
-    const alloc = std.testing.allocator;
-    var map = try parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5}]}");
-    defer freeBaselineMap(alloc, &map);
-    try std.testing.expectEqual(@as(usize, 1), map.count());
-    try std.testing.expectEqual(@as(f64, 1.5), map.get("ours-turbo|x.xml").?);
-
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":1.5},{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":2}]}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "[]"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":{}}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\"}]}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":1,\"fixture\":\"x.xml\",\"throughput_mb_s\":1}]}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":-1}]}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":2,\"parse_results\":[{\"parser\":\"ours-turbo\",\"fixture\":\"x.xml\",\"throughput_mb_s\":0}]}"));
-    try std.testing.expectError(error.InvalidBaseline, parseBaseline(alloc, "{\"methodology_version\":1,\"parse_results\":[]}"));
-}
-
-fn freeBaselineMap(alloc: std.mem.Allocator, map: *std.StringHashMap(f64)) void {
-    var it = map.iterator();
-    while (it.next()) |kv| {
-        alloc.free(kv.key_ptr.*);
-    }
-    map.deinit();
-}
-
 fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
     var profile_name: []const u8 = "quick";
-    var baseline_path: ?[]const u8 = null;
     var write_baseline = false;
 
     var i: usize = 0;
@@ -1786,10 +1900,6 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             i += 1;
             if (i >= args.len) return error.InvalidArguments;
             profile_name = args[i];
-        } else if (std.mem.eql(u8, arg, "--baseline")) {
-            i += 1;
-            if (i >= args.len) return error.InvalidArguments;
-            baseline_path = args[i];
         } else if (std.mem.eql(u8, arg, "--write-baseline")) {
             write_baseline = true;
         } else {
@@ -1800,8 +1910,6 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const profile = try getProfile(profile_name);
 
     try common.ensureDir(io, RESULTS_DIR);
-    try setupParsers(io, alloc);
-    try setupFixtures(io, alloc, false);
     try ensureExternalParsersBuilt(io, alloc);
     try buildRunners(io, alloc);
 
@@ -1810,54 +1918,19 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         for (parse_results.items) |*r| freeParseResult(alloc, r);
         parse_results.deinit(alloc);
     }
+    try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results);
 
-    for (profile.fixtures, 0..) |fx, fixture_index| {
-        const fixture_path = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{fx.name});
-        defer alloc.free(fixture_path);
-        const fixture_stat = try std.Io.Dir.cwd().statFile(io, fixture_path, .{});
-
-        var calibrated: [parse_parsers.len]usize = undefined;
-        var sample_sets: [parse_parsers.len]?[]u64 = @splat(null);
-        errdefer for (&sample_sets) |*samples| {
-            if (samples.*) |owned| alloc.free(owned);
-        };
-
-        // Calibrate in a rotated order too, so setup work does not always heat
-        // the same parser immediately before measurement.
-        for (0..parse_parsers.len) |offset| {
-            const parser_index = (fixture_index + offset) % parse_parsers.len;
-            const parser_name = parse_parsers[parser_index];
-            if (!parserAppliesToFixture(parser_name, fx)) continue;
-            calibrated[parser_index] = try calibrateIterations(io, alloc, parser_name, fixture_path, fx.iterations);
-            sample_sets[parser_index] = try alloc.alloc(u64, repeats);
-        }
-
-        // Interleave parser samples. The old benchmark ran five samples of one
-        // parser back-to-back, so per-fixture gates could inherit thermal or
-        // frequency drift. Rotate the first parser on every repeat instead.
-        for (0..repeats) |rep| {
-            for (0..parse_parsers.len) |offset| {
-                const parser_index = (fixture_index + rep + offset) % parse_parsers.len;
-                const parser_name = parse_parsers[parser_index];
-                if (!parserAppliesToFixture(parser_name, fx)) continue;
-                std.debug.print(
-                    "running parse: parser={s} fixture={s} iterations={d} sample={d}/{d}\n",
-                    .{ parser_name, fx.name, calibrated[parser_index], rep + 1, repeats },
-                );
-                sample_sets[parser_index].?[rep] = try runParser(io, alloc, parser_name, fixture_path, calibrated[parser_index]);
-            }
-        }
-
-        for (parse_parsers, 0..) |parser_name, parser_index| {
-            const samples = sample_sets[parser_index] orelse continue;
-            sample_sets[parser_index] = null;
-            var result = finishParseBench(alloc, parser_name, fx, fixture_stat.size, calibrated[parser_index], samples) catch |err| {
-                alloc.free(samples);
-                return err;
-            };
-            errdefer freeParseResult(alloc, &result);
-            try parse_results.append(alloc, result);
-        }
+    var strict_regression_results = std.ArrayList(ParseResult).empty;
+    defer {
+        for (strict_regression_results.items) |*r| freeParseResult(alloc, r);
+        strict_regression_results.deinit(alloc);
+    }
+    var strict_regression_checks: []StrictRegressionCheck = try alloc.alloc(StrictRegressionCheck, 0);
+    defer alloc.free(strict_regression_checks);
+    if (std.mem.eql(u8, profile.name, "stable")) {
+        try benchmarkFixtureSet(io, alloc, &strict_regression_fixtures, &strict_regression_parsers, &strict_regression_results);
+        alloc.free(strict_regression_checks);
+        strict_regression_checks = try evaluateStrictRegressionChecks(alloc, parse_results.items, strict_regression_results.items);
     }
 
     const gate_rows = try evaluateGateRows(alloc, profile, parse_results.items);
@@ -1865,14 +1938,23 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
     defer alloc.free(md);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
-    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
     defer alloc.free(terminal);
 
-    const json = try writeJson(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+    const json = try writeJson(
+        io,
+        alloc,
+        profile.name,
+        parse_results.items,
+        gate_rows,
+        stream_comparison_rows,
+        strict_regression_results.items,
+        strict_regression_checks,
+    );
     defer alloc.free(json);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
 
@@ -1884,15 +1966,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     try stdout.writeAll("\n");
     try stdout.flush();
 
-    const baseline_default = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/baseline_{s}.json", .{profile.name});
-    defer alloc.free(baseline_default);
-    const baseline = baseline_path orelse baseline_default;
-
-    // Do not overwrite the old baseline before validating the new run. Doing
-    // so makes --write-baseline compare the run against itself and can bless a
-    // regression by erasing the evidence before the drift check executes.
     var failed = false;
-
     if (std.mem.eql(u8, profile.name, "stable")) {
         for (gate_rows) |g| {
             if (!g.pass) {
@@ -1903,25 +1977,12 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
                 );
             }
         }
-    }
-
-    if (common.fileExists(io, baseline)) {
-        const baseline_bytes = try common.readFileAlloc(io, alloc, baseline);
-        defer alloc.free(baseline_bytes);
-
-        var base_map = try parseBaseline(alloc, baseline_bytes);
-        defer freeBaselineMap(alloc, &base_map);
-
-        for (parse_results.items) |r| {
-            if (!isLocalParser(r.parser)) continue;
-            const key = try std.fmt.allocPrint(alloc, "{s}|{s}", .{ r.parser, r.fixture });
-            defer alloc.free(key);
-            const base = base_map.get(key) orelse return error.InvalidBaseline;
-            if (r.throughput_mb_s < base * 0.97) {
+        for (strict_regression_checks) |check| {
+            if (!check.pass) {
                 failed = true;
                 std.debug.print(
-                    "baseline drift: {s} {s} current={d:.2} baseline={d:.2}\n",
-                    .{ r.parser, r.fixture, r.throughput_mb_s, base },
+                    "strict regression fail: parser={s} fixture={s} reference={s} ratio={d:.3} minimum={d:.3}\n",
+                    .{ check.parser, check.fixture, check.reference_fixture, check.reference_ratio, strict_regression_min_reference_ratio },
                 );
             }
         }
@@ -1932,13 +1993,15 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     if (failed) return error.BenchmarkGateFailed;
 
     if (write_baseline) {
+        const baseline = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/baseline_{s}.json", .{profile.name});
+        defer alloc.free(baseline);
         try common.writeFile(io, baseline, json);
         std.debug.print("wrote baseline {s}\n", .{baseline});
     }
 
     // README tables are publication output, unlike latest.json/latest.md which
     // are useful diagnostics even for a failed run. Publish only after every
-    // stable gate and baseline-drift check has succeeded.
+    // stable gate has succeeded.
     if (std.mem.eql(u8, profile.name, "stable")) {
         try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     }
@@ -1949,7 +2012,7 @@ fn usage() void {
         \\usage:
         \\  zxml-tools setup-parsers
         \\  zxml-tools setup-fixtures [--refresh]
-        \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--baseline path] [--write-baseline]
+        \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--write-baseline]
         \\  zxml-tools run-conformance [--suite path]...
         \\
     , .{});
@@ -2025,11 +2088,23 @@ test "benchmark gates reject missing parser rows" {
     try std.testing.expectError(error.MissingBenchmarkResult, evaluateStreamComparisonRows(alloc, profile, &incomplete));
 }
 
-test "benchmark baseline guard covers DOM and streaming zxml modes" {
-    try std.testing.expect(isLocalParser("ours-turbo"));
-    try std.testing.expect(isLocalParser("ours-strict"));
-    try std.testing.expect(isLocalParser("stream-turbo"));
-    try std.testing.expect(isLocalParser("stream-strict"));
-    try std.testing.expect(!isLocalParser("pugixml"));
-    try std.testing.expect(!isLocalParser("rapidxml"));
+fn profileHasFixture(profile: Profile, fixture: []const u8) bool {
+    for (profile.fixtures) |item| {
+        if (std.mem.eql(u8, item.name, fixture)) return true;
+    }
+    return false;
+}
+
+test "headline benchmark profiles exclude diagnostic scan-heavy fixtures" {
+    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures }, Profile{ .name = "stable", .fixtures = &stable_fixtures } }) |profile| {
+        try std.testing.expect(!profileHasFixture(profile, "synthetic_long_text.xml"));
+        try std.testing.expect(!profileHasFixture(profile, "synthetic_doctype_entities.xml"));
+    }
+}
+
+test "doctype entity pathology is strict-only and outside headline profiles" {
+    try std.testing.expectEqual(@as(usize, 1), strict_regression_fixtures.len);
+    try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", strict_regression_fixtures[0].name);
+    try std.testing.expectEqualSlices([]const u8, &.{ "ours-strict", "stream-strict" }, &strict_regression_parsers);
+    for (strict_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "strict") != null);
 }

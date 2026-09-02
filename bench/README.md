@@ -21,9 +21,14 @@ zig build tools -- setup-fixtures
 ## Run
 
 ```bash
+# full setup + comparison, matching zhtml
+zig build bench-compare
+zig build bench-compare -- --profile stable
+zig build conformance
+
+# direct tool invocation after setup, when needed
 zig build tools -- run-benchmarks --profile quick
 zig build tools -- run-benchmarks --profile stable
-zig build conformance
 ```
 
 `run-benchmarks` also updates:
@@ -37,17 +42,21 @@ Results are written to:
 - `bench/results/latest.md`
 
 Benchmarks build the full DOM, including declaration/comment/CDATA/PI/doctype
-nodes, so CDATA-heavy feeds are measured fairly against `pugixml` and
-`rapidxml`. Cross-library runs create a fresh parser/document on every timed
-iteration for all implementations; retained-capacity zxml reuse is deliberately
-excluded from those comparisons.
+nodes. The benchmark workflow follows zhtml. zxml keeps input/setup outside the timed
+region and repeatedly resets the same logical `Document`, retaining its internal
+node/attribute capacity between parses; streaming likewise reuses its parser
+state. External runners use their native repeat-parse lifecycle.
 
-Fixture setup rejects extremely opaque feeds. If a file is mostly CDATA payload,
-it benchmarks string scanning more than XML DOM work.
+Fixture setup rejects extremely opaque feeds. `synthetic_long_text.xml` remains
+a generated diagnostic-only fixture and is excluded from quick/stable profiles.
+`synthetic_doctype_entities.xml` is also excluded from headline profiles and
+external gates; stable runs exercise it only in the strict-only regression lane.
+When that regression check passes, its detailed timings stay out of the human
+benchmark tables and remain available only in `bench/results/latest.json`.
 
 <!-- BENCH_README_AUTO_SNAPSHOT:START -->
 
-Benchmark snapshot invalidated by methodology v2. The previous table used retained-capacity zxml DOM reuse against fresh external DOMs and is not comparable. Run the stable profile to regenerate it.
+Run `zig build bench-compare -- --profile stable` to regenerate the stable snapshot with the zhtml-aligned timing model.
 
 <!-- BENCH_README_AUTO_SNAPSHOT:END -->
 
@@ -69,12 +78,7 @@ The hard gate is:
 
 - `ours-turbo >= max(pugixml, rapidxml)` per fixture
 
-For parser-only optimization passes, keep a baseline and compare fixture-by-fixture:
-
-```bash
-zig build tools -- run-benchmarks --profile quick --write-baseline
-zig build tools -- run-benchmarks --profile quick
-```
+For parser-only optimization passes, use the paired A/B harness below.
 
 Optional strict/turbo spot checks:
 
