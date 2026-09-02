@@ -739,9 +739,8 @@ pub fn isValidXmlNameAssumeValidUtf8(name: []const u8) bool {
     if (name[0] < 0x80) {
         if (!tables.isNameStart(name[0])) return false;
         i = 1;
-    } else {
-        const first = nextValidUtf8Codepoint(name, &i);
-        if (!isXmlNonAsciiNameStart(first)) return false;
+    } else if ((nextValidUtf8XmlNameClass(name, &i) & xml_name_start_bit) == 0) {
+        return false;
     }
 
     while (i < name.len) {
@@ -751,31 +750,69 @@ pub fn isValidXmlNameAssumeValidUtf8(name: []const u8) bool {
             i += 1;
             continue;
         }
-        if (!isXmlNonAsciiNameChar(nextValidUtf8Codepoint(name, &i))) return false;
+        if ((nextValidUtf8XmlNameClass(name, &i) & xml_name_char_bit) == 0) return false;
     }
     return true;
 }
 
-inline fn nextValidUtf8Codepoint(input: []const u8, i: *usize) u21 {
+const xml_name_char_bit: u2 = 0b01;
+const xml_name_start_bit: u2 = 0b10;
+const xml_name_start_class: u2 = xml_name_char_bit | xml_name_start_bit;
+
+inline fn nextValidUtf8XmlNameClass(input: []const u8, i: *usize) u2 {
     const first = input[i.*];
     if (first < 0xE0) {
-        const value = (@as(u21, first & 0x1F) << 6) | @as(u21, input[i.* + 1] & 0x3F);
+        const second = input[i.* + 1];
         i.* += 2;
-        return value;
+        if (first == 0xC2) return @intFromBool(second == 0xB7);
+        if (first == 0xC3) {
+            return if (second == 0x97 or second == 0xB7) 0 else xml_name_start_class;
+        }
+        if (first <= 0xCB) return xml_name_start_class;
+        if (first == 0xCC) return xml_name_char_bit;
+        if (first == 0xCD) {
+            if (second == 0xBE) return 0;
+            return if (second < 0xB0) xml_name_char_bit else xml_name_start_class;
+        }
+        return xml_name_start_class;
     }
+
+    const second = input[i.* + 1];
+    const third = input[i.* + 2];
     if (first < 0xF0) {
-        const value = (@as(u21, first & 0x0F) << 12) |
-            (@as(u21, input[i.* + 1] & 0x3F) << 6) |
-            @as(u21, input[i.* + 2] & 0x3F);
         i.* += 3;
-        return value;
+        if (first <= 0xE1) return xml_name_start_class;
+        if (first == 0xE2) {
+            if (second == 0x80) {
+                if (third == 0x8C or third == 0x8D) return xml_name_start_class;
+                return @intFromBool(third == 0xBF);
+            }
+            if (second == 0x81) {
+                if (third == 0x80) return xml_name_char_bit;
+                return if (third >= 0xB0) xml_name_start_class else 0;
+            }
+            if (second >= 0x82 and second <= 0x85) return xml_name_start_class;
+            if (second == 0x86) return if (third <= 0x8F) xml_name_start_class else 0;
+            if (second >= 0xB0 and second < 0xBF) return xml_name_start_class;
+            return if (second == 0xBF and third <= 0xAF) xml_name_start_class else 0;
+        }
+        if (first == 0xE3) {
+            return if (second == 0x80 and third == 0x80) 0 else xml_name_start_class;
+        }
+        if (first <= 0xED) return xml_name_start_class;
+        if (first == 0xEE) return 0;
+        if (second < 0xA4) return 0;
+        if (second < 0xB7) return xml_name_start_class;
+        if (second == 0xB7) {
+            return if (third <= 0x8F or third >= 0xB0) xml_name_start_class else 0;
+        }
+        if (second < 0xBF) return xml_name_start_class;
+        return if (third <= 0xBD) xml_name_start_class else 0;
     }
-    const value = (@as(u21, first & 0x07) << 18) |
-        (@as(u21, input[i.* + 1] & 0x3F) << 12) |
-        (@as(u21, input[i.* + 2] & 0x3F) << 6) |
-        @as(u21, input[i.* + 3] & 0x3F);
+
     i.* += 4;
-    return value;
+    if (first < 0xF3) return xml_name_start_class;
+    return if (first == 0xF3 and second <= 0xAF) xml_name_start_class else 0;
 }
 
 pub fn isValidXmlName(name: []const u8) bool {
@@ -2771,6 +2808,30 @@ test "XML Name validation handles ASCII Unicode and malformed UTF-8 in one pass"
     try std.testing.expect(!isValidXmlName("a\xCD\xBE"));
     try std.testing.expect(!isValidXmlName("\xC3"));
     try std.testing.expect(!isValidXmlName("\xC0\xAF"));
+}
+
+test "assume-valid UTF-8 XML Name classifier matches range boundaries" {
+    const codepoints = [_]u21{
+        0xB7,   0xBF,   0xC0,    0xD6,    0xD7,    0xD8,     0xF6,   0xF7,   0xF8,
+        0x2FF,  0x300,  0x36F,   0x370,   0x37D,   0x37E,    0x37F,  0x1FFF, 0x2000,
+        0x200B, 0x200C, 0x200D,  0x200E,  0x203E,  0x203F,   0x2040, 0x2041, 0x206F,
+        0x2070, 0x218F, 0x2190,  0x2BFF,  0x2C00,  0x2FEF,   0x2FF0, 0x3000, 0x3001,
+        0xD7FF, 0xE000, 0xF8FF,  0xF900,  0xFDCF,  0xFDD0,   0xFDEF, 0xFDF0, 0xFFFD,
+        0xFFFE, 0xFFFF, 0x10000, 0xEFFFF, 0xF0000, 0x10FFFF,
+    };
+
+    for (codepoints) |cp| {
+        var encoded: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(cp, &encoded);
+        const first_name = encoded[0..len];
+        try std.testing.expectEqual(isValidXmlName(first_name), isValidXmlNameAssumeValidUtf8(first_name));
+
+        var continued: [5]u8 = undefined;
+        continued[0] = 'a';
+        @memcpy(continued[1 .. len + 1], encoded[0..len]);
+        const continued_name = continued[0 .. len + 1];
+        try std.testing.expectEqual(isValidXmlName(continued_name), isValidXmlNameAssumeValidUtf8(continued_name));
+    }
 }
 
 test "validateDoctype enforces the outer XML grammar" {
