@@ -1774,11 +1774,11 @@ fn scanValidatedAttributeTokenMassive(input: []const u8, start: usize, end: usiz
         if (quote == '\'' or quote == '"') {
             const value_start = name_end + 2;
             if (value_start + 4 < end) {
-                if (input[value_start] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 1 };
-                if (input[value_start + 1] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 2 };
-                if (input[value_start + 2] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 3 };
                 if (input[value_start + 3] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 4 };
                 if (input[value_start + 4] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 5 };
+                if (input[value_start + 2] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 3 };
+                if (input[value_start + 1] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 2 };
+                if (input[value_start] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 1 };
             }
             const quote_pos = scanner.findByte(input[0..end], value_start, quote) orelse unreachable;
             return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
