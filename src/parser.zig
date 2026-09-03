@@ -38,10 +38,10 @@ inline fn attributeNameHashLarge(name: []const u8) u64 {
 
 noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
-    if (attrs.len >= 32 and attrs.len <= 2048) {
+    if (attrs.len >= 32 and attrs.len <= 4096) {
         @branchHint(.unlikely);
         if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
-        return findDuplicateAttributeLarge(2048, input, attrs);
+        return findDuplicateAttributeLarge(4096, input, attrs);
     }
     for (attrs, 0..) |current, i| {
         const current_name = current.name.slice(input);
@@ -105,10 +105,10 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
 }
 
 noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {
-    if (attrs.len >= 32 and attrs.len <= 2048) {
+    if (attrs.len >= 32 and attrs.len <= 4096) {
         @branchHint(.unlikely);
         if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
-        return findDuplicateAttributeLarge(2048, input, attrs);
+        return findDuplicateAttributeLarge(4096, input, attrs);
     }
     var buckets: u64 = 0;
     for (attrs) |attr| {

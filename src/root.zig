@@ -1592,6 +1592,25 @@ test "strict rejects duplicate attribute names" {
     try many.appendSlice(std.testing.allocator, " m1023='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
 
+    // Exercise the widened 4096-slot exact table and its >4096 fallback.
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..4096) |index| try many.print(std.testing.allocator, " n{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, "/>");
+    try strict_doc.parse(many.items, strict_opts);
+
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..4095) |index| try many.print(std.testing.allocator, " o{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, " o2047='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
+
+    many.clearRetainingCapacity();
+    try many.appendSlice(std.testing.allocator, "<r");
+    for (0..4096) |index| try many.print(std.testing.allocator, " p{d}='{d}'", .{ index, index });
+    try many.appendSlice(std.testing.allocator, " p2047='duplicate'/>");
+    try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
+
     const turbo_opts: ParseOptions = .{ .mode = .turbo };
     var turbo_doc = initDoc(turbo_opts);
     defer turbo_doc.deinit();
