@@ -224,7 +224,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.doctype_value_end = 0;
                 self.require_declared_entities = true;
                 self.xml_validated_offset = 0;
-                if (comptime strict_mode) {
+                if (comptime strict_mode and options.validate_xml_characters) {
                     try document.validateXmlCharacters(input);
                     self.xml_validated_offset = input.len;
                 }
@@ -664,10 +664,14 @@ pub fn Types(comptime options: ParseOptions) type {
                 try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.require_declared_entities, null);
             }
 
+            inline fn validateAttributeValueSpecials(self: *const Self, input: []const u8, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
+                if (has_lt) return error.InvalidAttributeValue;
+                if (has_ampersand) try self.coldOperation(.validate_attribute_references, input, value);
+            }
+
             inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
                 const specials = scanner.bytePairPresence(value, '<', '&');
-                if (specials.first) return error.InvalidAttributeValue;
-                if (specials.second) try self.coldOperation(.validate_attribute_references, input, value);
+                try self.validateAttributeValueSpecials(input, value, specials.first, specials.second);
             }
 
             inline fn validateCharacterDataSpecials(
@@ -747,6 +751,13 @@ pub fn Types(comptime options: ParseOptions) type {
                     closed = true;
                 }
 
+                if (comptime !strict_mode) {
+                    while (!closed) {
+                        const fast = scanner.scanSimpleQuotedAttribute(input, i) orelse break;
+                        i = fast.next;
+                    }
+                }
+
                 while (!closed and i < input.len) {
                     const boundary = i;
                     i = skipWsMode(input, i, strict_mode);
@@ -821,13 +832,22 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
                         const quote = input[attr_i + 1];
                         if (quote == '\'' or quote == '"') {
-                            const quote_pos = scanner.findByte(input, attr_i + 2, quote) orelse {
-                                if (incremental) return error.UnexpectedEndOfData;
-                                if (strict_mode) return error.ExpectedQuote;
-                                return error.UnexpectedEndOfData;
-                            };
-                            if (comptime strict_mode) try self.validateAttributeValue(input, input[attr_i + 2 .. quote_pos]);
-                            i = quote_pos + 1;
+                            if (comptime strict_mode) {
+                                const value_start = attr_i + 2;
+                                const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
+                                if (scan.end == input.len) {
+                                    if (incremental) return error.UnexpectedEndOfData;
+                                    return error.ExpectedQuote;
+                                }
+                                try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand);
+                                i = scan.end + 1;
+                            } else {
+                                const quote_pos = scanner.findByte(input, attr_i + 2, quote) orelse {
+                                    if (incremental) return error.UnexpectedEndOfData;
+                                    return error.UnexpectedEndOfData;
+                                };
+                                i = quote_pos + 1;
+                            }
                             continue;
                         }
                     }
@@ -847,13 +867,22 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     const quote = input[attr_i];
                     if (quote == '\'' or quote == '"') {
-                        const quote_pos = scanner.findByte(input, attr_i + 1, quote) orelse {
-                            if (incremental) return error.UnexpectedEndOfData;
-                            if (strict_mode) return error.ExpectedQuote;
-                            return error.UnexpectedEndOfData;
-                        };
-                        if (comptime strict_mode) try self.validateAttributeValue(input, input[attr_i + 1 .. quote_pos]);
-                        i = quote_pos + 1;
+                        if (comptime strict_mode) {
+                            const value_start = attr_i + 1;
+                            const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
+                            if (scan.end == input.len) {
+                                if (incremental) return error.UnexpectedEndOfData;
+                                return error.ExpectedQuote;
+                            }
+                            try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand);
+                            i = scan.end + 1;
+                        } else {
+                            const quote_pos = scanner.findByte(input, attr_i + 1, quote) orelse {
+                                if (incremental) return error.UnexpectedEndOfData;
+                                return error.UnexpectedEndOfData;
+                            };
+                            i = quote_pos + 1;
+                        }
                         continue;
                     }
                     if (strict_mode) return error.ExpectedQuote;
@@ -897,8 +926,8 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     return try self.skipSubtree(input, i, name, name_scan.key);
                 }
-                if (comptime validate_closing_tags) {
-                    if (!incremental) {
+                if (!incremental) {
+                    if (comptime validate_closing_tags or !strict_mode) {
                         if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
                     }
                 }
@@ -1307,34 +1336,43 @@ pub fn Types(comptime options: ParseOptions) type {
                 const lt = if (comptime strict_mode) blk: {
                     text_scan = scanner.scanTextSpecials(input, content_start);
                     break :blk text_scan.lt_index;
-                } else scanner.findByte(input, content_start, '<') orelse return null;
+                } else scanner.findTextEnd(input, content_start) orelse return null;
                 if (lt >= input.len) return null;
                 if (lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
-                const open_len: usize = name.len();
-                const close_start = lt + 2;
-                const close_end = close_start + open_len;
-                if (close_end > input.len) return null;
-                if (scanner.prefixKey(input[close_start..close_end]) != name_key) return null;
-                if (open_len > 8 and !std.mem.eql(u8, name.slice(input)[8..], input[close_start + 8 .. close_end])) return null;
+                var j: usize = undefined;
+                if (comptime validate_closing_tags) {
+                    const open_len: usize = name.len();
+                    const close_start = lt + 2;
+                    const close_end = close_start + open_len;
+                    if (close_end > input.len) return null;
+                    if (scanner.prefixKey(input[close_start..close_end]) != name_key) return null;
+                    if (open_len > 8 and !std.mem.eql(u8, name.slice(input)[8..], input[close_start + 8 .. close_end])) return null;
 
-                var j = close_end;
-                if (j >= input.len) {
-                    if (strict_mode) return error.UnexpectedEndOfData;
-                    return null;
-                }
-                if (input[j] == '>') {
-                    j += 1;
-                } else if (tables.isWhitespace(input[j])) {
-                    j = skipWsMode(input, j, strict_mode);
+                    j = close_end;
                     if (j >= input.len) {
                         if (strict_mode) return error.UnexpectedEndOfData;
                         return null;
                     }
-                    if (input[j] != '>') return null;
-                    j += 1;
+                    if (input[j] == '>') {
+                        j += 1;
+                    } else if (tables.isWhitespace(input[j])) {
+                        j = skipWsMode(input, j, strict_mode);
+                        if (j >= input.len) {
+                            if (strict_mode) return error.UnexpectedEndOfData;
+                            return null;
+                        }
+                        if (input[j] != '>') return null;
+                        j += 1;
+                    } else {
+                        return null;
+                    }
                 } else {
-                    return null;
+                    // Turbo without closing-tag validation already accepts any
+                    // syntactically closing token here. Collapse the common
+                    // text+close sequence without materializing a stack entry.
+                    const gt = scanner.findByte(input, lt + 2, '>') orelse return null;
+                    j = gt + 1;
                 }
 
                 const raw = input[content_start..lt];
@@ -3232,6 +3270,25 @@ test "streaming strict validates XML Unicode and names" {
     try std.testing.expectError(error.ExpectedPiTarget, parser.parse("<r><?\xC3\x97?></r>", &ctx, Ctx.onNode));
 }
 
+test "streaming trusted strict skips only full-buffer XML character validation" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_xml_characters = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+
+    try parser.parse("<r>\x01</r>", &ctx, Ctx.onNode);
+    parser.clear();
+    try std.testing.expectError(error.InvalidXmlCharacter, parser.parseAvailable("<r>\x01</r>", &ctx, Ctx.onNode));
+}
+
 test "streaming strict cumulative UTF-8 validation handles split sequences and restore" {
     const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     const ParserType = Types(opts).Parser;
@@ -3372,6 +3429,64 @@ test "streaming turbo followingTextRaw uses turbo token grammar" {
     var ctx: Ctx = .{};
     try parser.parse("<r><skip><x a=1/></skip>tail</r>", &ctx, Ctx.onNode);
     try std.testing.expect(ctx.saw_tail);
+}
+
+test "streaming turbo simple-text fast path preserves unchecked close semantics and events" {
+    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+
+    const Ctx = struct {
+        elements: usize = 0,
+        texts: usize = 0,
+        saw_a: bool = false,
+        saw_c: bool = false,
+        saw_x: bool = false,
+        saw_nested: bool = false,
+
+        fn onNode(self: *@This(), node: Event) bool {
+            switch (node.kind) {
+                .element => {
+                    self.elements += 1;
+                    if (std.mem.eql(u8, node.nameSlice(), "a")) self.saw_a = true;
+                    if (std.mem.eql(u8, node.nameSlice(), "c")) self.saw_c = true;
+                    if (std.mem.eql(u8, node.nameSlice(), "nested")) self.saw_nested = true;
+                },
+                .text => {
+                    self.texts += 1;
+                    if (std.mem.eql(u8, node.valueRawSlice(), "x")) self.saw_x = true;
+                },
+                else => {},
+            }
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+
+    // Turbo without closing validation already permits mismatched names. The
+    // fused simple-text path must keep that behavior and emit the same nodes.
+    var ctx: Ctx = .{};
+    try parser.parse("<r><a>x</wrong><c>   </also-wrong></r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 3), ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), ctx.texts);
+    try std.testing.expect(ctx.saw_a and ctx.saw_c and ctx.saw_x);
+
+    // Nested markup cannot use the fused path and must fall back to the normal
+    // parser without losing callbacks.
+    parser.clear();
+    ctx = .{};
+    try parser.parse("<r><a>x<nested/>y</a></r>", &ctx, Ctx.onNode);
+    try std.testing.expect(ctx.saw_a and ctx.saw_nested);
+    try std.testing.expectEqual(@as(usize, 2), ctx.texts);
+
+    // A truncated close token likewise falls back and preserves permissive
+    // non-incremental turbo behavior when EOF closure is not required.
+    parser.clear();
+    ctx = .{};
+    try parser.parse("<r><a>x</a", &ctx, Ctx.onNode);
+    try std.testing.expect(ctx.saw_a and ctx.saw_x);
 }
 
 test "streaming strict start-tag grammar matches DOM strictness" {

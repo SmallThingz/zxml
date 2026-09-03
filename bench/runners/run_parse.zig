@@ -3,11 +3,13 @@ const zxml = @import("zxml");
 
 pub const DomBenchMode = enum {
     strict,
+    strict_trusted,
     turbo,
 };
 
 pub const StreamBenchMode = enum {
     strict,
+    strict_trusted,
     turbo,
 };
 
@@ -29,6 +31,27 @@ fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterati
         try doc.parse(input, .{
             .mode = .strict,
             .validate_closing_tags = true,
+            .include_misc_nodes = true,
+        });
+        checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+        checksum +%= @as(u64, @intCast(doc.attrs.items.len));
+    }
+    const finish = std.Io.Clock.Timestamp.now(io, .awake);
+    std.mem.doNotOptimizeAway(checksum);
+    return elapsedNs(start, finish);
+}
+
+fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+    var doc = Document.init(alloc);
+    defer doc.deinit();
+
+    var checksum: u64 = 0;
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
+    for (0..iterations) |_| {
+        try doc.parse(input, .{
+            .mode = .strict,
+            .validate_closing_tags = true,
+            .validate_xml_characters = false,
             .include_misc_nodes = true,
         });
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
@@ -67,6 +90,7 @@ pub fn runDomParseFile(io: std.Io, path: []const u8, iterations: usize, mode: Do
 
     return switch (mode) {
         .strict => @call(.never_inline, runDomStrict, .{ io, alloc, input, iterations }),
+        .strict_trusted => @call(.never_inline, runDomStrictTrusted, .{ io, alloc, input, iterations }),
         .turbo => @call(.never_inline, runDomTurbo, .{ io, alloc, input, iterations }),
     };
 }
@@ -80,6 +104,7 @@ pub fn runStreamParseFile(io: std.Io, path: []const u8, iterations: usize, mode:
 
     return switch (mode) {
         .strict => @call(.never_inline, runStreamStrict, .{ io, alloc, input, iterations }),
+        .strict_trusted => @call(.never_inline, runStreamStrictTrusted, .{ io, alloc, input, iterations }),
         .turbo => @call(.never_inline, runStreamTurbo, .{ io, alloc, input, iterations }),
     };
 }
@@ -88,6 +113,43 @@ fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iter
     const StreamStrict = zxml.Types(.{
         .mode = .strict,
         .validate_closing_tags = true,
+        .include_misc_nodes = true,
+    });
+    const StreamingEventType = StreamStrict.StreamingEvent;
+    const Context = struct {
+        checksum: u64 = 0,
+        count: u64 = 0,
+
+        fn onNode(self: *@This(), node: *const StreamingEventType) bool {
+            self.count +%= 1;
+            self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+            switch (node.kind) {
+                .element => {
+                    self.checksum +%= @as(u64, node.name.end - node.name.start);
+                    self.checksum +%= @as(u64, node.data.end - node.data.start);
+                },
+                else => self.checksum +%= @as(u64, node.data.end - node.data.start),
+            }
+            return true;
+        }
+    };
+
+    var parser = StreamStrict.StreamingParser.init(alloc);
+    defer parser.deinit();
+    var ctx: Context = .{};
+    const start = std.Io.Clock.Timestamp.now(io, .awake);
+    for (0..iterations) |_| try parser.parse(input, &ctx, Context.onNode);
+    const finish = std.Io.Clock.Timestamp.now(io, .awake);
+    std.mem.doNotOptimizeAway(ctx.checksum);
+    std.mem.doNotOptimizeAway(ctx.count);
+    return elapsedNs(start, finish);
+}
+
+fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+    const StreamStrict = zxml.Types(.{
+        .mode = .strict,
+        .validate_closing_tags = true,
+        .validate_xml_characters = false,
         .include_misc_nodes = true,
     });
     const StreamingEventType = StreamStrict.StreamingEvent;

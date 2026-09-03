@@ -21,6 +21,10 @@ pub const ParseMode = enum {
 pub const ParseOptions = struct {
     mode: ParseMode = .turbo,
     validate_closing_tags: bool = false,
+    /// Validates XML character ranges and UTF-8 before full-buffer strict parsing.
+    /// Disable only when the caller already guarantees valid XML character data.
+    /// Incremental streaming still validates UTF-8 boundaries for safe chunking.
+    validate_xml_characters: bool = true,
     require_closed_elements_on_eof: bool = false,
     expand_dtd_entities: bool = false,
     max_entity_value_len: usize = 4096,
@@ -2846,6 +2850,14 @@ test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict });
+}
+
+test "strict full-buffer XML character validation is optional for trusted input" {
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    try std.testing.expectError(error.InvalidXmlCharacter, doc.parse("<r>\x01</r>", .{ .mode = .strict }));
+    try doc.parse("<r>\x01</r>", .{ .mode = .strict, .validate_xml_characters = false });
 }
 
 test "XML Name validation handles ASCII Unicode and malformed UTF-8 in one pass" {

@@ -31,6 +31,54 @@ pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?
     return std.mem.indexOfScalarPos(u8, haystack, probe_end, needle);
 }
 
+/// Fast path for text runs that are commonly one SIMD chunk or a little
+/// longer. Keep the general delimiter finder compact for token-heavy streaming.
+pub inline fn findTextEnd(noalias haystack: []const u8, start: usize) ?usize {
+    if (start >= haystack.len) return null;
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    if (haystack.len - start >= @sizeOf(Vec)) {
+        const Bits = @Vector(byte_scan_vector_len, u1);
+        const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+        const bytes: Vec = haystack[start..][0..@sizeOf(Vec)].*;
+        const lt_vec: Vec = @splat('<');
+        const bits: Bits = @select(u1, bytes == lt_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const mask: Mask = @bitCast(bits);
+        if (mask != 0) return start + @ctz(mask);
+        return findByte(haystack, start + @sizeOf(Vec), '<');
+    }
+    return findByte(haystack, start, '<');
+}
+
+pub const SimpleQuotedAttributeScan = struct {
+    name_start: usize,
+    name_end: usize,
+    value_start: usize,
+    value_end: usize,
+    next: usize,
+};
+
+/// Fast recognition of the common turbo attribute spelling ` name="value"`.
+/// Returns null for any other spelling so callers can fall back to the full
+/// permissive grammar without changing accepted input.
+pub inline fn scanSimpleQuotedAttribute(noalias input: []const u8, start: usize) ?SimpleQuotedAttributeScan {
+    if (start + 4 >= input.len or input[start] != ' ') return null;
+    const name_start = start + 1;
+    if (!tables.isNameStart(input[name_start])) return null;
+    const name_end = findNameEndAfterStart(input, name_start);
+    if (name_end + 2 >= input.len or input[name_end] != '=') return null;
+    const quote = input[name_end + 1];
+    if (quote != '\'' and quote != '"') return null;
+    const value_start = name_end + 2;
+    const value_end = findByte(input, value_start, quote) orelse return null;
+    return .{
+        .name_start = name_start,
+        .name_end = name_end,
+        .value_start = value_start,
+        .value_end = value_end,
+        .next = value_end + 1,
+    };
+}
+
 pub const BytePairPresence = struct {
     first: bool = false,
     second: bool = false,
@@ -70,20 +118,9 @@ pub inline fn scanQuotedValueSpecials(noalias hay: []const u8, start: usize, quo
     if (start >= hay.len) return .{ .end = hay.len };
 
     var result: QuotedValueScan = .{ .end = hay.len };
-    const probe_end = start + @min(hay.len - start, 32);
+    const scalar_end = start + @min(hay.len - start, 8);
     var i = start;
-    while (i + 8 <= probe_end) : (i += 8) {
-        inline for (0..8) |n| {
-            const c = hay[i + n];
-            if (c == quote) {
-                result.end = i + n;
-                return result;
-            }
-            result.has_lt = result.has_lt or c == '<';
-            result.has_ampersand = result.has_ampersand or c == '&';
-        }
-    }
-    while (i < probe_end) : (i += 1) {
+    while (i < scalar_end) : (i += 1) {
         const c = hay[i];
         if (c == quote) {
             result.end = i;
@@ -92,30 +129,39 @@ pub inline fn scanQuotedValueSpecials(noalias hay: []const u8, start: usize, quo
         result.has_lt = result.has_lt or c == '<';
         result.has_ampersand = result.has_ampersand or c == '&';
     }
-    if (probe_end == hay.len) return result;
+    if (i == hay.len) return result;
+    if (hay[i] == quote) {
+        result.end = i;
+        return result;
+    }
+    result.has_lt = result.has_lt or hay[i] == '<';
+    result.has_ampersand = result.has_ampersand or hay[i] == '&';
+    i += 1;
 
     const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
     const quote_vec: Vec = @splat(quote);
     const lt_vec: Vec = @splat('<');
     const amp_vec: Vec = @splat('&');
-    i = probe_end;
     while (i + @sizeOf(Vec) <= hay.len) : (i += @sizeOf(Vec)) {
         const bytes: Vec = hay[i..][0..@sizeOf(Vec)].*;
-        if (@reduce(.Or, bytes == quote_vec)) {
-            const end = i + @sizeOf(Vec);
-            while (i < end) : (i += 1) {
-                const c = hay[i];
-                if (c == quote) {
-                    result.end = i;
-                    return result;
-                }
-                result.has_lt = result.has_lt or c == '<';
-                result.has_ampersand = result.has_ampersand or c == '&';
-            }
-            unreachable;
+        const quote_bits: Bits = @select(u1, bytes == quote_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const quote_mask: Mask = @bitCast(quote_bits);
+        const lt_bits: Bits = @select(u1, bytes == lt_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const lt_mask: Mask = @bitCast(lt_bits);
+        const amp_bits: Bits = @select(u1, bytes == amp_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const amp_mask: Mask = @bitCast(amp_bits);
+        if (quote_mask != 0) {
+            const offset: std.math.Log2Int(Mask) = @intCast(@ctz(quote_mask));
+            const before = if (offset == 0) @as(Mask, 0) else (@as(Mask, 1) << offset) - 1;
+            result.has_lt = result.has_lt or (lt_mask & before) != 0;
+            result.has_ampersand = result.has_ampersand or (amp_mask & before) != 0;
+            result.end = i + offset;
+            return result;
         }
-        result.has_lt = result.has_lt or @reduce(.Or, bytes == lt_vec);
-        result.has_ampersand = result.has_ampersand or @reduce(.Or, bytes == amp_vec);
+        result.has_lt = result.has_lt or lt_mask != 0;
+        result.has_ampersand = result.has_ampersand or amp_mask != 0;
     }
     while (i < hay.len) : (i += 1) {
         const c = hay[i];
@@ -312,20 +358,9 @@ pub inline fn scanTextSpecials(noalias hay: []const u8, start: usize) TextSpecia
     if (start >= hay.len) return .{ .lt_index = hay.len };
 
     var result: TextSpecialRun = .{ .lt_index = hay.len };
-    const probe_end = start + @min(hay.len - start, 32);
+    const scalar_end = start + @min(hay.len - start, 8);
     var i = start;
-    while (i + 8 <= probe_end) : (i += 8) {
-        inline for (0..8) |n| {
-            const c = hay[i + n];
-            if (c == '<') {
-                result.lt_index = i + n;
-                return result;
-            }
-            result.has_close_bracket = result.has_close_bracket or c == ']';
-            result.has_ampersand = result.has_ampersand or c == '&';
-        }
-    }
-    while (i < probe_end) : (i += 1) {
+    while (i < scalar_end) : (i += 1) {
         const c = hay[i];
         if (c == '<') {
             result.lt_index = i;
@@ -334,30 +369,39 @@ pub inline fn scanTextSpecials(noalias hay: []const u8, start: usize) TextSpecia
         result.has_close_bracket = result.has_close_bracket or c == ']';
         result.has_ampersand = result.has_ampersand or c == '&';
     }
-    if (probe_end == hay.len) return result;
+    if (i == hay.len) return result;
+    if (hay[i] == '<') {
+        result.lt_index = i;
+        return result;
+    }
+    result.has_close_bracket = result.has_close_bracket or hay[i] == ']';
+    result.has_ampersand = result.has_ampersand or hay[i] == '&';
+    i += 1;
 
     const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
     const lt_vec: Vec = @splat('<');
     const close_vec: Vec = @splat(']');
     const amp_vec: Vec = @splat('&');
-    i = probe_end;
     while (i + @sizeOf(Vec) <= hay.len) : (i += @sizeOf(Vec)) {
         const bytes: Vec = hay[i..][0..@sizeOf(Vec)].*;
-        if (@reduce(.Or, bytes == lt_vec)) {
-            const end = i + @sizeOf(Vec);
-            while (i < end) : (i += 1) {
-                const c = hay[i];
-                if (c == '<') {
-                    result.lt_index = i;
-                    return result;
-                }
-                result.has_close_bracket = result.has_close_bracket or c == ']';
-                result.has_ampersand = result.has_ampersand or c == '&';
-            }
-            unreachable;
+        const lt_bits: Bits = @select(u1, bytes == lt_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const lt_mask: Mask = @bitCast(lt_bits);
+        const close_bits: Bits = @select(u1, bytes == close_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const close_mask: Mask = @bitCast(close_bits);
+        const amp_bits: Bits = @select(u1, bytes == amp_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const amp_mask: Mask = @bitCast(amp_bits);
+        if (lt_mask != 0) {
+            const offset: std.math.Log2Int(Mask) = @intCast(@ctz(lt_mask));
+            const before = if (offset == 0) @as(Mask, 0) else (@as(Mask, 1) << offset) - 1;
+            result.has_close_bracket = result.has_close_bracket or (close_mask & before) != 0;
+            result.has_ampersand = result.has_ampersand or (amp_mask & before) != 0;
+            result.lt_index = i + offset;
+            return result;
         }
-        result.has_close_bracket = result.has_close_bracket or @reduce(.Or, bytes == close_vec);
-        result.has_ampersand = result.has_ampersand or @reduce(.Or, bytes == amp_vec);
+        result.has_close_bracket = result.has_close_bracket or close_mask != 0;
+        result.has_ampersand = result.has_ampersand or amp_mask != 0;
     }
     while (i < hay.len) : (i += 1) {
         const c = hay[i];
@@ -513,6 +557,30 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
 }
 
+test "simple quoted attribute fast scan recognizes only its exact turbo grammar" {
+    const input = " id=\"12345678\" kind='x'>";
+    const first = scanSimpleQuotedAttribute(input, 0) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("id", input[first.name_start..first.name_end]);
+    try std.testing.expectEqualStrings("12345678", input[first.value_start..first.value_end]);
+    try std.testing.expectEqual(@as(usize, 14), first.next);
+
+    const second = scanSimpleQuotedAttribute(input, first.next) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("kind", input[second.name_start..second.name_end]);
+    try std.testing.expectEqualStrings("x", input[second.value_start..second.value_end]);
+    try std.testing.expectEqual(@as(usize, 23), second.next);
+
+    inline for (.{
+        "id=\"x\"",
+        "  id=\"x\"",
+        " id =\"x\"",
+        " id= \"x\"",
+        " id=x",
+        " !id=\"x\"",
+    }) |other| {
+        try std.testing.expectEqual(@as(?SimpleQuotedAttributeScan, null), scanSimpleQuotedAttribute(other, 0));
+    }
+}
+
 test "scanQuotedValueSpecials finds quote and strict sentinels in one pass" {
     const plain = scanQuotedValueSpecials("alpha'ignored<&", 0, '\'');
     try std.testing.expectEqual(@as(usize, 5), plain.end);
@@ -557,6 +625,74 @@ test "scanTextSpecials finds markup and strict sentinels in short and vector run
     try std.testing.expectEqual(@as(usize, 140), vector.lt_index);
     try std.testing.expect(vector.has_close_bracket);
     try std.testing.expect(vector.has_ampersand);
+}
+
+test "strict fused scanners match scalar references across vector boundaries" {
+    const Ref = struct {
+        fn quoted(input: []const u8, start: usize, quote: u8) QuotedValueScan {
+            var out: QuotedValueScan = .{ .end = input.len };
+            var i = start;
+            while (i < input.len) : (i += 1) {
+                const c = input[i];
+                if (c == quote) {
+                    out.end = i;
+                    return out;
+                }
+                out.has_lt = out.has_lt or c == '<';
+                out.has_ampersand = out.has_ampersand or c == '&';
+            }
+            return out;
+        }
+
+        fn text(input: []const u8, start: usize) TextSpecialRun {
+            var out: TextSpecialRun = .{ .lt_index = input.len };
+            var i = start;
+            while (i < input.len) : (i += 1) {
+                const c = input[i];
+                if (c == '<') {
+                    out.lt_index = i;
+                    return out;
+                }
+                out.has_close_bracket = out.has_close_bracket or c == ']';
+                out.has_ampersand = out.has_ampersand or c == '&';
+            }
+            return out;
+        }
+    };
+
+    var input: [193]u8 = undefined;
+    for (0..input.len) |i| {
+        input[i] = switch ((i * 29 + 11) % 53) {
+            0 => '<',
+            1 => '&',
+            2 => ']',
+            3 => '\'',
+            4 => '"',
+            else => @intCast('a' + (i % 26)),
+        };
+    }
+
+    const starts = [_]usize{ 0, 1, 7, 8, 9, 31, 32, 33, 63, 64, 65 };
+    for (0..input.len) |len| {
+        for (starts) |start| {
+            if (start > len) continue;
+            const slice = input[0..len];
+            const expected_text = Ref.text(slice, start);
+            const actual_text = scanTextSpecials(slice, start);
+            try std.testing.expectEqual(expected_text.lt_index, actual_text.lt_index);
+            try std.testing.expectEqual(expected_text.has_close_bracket, actual_text.has_close_bracket);
+            try std.testing.expectEqual(expected_text.has_ampersand, actual_text.has_ampersand);
+            try std.testing.expectEqual(findByte(slice, start, '<'), findTextEnd(slice, start));
+
+            inline for (.{ '\'', '"' }) |quote| {
+                const expected_quote = Ref.quoted(slice, start, quote);
+                const actual_quote = scanQuotedValueSpecials(slice, start, quote);
+                try std.testing.expectEqual(expected_quote.end, actual_quote.end);
+                try std.testing.expectEqual(expected_quote.has_lt, actual_quote.has_lt);
+                try std.testing.expectEqual(expected_quote.has_ampersand, actual_quote.has_ampersand);
+            }
+        }
+    }
 }
 
 test "bytePairPresence finds either sentinel in short and vector-sized inputs" {

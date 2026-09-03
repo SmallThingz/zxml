@@ -38,7 +38,7 @@ inline fn attributeNameHashLarge(name: []const u8) u64 {
 
 noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
-    if (attrs.len >= 32 and attrs.len <= 131072) {
+    if (attrs.len >= 32 and attrs.len <= 262144) {
         @branchHint(.unlikely);
         if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
         return findDuplicateAttributeLarge(4096, input, attrs);
@@ -197,7 +197,7 @@ noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.Ra
 pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions) ParseError!void {
     doc.last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
-    if (comptime opts.mode == .strict) try document.validateXmlCharacters(input);
+    if (comptime opts.mode == .strict and opts.validate_xml_characters) try document.validateXmlCharacters(input);
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     p.parse() catch |err| {
         doc.last_error_offset = @min(p.i, input.len);
@@ -394,36 +394,46 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.root_seen = true;
                 }
             }
-            const idx: IndexInt = if (comptime validate_closing_tags)
-                InvalidIndex
-            else
-                try self.appendElementNodeTo(parent_idx, name_start, name_end);
-
             // Common path: start tag with no attributes.
             if (self.i < self.input.len) {
                 const c0 = self.input[self.i];
                 if (c0 == '>') {
                     self.i += 1;
-                    const element_idx = if (comptime validate_closing_tags)
-                        try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0)
-                    else
-                        idx;
                     self.skipDroppedWhitespaceText();
-                    if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                    if (comptime !validate_closing_tags and !strict_mode) {
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, 0, 0)) return;
+                    }
+                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
+                    if (comptime validate_closing_tags or strict_mode) {
+                        if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                    }
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
                     return;
                 }
 
                 if (c0 == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     self.i += 2;
-                    if (comptime validate_closing_tags) {
-                        _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
-                    }
+                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
                     return;
                 }
             }
 
             const attr_start_idx: IndexInt = @intCast(self.doc.attrs.items.len);
+            if (comptime !strict_mode) {
+                while (scanner.scanSimpleQuotedAttribute(self.input, self.i)) |fast| {
+                    const attr_len = self.doc.attrs.items.len;
+                    if (attr_len == self.doc.attrs.capacity) {
+                        @branchHint(.unlikely);
+                        self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, attr_len +| attr_len / 2 +| @as(usize, 8)) catch return error.OutOfMemory;
+                    }
+                    const attr_out = self.doc.attrs.addOneAssumeCapacity();
+                    attr_out.* = .{
+                        .name = .{ .start = @intCast(fast.name_start), .end = @intCast(fast.name_end) },
+                        .value = .{ .start = @intCast(fast.value_start), .end = @intCast(fast.value_end) },
+                    };
+                    self.i = fast.next;
+                }
+            }
             while (self.i < self.input.len) {
                 const boundary = self.i;
                 self.skipWhitespace();
@@ -444,15 +454,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                     }
                     self.i += 1;
-                    const element_idx = if (comptime validate_closing_tags)
-                        try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len))
-                    else blk: {
-                        self.doc.nodes.items[idx].data.start = attr_start_idx;
-                        self.doc.nodes.items[idx].data.end = @intCast(self.doc.attrs.items.len);
-                        break :blk idx;
-                    };
+                    const attr_end_idx: IndexInt = @intCast(self.doc.attrs.items.len);
                     self.skipDroppedWhitespaceText();
-                    if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                    if (comptime !validate_closing_tags and !strict_mode) {
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx)) return;
+                    }
+                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx);
+                    if (comptime validate_closing_tags or strict_mode) {
+                        if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                    }
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
                     return;
                 }
@@ -471,12 +481,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                     }
                     self.i += 2;
-                    if (comptime validate_closing_tags) {
-                        _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len));
-                    } else {
-                        self.doc.nodes.items[idx].data.start = attr_start_idx;
-                        self.doc.nodes.items[idx].data.end = @intCast(self.doc.attrs.items.len);
-                    }
+                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len));
                     return;
                 }
 
@@ -1017,6 +1022,78 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
         }
 
+        inline fn tryAppendSimpleTextElement(
+            noalias self: *Self,
+            parent_idx: IndexInt,
+            name_start: usize,
+            name_end: usize,
+            attr_start: IndexInt,
+            attr_end: IndexInt,
+        ) ParseError!bool {
+            comptime std.debug.assert(!validate_closing_tags and !strict_mode);
+            const text_start = self.i;
+            if (text_start >= self.input.len or self.input[text_start] == '<') return false;
+
+            const lt = scanner.findTextEnd(self.input, text_start) orelse return false;
+            if (lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
+
+            const name_len = name_end - name_start;
+            const close_start = lt + 2;
+            const close_end = close_start + name_len;
+            if (close_end > self.input.len) return false;
+            const open_key = scanner.prefixKey(self.input[name_start..name_end]);
+            if (scanner.prefixKey(self.input[close_start..close_end]) != open_key) return false;
+            if (name_len > 8 and !std.mem.eql(u8, self.input[name_start + 8 .. name_end], self.input[close_start + 8 .. close_end])) return false;
+
+            var j = close_end;
+            if (j >= self.input.len) return false;
+            if (self.input[j] == '>') {
+                j += 1;
+            } else if (tables.isWhitespace(self.input[j])) {
+                j = scanner.skipWhitespace(self.input, j);
+                if (j >= self.input.len or self.input[j] != '>') return false;
+                j += 1;
+            } else {
+                return false;
+            }
+
+            self.i = j;
+            const raw = self.input[text_start..lt];
+            if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0]) and scanner.skipWhitespace(raw, 0) == raw.len) {
+                _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start, attr_end);
+                return true;
+            }
+
+            const len = self.doc.nodes.items.len;
+            if (self.doc.nodes.capacity - len < 2) {
+                @branchHint(.unlikely);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
+                if (self.doc.nodes.capacity - len < 2) self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + 2) catch return error.OutOfMemory;
+            }
+            const element_idx: IndexInt = @intCast(len);
+            const text_idx: IndexInt = @intCast(len + 1);
+            var parent = &self.doc.nodes.items[parent_idx];
+            const prev_sibling = parent.last_child;
+            const out = self.doc.nodes.addManyAsArrayAssumeCapacity(2);
+            out[0] = .{
+                .kind = .element,
+                .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                .data = .{ .start = attr_start, .end = attr_end },
+                .parent = parent_idx,
+                .last_child = text_idx,
+                .prev_sibling = prev_sibling,
+                .subtree_end = text_idx,
+            };
+            out[1] = .{
+                .kind = .text,
+                .data = .{ .start = @intCast(text_start), .end = @intCast(lt) },
+                .parent = element_idx,
+                .subtree_end = text_idx,
+            };
+            parent.last_child = element_idx;
+            return true;
+        }
+
         inline fn tryFinishSimpleTextElement(
             noalias self: *Self,
             idx: IndexInt,
@@ -1036,7 +1113,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 has_close_bracket = specials.has_close_bracket;
                 has_ampersand = specials.has_ampersand;
                 break :blk specials.lt_index;
-            } else scanner.findByte(self.input, text_start, '<') orelse return false;
+            } else scanner.findTextEnd(self.input, text_start) orelse return false;
             if (lt >= self.input.len or lt == text_start or lt + 2 >= self.input.len or self.input[lt + 1] != '/') return false;
 
             const close_start = lt + 2;

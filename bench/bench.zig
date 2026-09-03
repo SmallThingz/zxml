@@ -13,6 +13,8 @@ pub fn main(init: std.process.Init) !void {
     if (args.items.len == 5 and std.mem.eql(u8, args.items[1], "parse")) {
         const mode: run_parse.DomBenchMode = if (std.mem.eql(u8, args.items[2], "strict"))
             .strict
+        else if (std.mem.eql(u8, args.items[2], "strict-trusted"))
+            .strict_trusted
         else if (std.mem.eql(u8, args.items[2], "turbo"))
             .turbo
         else
@@ -29,7 +31,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     std.debug.print(
-        "usage:\n  {s} <xml-file> <iterations>\n  {s} parse <strict|turbo> <xml-file> <iterations>\n",
+        "usage:\n  {s} <xml-file> <iterations>\n  {s} parse <strict|strict-trusted|turbo> <xml-file> <iterations>\n",
         .{ args.items[0], args.items[0] },
     );
     return error.InvalidArguments;

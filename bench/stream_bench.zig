@@ -13,6 +13,8 @@ pub fn main(init: std.process.Init) !void {
     if (args.items.len != 5 or !std.mem.eql(u8, args.items[1], "parse")) return error.InvalidArguments;
     const mode: run_parse.StreamBenchMode = if (std.mem.eql(u8, args.items[2], "strict"))
         .strict
+    else if (std.mem.eql(u8, args.items[2], "strict-trusted"))
+        .strict_trusted
     else if (std.mem.eql(u8, args.items[2], "turbo"))
         .turbo
     else
