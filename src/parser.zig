@@ -38,7 +38,7 @@ inline fn attributeNameHashLarge(name: []const u8) u64 {
 
 noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(".text.unlikely.zxml") ?usize {
     @branchHint(.cold);
-    if (attrs.len >= 32 and attrs.len <= 4096) {
+    if (attrs.len >= 32 and attrs.len <= 131072) {
         @branchHint(.unlikely);
         if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
         return findDuplicateAttributeLarge(4096, input, attrs);
@@ -79,11 +79,84 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
 
     var slots: [table_capacity]u32 = undefined;
     var occupied = [_]u64{0} ** (table_capacity / 64);
+    const slot_shift: u6 = comptime @intCast(@as(u7, 64) - @as(u7, std.math.log2_int(usize, table_capacity)));
+
+    if (comptime table_capacity == 4096) {
+        if (attrs.len > table_capacity) {
+            const max_partition_bits: u6 = 12;
+            const max_partition_count = @as(usize, 1) << max_partition_bits;
+            const partition_counts = slots[0..max_partition_count];
+            @memset(partition_counts, 0);
+            for (attrs) |attr| {
+                const hash = std.hash.Wyhash.hash(0, attr.name.slice(input));
+                const partition_index: usize = @intCast(
+                    (hash >> @intCast(64 - 12 - max_partition_bits)) & (max_partition_count - 1),
+                );
+                partition_counts[partition_index] += 1;
+            }
+
+            var partition_bits: u6 = 1;
+            partition_select: while (partition_bits <= max_partition_bits) : (partition_bits += 1) {
+                const partition_count = @as(usize, 1) << partition_bits;
+                const max_parts_per_partition = max_partition_count / partition_count;
+                for (0..partition_count) |partition| {
+                    var count: u32 = 0;
+                    const first = partition * max_parts_per_partition;
+                    for (partition_counts[first .. first + max_parts_per_partition]) |part_count| count += part_count;
+                    if (count > table_capacity) continue :partition_select;
+                }
+                break;
+            }
+
+            if (partition_bits <= max_partition_bits) {
+                const partition_count = @as(usize, 1) << partition_bits;
+                const partition_mask = partition_count - 1;
+                for (0..partition_count) |partition| {
+                    @memset(&occupied, 0);
+                    for (attrs, 0..) |attr, attr_index| {
+                        const name = attr.name.slice(input);
+                        const hash = std.hash.Wyhash.hash(0, name);
+                        const partition_index: usize = @intCast(
+                            (hash >> @intCast(64 - 12 - partition_bits)) & partition_mask,
+                        );
+                        if (partition_index != partition) continue;
+
+                        const fingerprint: u32 = @truncate(hash);
+                        var slot_index: usize = @intCast(hash >> slot_shift);
+                        while (true) {
+                            const word_index = slot_index >> 6;
+                            const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
+                            if (occupied[word_index] & bit == 0) {
+                                slots[slot_index] = fingerprint;
+                                occupied[word_index] |= bit;
+                                break;
+                            }
+                            if (slots[slot_index] == fingerprint) {
+                                for (attrs[0..attr_index]) |previous| {
+                                    if (std.mem.eql(u8, previous.name.slice(input), name)) return attr.name.start;
+                                }
+                            }
+                            slot_index = (slot_index + 1) & (table_capacity - 1);
+                        }
+                    }
+                }
+                return null;
+            }
+
+            for (attrs, 0..) |current, i| {
+                const current_name = current.name.slice(input);
+                for (attrs[0..i]) |previous| {
+                    if (std.mem.eql(u8, previous.name.slice(input), current_name)) return current.name.start;
+                }
+            }
+            return null;
+        }
+    }
+
     for (attrs, 0..) |attr, attr_index| {
         const name = attr.name.slice(input);
         const hash = attributeNameHashLarge(name);
         const fingerprint: u32 = @truncate(hash);
-        const slot_shift: u6 = comptime @intCast(@as(u7, 64) - @as(u7, std.math.log2_int(usize, table_capacity)));
         var slot_index: usize = @intCast(hash >> slot_shift);
         while (true) {
             const word_index = slot_index >> 6;

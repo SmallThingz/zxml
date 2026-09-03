@@ -1623,6 +1623,72 @@ test "strict rejects duplicate attribute names" {
     try many.appendSlice(std.testing.allocator, " p2047='duplicate'/>");
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
 
+    // Exercise the partitioned >4096 path at its major boundaries. The
+    // boundary number is the unique attribute count; the final attribute
+    // duplicates the first. Compact fixed-width names keep 4097 and 8193
+    // representable when IndexInt is u16.
+    const overflow_unique_counts = [_]usize{ 4097, 8193, 32769, 65537, 131072 };
+    const base36 = "0123456789abcdefghijklmnopqrstuvwxyz";
+    for (overflow_unique_counts) |unique_count| {
+        const name_width: usize = if (unique_count <= 26 * 36 * 36) 3 else 4;
+        const generated_len = 2 + unique_count * (name_width + 4) + (name_width + 6);
+        if (generated_len > MaxInputLen) continue;
+
+        many.clearRetainingCapacity();
+        try many.appendSlice(std.testing.allocator, "<r");
+        for (0..unique_count) |index| {
+            var name: [4]u8 = undefined;
+            var quotient = index;
+            var pos = name_width;
+            while (pos > 1) {
+                pos -= 1;
+                name[pos] = base36[quotient % base36.len];
+                quotient /= base36.len;
+            }
+            name[0] = @intCast(@as(usize, 'a') + quotient);
+            try many.append(std.testing.allocator, ' ');
+            try many.appendSlice(std.testing.allocator, name[0..name_width]);
+            try many.appendSlice(std.testing.allocator, "=''");
+        }
+        const first_name = [_]u8{ 'a', '0', '0', '0' };
+        try many.append(std.testing.allocator, ' ');
+        try many.appendSlice(std.testing.allocator, first_name[0..name_width]);
+        try many.appendSlice(std.testing.allocator, "=''/>");
+        try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
+    }
+
+    // All 4097 distinct names below have the same length and first eight
+    // bytes, so the pre-V19 large-name hash maps them to the same family.
+    // Full-name Wyhash partitioning must preserve both uniqueness and exact
+    // duplicate detection without relying on that prefix hash.
+    const adversarial_unique_count: usize = 4097;
+    const adversarial_name_len: usize = 11;
+    const adversarial_unique_len = 2 + adversarial_unique_count * (adversarial_name_len + 4) + 2;
+    const adversarial_duplicate_len = adversarial_unique_len - 2 + (adversarial_name_len + 6);
+    if (adversarial_duplicate_len <= MaxInputLen) {
+        many.clearRetainingCapacity();
+        try many.appendSlice(std.testing.allocator, "<r");
+        for (0..adversarial_unique_count) |index| {
+            var suffix: [3]u8 = undefined;
+            var quotient = index;
+            var pos: usize = suffix.len;
+            while (pos > 0) {
+                pos -= 1;
+                suffix[pos] = base36[quotient % base36.len];
+                quotient /= base36.len;
+            }
+            try many.appendSlice(std.testing.allocator, " abcdefgh");
+            try many.appendSlice(std.testing.allocator, &suffix);
+            try many.appendSlice(std.testing.allocator, "=''");
+        }
+        try many.appendSlice(std.testing.allocator, "/>");
+        try strict_doc.parse(many.items, strict_opts);
+
+        many.items.len -= 2;
+        try many.appendSlice(std.testing.allocator, " abcdefgh000=''/>");
+        try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse(many.items, strict_opts));
+    }
+
     const turbo_opts: ParseOptions = .{ .mode = .turbo };
     var turbo_doc = initDoc(turbo_opts);
     defer turbo_doc.deinit();
