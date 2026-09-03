@@ -208,11 +208,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 return .{ .allocator = if (comptime validate_closing_tags or strict_mode) allocator else {} };
             }
 
-            pub fn deinit(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    self.stack.deinit(self.allocator);
-                    self.skip_stack.deinit(self.allocator);
-                }
+            pub inline fn deinit(self: *Self) void {
+                if (comptime validate_closing_tags) self.coldOperation(.deinit, "", "") catch unreachable;
             }
 
             pub fn parse(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!void {
@@ -534,12 +531,143 @@ pub fn Types(comptime options: ParseOptions) type {
                 return input[self.doctype_value_start..self.doctype_value_end];
             }
 
+            const dtd_scratch_prepared_magic: u64 = 0xd7dc_6ca7_a109_4b50;
+            const dtd_scratch_built_magic: u64 = 0xd7dc_6ca7_a109_4b51;
+            const dtd_scratch_unsupported_magic: u64 = 0xd7dc_6ca7_a109_4b52;
+            const ColdOperation = enum { deinit, validate_attribute_references };
+
+            noinline fn coldOperation(self: *const Self, operation: ColdOperation, input: []const u8, value: []const u8) linksection(".zxml_cold") ParseError!void {
+                if (operation == .deinit) {
+                    if (comptime validate_closing_tags) {
+                        const mutable = @constCast(self);
+                        mutable.stack.deinit(mutable.allocator);
+                        mutable.skip_stack.deinit(mutable.allocator);
+                    }
+                    return;
+                }
+                const doctype = self.doctypeValue(input);
+                if (comptime validate_closing_tags) {
+                    if (doctype) |dtd| fast: {
+                        // The scratch table is prepared only by the non-incremental
+                        // DOCTYPE path. Incremental/save-restore parsing therefore
+                        // stays on the established validator without owning cache state.
+                        if (self.offset != 0 or self.stack.items.len != 0 or value.len < 4 or value[0] != '&' or value[value.len - 1] != ';' or
+                            std.mem.indexOfScalarPos(u8, value, 1, '&') != null) break :fast;
+                        const target = value[1 .. value.len - 1];
+                        if (target[0] == '#' or
+                            std.mem.eql(u8, target, "lt") or std.mem.eql(u8, target, "gt") or
+                            std.mem.eql(u8, target, "amp") or std.mem.eql(u8, target, "apos") or
+                            std.mem.eql(u8, target, "quot") or !document.isValidXmlName(target)) break :fast;
+
+                        var scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                        if (scratch.len == 0 or scratch[0].key == dtd_scratch_unsupported_magic) break :fast;
+                        if (scratch[0].key == dtd_scratch_prepared_magic) {
+                            const estimated: usize = scratch[0].name.end;
+                            if (estimated == 0 or estimated + 1 > scratch.len or (estimated & (estimated - 1)) != 0) break :fast;
+
+                            const subset = try document.findInternalSubset(dtd) orelse {
+                                scratch[0].key = dtd_scratch_unsupported_magic;
+                                break :fast;
+                            };
+                            const subset_start = subset.start;
+                            const subset_end = subset.end;
+                            const table = scratch[1 .. estimated + 1];
+                            @memset(table, .{ .name = .{ .start = 0, .end = 0 }, .key = 0 });
+
+                            var p_: usize = subset_start;
+                            var supported = true;
+                            while (p_ < subset_end) {
+                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                                if (p_ == subset_end) break;
+                                if (!std.mem.startsWith(u8, dtd[p_..subset_end], "<!ENTITY")) {
+                                    supported = false;
+                                    break;
+                                }
+                                p_ += "<!ENTITY".len;
+                                if (p_ >= subset_end or !tables.isWhitespace(dtd[p_])) {
+                                    supported = false;
+                                    break;
+                                }
+                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                                if (p_ >= subset_end or dtd[p_] == '%') {
+                                    supported = false;
+                                    break;
+                                }
+                                const name_start = p_;
+                                while (p_ < subset_end and !tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                                if (p_ == name_start or p_ >= subset_end) {
+                                    supported = false;
+                                    break;
+                                }
+                                const name_end = p_;
+                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                                if (p_ >= subset_end or (dtd[p_] != '\'' and dtd[p_] != '"')) {
+                                    supported = false;
+                                    break;
+                                }
+                                const quote = dtd[p_];
+                                const replacement_start = p_ + 1;
+                                const replacement_end = std.mem.indexOfScalarPos(u8, dtd[0..subset_end], replacement_start, quote) orelse {
+                                    supported = false;
+                                    break;
+                                };
+                                if (std.mem.indexOfAny(u8, dtd[replacement_start..replacement_end], "&%<") != null) {
+                                    supported = false;
+                                    break;
+                                }
+                                p_ = replacement_end + 1;
+                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                                if (p_ >= subset_end or dtd[p_] != '>') {
+                                    supported = false;
+                                    break;
+                                }
+                                p_ += 1;
+
+                                const name = dtd[name_start..name_end];
+                                var hash: u64 = 0xcbf2_9ce4_8422_2325;
+                                for (name) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
+                                hash |= 1;
+                                var slot: usize = @intCast(hash & (estimated - 1));
+                                while (table[slot].key != 0) : (slot = (slot + 1) & (estimated - 1)) {
+                                    if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], name)) break;
+                                }
+                                if (table[slot].key == 0) table[slot] = .{
+                                    .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                                    .key = hash,
+                                };
+                            }
+
+                            if (!supported) {
+                                scratch[0] = .{ .name = .{ .start = 0, .end = 0 }, .key = dtd_scratch_unsupported_magic };
+                                break :fast;
+                            }
+                            scratch[0].key = dtd_scratch_built_magic;
+                        }
+
+                        if (scratch[0].key != dtd_scratch_built_magic) break :fast;
+                        scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                        const table_len: usize = scratch[0].name.end;
+                        if (table_len == 0 or table_len + 1 > scratch.len) break :fast;
+                        const table = scratch[1 .. table_len + 1];
+                        var hash: u64 = 0xcbf2_9ce4_8422_2325;
+                        for (target) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
+                        hash |= 1;
+                        var slot: usize = @intCast(hash & (table_len - 1));
+                        const first_slot = slot;
+                        while (table[slot].key != 0) {
+                            if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], target)) return;
+                            slot = (slot + 1) & (table_len - 1);
+                            if (slot == first_slot) break;
+                        }
+                    }
+                }
+                try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.require_declared_entities, null);
+            }
+
             inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
                 const specials = scanner.bytePairPresence(value, '<', '&');
                 if (specials.first) return error.InvalidAttributeValue;
-                if (specials.second) {
-                    try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities, null);
-                }
+                if (specials.second) try self.coldOperation(.validate_attribute_references, input, value);
             }
 
             inline fn validateCharacterDataSpecials(
@@ -995,6 +1123,28 @@ pub fn Types(comptime options: ParseOptions) type {
                             self.require_declared_entities,
                             null,
                         );
+                        if (comptime !incremental and validate_closing_tags) {
+                            // Full-stream parsing may borrow unused element-stack
+                            // capacity for a root-attribute DTD index. Reserve here,
+                            // before the hot opening-tag loop; the table itself is
+                            // built lazily on the first custom attribute reference.
+                            var estimated = @max(@as(usize, 8), (end - value_start) / 8);
+                            estimated = std.math.ceilPowerOfTwo(usize, estimated) catch 0;
+                            if (estimated != 0 and estimated <= std.math.maxInt(IndexInt)) {
+                                try self.stack.ensureTotalCapacity(self.allocator, estimated + 1);
+                                const scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                                scratch[0] = .{
+                                    .name = .{ .start = 0, .end = @intCast(estimated) },
+                                    .key = dtd_scratch_prepared_magic,
+                                };
+                            } else {
+                                const scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                                if (scratch.len != 0) scratch[0] = .{
+                                    .name = .{ .start = 0, .end = 0 },
+                                    .key = dtd_scratch_unsupported_magic,
+                                };
+                            }
+                        }
                         self.doctype_seen = true;
                     }
                     if (include_misc_nodes) {
@@ -2682,6 +2832,83 @@ test "streaming strict enforces declared parsed general entities" {
         defer parser.deinit();
         var ctx: Ctx = .{};
         try parser.parse(source, &ctx, Ctx.onNode);
+    }
+}
+
+test "streaming strict root attribute DTD scratch matches fallback validation" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: Event) bool {
+            return true;
+        }
+    };
+
+    const fast_path_valid = [_][]const u8{
+        "<!DOCTYPE r [<!ENTITY a 'A'><!ENTITY b 'B'><!ENTITY c 'C'>]><r x='&a;' y='&b;' z='&c;'/>",
+        "<!DOCTYPE r SYSTEM 'urn:[literal]' [<!ENTITY a 'A'><!ENTITY b 'B'>]><r x='&a;' y='&b;'/>",
+    };
+    inline for (fast_path_valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            parser.parse("<!DOCTYPE r [<!ENTITY a 'A'>]><r x='&a;' y='&missing;'/>", &ctx, Ctx.onNode),
+        );
+    }
+
+    const fallback_valid = [_][]const u8{
+        "<!DOCTYPE r [<!--unsupported by scratch--><!ENTITY a 'A'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ENTITY b 'B'><!ENTITY a '&b;'>]><r x='&a;'/>",
+        "<!DOCTYPE r [<!ELEMENT r EMPTY><!ENTITY a 'A'>]><r x='&a;'/>",
+    };
+    inline for (fallback_valid) |source| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try parser.parse(source, &ctx, Ctx.onNode);
+    }
+
+    const incremental_source = fast_path_valid[0];
+    for (0..incremental_source.len + 1) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        _ = try parser.parseAvailable(incremental_source[0..split], &ctx, Ctx.onNode);
+        const state = parser.save();
+        parser.restore(state);
+        try std.testing.expect(try parser.parseAvailable(incremental_source, &ctx, Ctx.onNode));
+        try parser.finish();
+    }
+
+    const SkipCtx = struct {
+        fn onNode(_: *@This(), node: Event) bool {
+            return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
+        }
+    };
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: SkipCtx = .{};
+        try parser.parse("<!DOCTYPE r [<!ENTITY a 'A'>]><r><skip x='&a;'/></r>", &ctx, SkipCtx.onNode);
+    }
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: SkipCtx = .{};
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            parser.parse("<!DOCTYPE r [<!ENTITY a 'A'>]><r><skip x='&missing;'/></r>", &ctx, SkipCtx.onNode),
+        );
     }
 }
 

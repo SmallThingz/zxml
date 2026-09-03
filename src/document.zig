@@ -2357,9 +2357,9 @@ fn writeDoubleQuotedAttributeValue(writer: anytype, value: []const u8) !void {
     try writer.writeAll(value[start..]);
 }
 
-const SubsetRange = struct { start: usize, end: usize };
+pub const SubsetRange = struct { start: usize, end: usize };
 
-fn findInternalSubset(input: []const u8) ParseError!?SubsetRange {
+pub fn findInternalSubset(input: []const u8) ParseError!?SubsetRange {
     var i: usize = 0;
     var quote: u8 = 0;
     while (i < input.len) : (i += 1) {
