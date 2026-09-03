@@ -857,6 +857,38 @@ test "strict enforces declared parsed general entities" {
     }
 }
 
+test "strict reuses validated entity references across repeated DOM attributes" {
+    {
+        var parsed = try parseTestDoc(
+            "<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&a;'/>",
+            .{ .mode = .strict },
+        );
+        defer parsed.deinit();
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            doc.parse(
+                "<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&missing;'/>",
+                .{ .mode = .strict },
+            ),
+        );
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidAttributeValue,
+            doc.parse(
+                "<!DOCTYPE r [<!ENTITY a 'ok'><!ENTITY e SYSTEM 'urn:x'>]><r x='&a;' y='&a;' z='&e;'/>",
+                .{ .mode = .strict },
+            ),
+        );
+    }
+}
+
 test "strict repeated custom entity fast path preserves later validation" {
     {
         var parsed = try parseTestDoc(

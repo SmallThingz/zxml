@@ -538,7 +538,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const specials = scanner.bytePairPresence(value, '<', '&');
                 if (specials.first) return error.InvalidAttributeValue;
                 if (specials.second) {
-                    try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities);
+                    try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.require_declared_entities, null);
                 }
             }
 
@@ -1615,7 +1615,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
                 if (specials.first) return error.InvalidAttributeValue;
                 if (specials.second) {
                     if (entity_allocator) |allocator| {
-                        try document.validateXmlAttributeReferencesAlloc(allocator, value, doctype_value, require_declared_entities);
+                        try document.validateXmlAttributeReferencesAlloc(allocator, value, doctype_value, require_declared_entities, null);
                     } else {
                         try document.validateXmlAttributeReferences(value, doctype_value, require_declared_entities);
                     }

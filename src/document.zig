@@ -107,7 +107,7 @@ pub fn validateXmlReferencesAlloc(
     doctype_value: ?[]const u8,
     require_declared_entities: bool,
 ) ParseError!void {
-    return validateXmlReferencesInContextAlloc(allocator, value, allow_trailing_partial, doctype_value, require_declared_entities, .content);
+    return validateXmlReferencesInContextAlloc(allocator, value, allow_trailing_partial, doctype_value, require_declared_entities, .content, null);
 }
 
 pub fn validateXmlAttributeReferencesAlloc(
@@ -115,8 +115,9 @@ pub fn validateXmlAttributeReferencesAlloc(
     value: []const u8,
     doctype_value: ?[]const u8,
     require_declared_entities: bool,
+    previous_validated_value: ?[]const u8,
 ) ParseError!void {
-    return validateXmlReferencesInContextAlloc(allocator, value, false, doctype_value, require_declared_entities, .attribute);
+    return validateXmlReferencesInContextAlloc(allocator, value, false, doctype_value, require_declared_entities, .attribute, previous_validated_value);
 }
 
 const XmlReferenceContext = enum { content, attribute };
@@ -211,6 +212,7 @@ fn validateXmlReferencesInContextAlloc(
     doctype_value: ?[]const u8,
     require_declared_entities: bool,
     context: XmlReferenceContext,
+    previous_validated_value: ?[]const u8,
 ) ParseError!void {
     // Without a DTD, the syntax-only scan is the whole common path for
     // predefined and numeric references. Keep it compact and allocation-free.
@@ -227,6 +229,7 @@ fn validateXmlReferencesInContextAlloc(
         doctype_value.?,
         require_declared_entities,
         context,
+        previous_validated_value,
     );
 }
 
@@ -240,7 +243,11 @@ noinline fn validateXmlReferencesWithDoctypeAlloc(
     doctype_value: []const u8,
     require_declared_entities: bool,
     context: XmlReferenceContext,
+    previous_validated_value: ?[]const u8,
 ) ParseError!void {
+    if (previous_validated_value) |previous| {
+        if (previous.len == value.len and std.mem.eql(u8, previous, value)) return;
+    }
     // Parse reference syntax and validate custom entities in one pass. The old
     // path first scanned every reference for syntax, then rescanned the whole
     // value to validate custom names. Build the DTD catalog lazily on the first

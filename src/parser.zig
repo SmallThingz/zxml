@@ -453,7 +453,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
-                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand, attr_start_idx);
                                 self.i = scan.end + 1;
                             } else if (scanner.findByte(input, value_start, quote)) |quote_pos| {
                                 value_end = quote_pos;
@@ -480,7 +480,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
-                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand, attr_start_idx);
                                 self.i = scan.end + 1;
                             } else if (scanner.findByte(input, self.i, quote)) |quote_pos| {
                                 value_end = quote_pos;
@@ -1006,10 +1006,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        inline fn validateAttributeValueSpecials(self: *const Self, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
+        inline fn validateAttributeValueSpecials(self: *const Self, value: []const u8, has_lt: bool, has_ampersand: bool, attr_start_idx: IndexInt) ParseError!void {
             if (has_lt) return error.InvalidAttributeValue;
             if (has_ampersand) {
-                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities);
+                const attr_start: usize = attr_start_idx;
+                const previous = if (self.doc.attrs.items.len > attr_start)
+                    self.doc.attrs.items[self.doc.attrs.items.len - 1].value.slice(self.input)
+                else
+                    null;
+                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities, previous);
             }
         }
 
