@@ -1978,6 +1978,43 @@ fn scanValidatedAttributeTokenEnormous(input: []const u8, start: usize, end: usi
     }
     return scanValidatedAttributeToken(input, start, end);
 }
+// Clone the enormous scanner again for the saturation rescan. Keeping a
+// single source-level call site per scanner prevents LLVM from outlining the
+// shared scanner back into ordinary .text.
+fn scanValidatedAttributeTokenBeyondEnormous(input: []const u8, start: usize, end: usize) ParseError!?ValidatedAttrToken {
+    if (start >= end) return null;
+    if (input[start] == ' ' and start + 4 < end) {
+        const name_start = start + 1;
+        var name_end: usize = undefined;
+        if (name_start + 4 < end and input[name_start + 4] == '=') {
+            name_end = name_start + 4;
+        } else if (name_start + 5 < end and input[name_start + 5] == '=') {
+            name_end = name_start + 5;
+        } else if (input[name_start + 3] == '=') {
+            name_end = name_start + 3;
+        } else if (input[name_start + 2] == '=') {
+            name_end = name_start + 2;
+        } else if (input[name_start + 1] == '=') {
+            name_end = name_start + 1;
+        } else {
+            return scanValidatedAttributeToken(input, start, end);
+        }
+        const quote = input[name_end + 1];
+        if (quote == '\'' or quote == '"') {
+            const value_start = name_end + 2;
+            if (value_start + 4 < end) {
+                if (input[value_start + 3] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 4 };
+                if (input[value_start + 4] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 5 };
+                if (input[value_start + 2] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 3 };
+                if (input[value_start + 1] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 2 };
+                if (input[value_start] == quote) return .{ .name_start = name_start, .name_end = name_end, .next = value_start + 1 };
+            }
+            const quote_pos = scanner.findByte(input[0..end], value_start, quote) orelse unreachable;
+            return .{ .name_start = name_start, .name_end = name_end, .next = quote_pos + 1 };
+        }
+    }
+    return scanValidatedAttributeToken(input, start, end);
+}
 
 const attribute_filter_collision = @as(u64, 1) << 63;
 
@@ -2375,7 +2412,56 @@ noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize,
     var seen_count: usize = 0;
     var i = start;
     while (try scanValidatedAttributeTokenEnormous(input, i, end)) |current| {
-        if (seen_count == table_capacity) return validateUniqueAttributesQuadratic(input, start, end);
+        if (seen_count == table_capacity) {
+            var partition_bits: u6 = 1;
+            partition_retry: while (partition_bits <= 3) : (partition_bits += 1) {
+                const partition_count = @as(usize, 1) << partition_bits;
+                const partition_mask = partition_count - 1;
+                for (0..partition_count) |partition| {
+                    @memset(&occupied, 0);
+                    seen_count = 0;
+                    i = start;
+                    while (try scanValidatedAttributeTokenBeyondEnormous(input, i, end)) |partition_current| {
+                        i = partition_current.next;
+                        const partition_name = input[partition_current.name_start..partition_current.name_end];
+                        const partition_hash = attributeNameHashMassive(partition_name);
+                        const partition_index: usize = @intCast(
+                            (partition_hash >> @intCast(64 - 15 - partition_bits)) & partition_mask,
+                        );
+                        if (partition_index != partition) continue;
+                        if (seen_count == table_capacity) continue :partition_retry;
+
+                        var partition_slot: usize = @intCast(partition_hash >> (64 - 15));
+                        while (true) {
+                            const word_index = partition_slot >> 6;
+                            const bit_index: u6 = @intCast(partition_slot & 63);
+                            const bit = @as(u64, 1) << bit_index;
+                            if (occupied[word_index] & bit == 0) {
+                                hashes[partition_slot] = partition_hash;
+                                starts[partition_slot] = @intCast(partition_current.name_start - start);
+                                occupied[word_index] |= bit;
+                                break;
+                            }
+
+                            if (hashes[partition_slot] == partition_hash) {
+                                const previous_start = start + starts[partition_slot];
+                                const previous_end = previous_start + partition_name.len;
+                                if (previous_end < input.len and
+                                    !tables.NameCharTable[input[previous_end]] and
+                                    std.mem.eql(u8, input[previous_start..previous_end], partition_name))
+                                {
+                                    return error.DuplicateAttribute;
+                                }
+                            }
+                            partition_slot = (partition_slot + 1) & (table_capacity - 1);
+                        }
+                        seen_count += 1;
+                    }
+                }
+                return;
+            }
+            return validateUniqueAttributesQuadratic(input, start, end);
+        }
 
         const current_name = input[current.name_start..current.name_end];
         const hash = attributeNameHashMassive(current_name);
@@ -4058,6 +4144,51 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     }
     try validateUniqueAttributesRawEnormous(many.items, 0, many.items.len);
     try many.appendSlice(std.testing.allocator, " mdc='duplicate'");
+    try std.testing.expectError(error.DuplicateAttribute, validateUniqueAttributesRawEnormous(many.items, 0, many.items.len));
+
+    // Cross the 32768-slot table boundary into the two-way partitioned rescan.
+    // Keep both unique parsing and a duplicate of the final original name exact.
+    many.clearRetainingCapacity();
+    for (0..32769) |index| {
+        const a: u8 = @intCast((index / (26 * 26 * 26 * 26)) % 26);
+        const b: u8 = @intCast((index / (26 * 26 * 26)) % 26);
+        const c: u8 = @intCast((index / (26 * 26)) % 26);
+        const d: u8 = @intCast((index / 26) % 26);
+        const e: u8 = @intCast(index % 26);
+        try many.print(std.testing.allocator, " {c}{c}{c}{c}{c}=''", .{ 'a' + a, 'a' + b, 'a' + c, 'a' + d, 'a' + e });
+    }
+    try validateUniqueAttributesRawEnormous(many.items, 0, many.items.len);
+    try many.appendSlice(std.testing.allocator, " abwmi='duplicate'");
+    try std.testing.expectError(error.DuplicateAttribute, validateUniqueAttributesRawEnormous(many.items, 0, many.items.len));
+
+    // 65537 names necessarily overflow a two-way partition. The validator
+    // retries with four partitions before considering the quadratic fallback.
+    many.clearRetainingCapacity();
+    for (0..65537) |index| {
+        const a: u8 = @intCast((index / (26 * 26 * 26 * 26)) % 26);
+        const b: u8 = @intCast((index / (26 * 26 * 26)) % 26);
+        const c: u8 = @intCast((index / (26 * 26)) % 26);
+        const d: u8 = @intCast((index / 26) % 26);
+        const e: u8 = @intCast(index % 26);
+        try many.print(std.testing.allocator, " {c}{c}{c}{c}{c}=''", .{ 'a' + a, 'a' + b, 'a' + c, 'a' + d, 'a' + e });
+    }
+    try validateUniqueAttributesRawEnormous(many.items, 0, many.items.len);
+    try many.appendSlice(std.testing.allocator, " adsyq='duplicate'");
+    try std.testing.expectError(error.DuplicateAttribute, validateUniqueAttributesRawEnormous(many.items, 0, many.items.len));
+
+    // A four-way partition can still overflow from normal hash imbalance near
+    // 131072 names. The final eight-way retry keeps that case linear and exact.
+    many.clearRetainingCapacity();
+    for (0..131072) |index| {
+        const a: u8 = @intCast((index / (26 * 26 * 26 * 26)) % 26);
+        const b: u8 = @intCast((index / (26 * 26 * 26)) % 26);
+        const c: u8 = @intCast((index / (26 * 26)) % 26);
+        const d: u8 = @intCast((index / 26) % 26);
+        const e: u8 = @intCast(index % 26);
+        try many.print(std.testing.allocator, " {c}{c}{c}{c}{c}=''", .{ 'a' + a, 'a' + b, 'a' + c, 'a' + d, 'a' + e });
+    }
+    try validateUniqueAttributesRawEnormous(many.items, 0, many.items.len);
+    try many.appendSlice(std.testing.allocator, " ahlxf='duplicate'");
     try std.testing.expectError(error.DuplicateAttribute, validateUniqueAttributesRawEnormous(many.items, 0, many.items.len));
 
     ctx.skip_root = true;
