@@ -34,7 +34,13 @@ jobs:
         run: zig build test
 
       - name: Benchmark smoke
-        run: zig build bench
+        shell: bash
+        run: |
+          zig build bench-only -Doptimize=ReleaseFast
+          for mode in strict strict-trusted turbo; do
+            ./zig-out/bin/zxml-bench parse "$mode" bench/smoke.xml 1 >/dev/null
+            ./zig-out/bin/zxml-stream-bench parse "$mode" bench/smoke.xml 1 >/dev/null
+          done
 
       - name: Conformance
         run: zig build conformance
