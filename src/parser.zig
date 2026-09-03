@@ -359,10 +359,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const c = self.input[self.i];
                 if (c == '>') {
                     if (comptime strict_mode) {
+                        const input = self.input;
+                        try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
                         const attr_end_idx = self.doc.attrs.items.len;
                         const attr_start_usize: usize = attr_start_idx;
                         if (attr_end_idx - attr_start_usize > 2) {
-                            if (findDuplicateAttribute(self.input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                            if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
                                 self.i = duplicate_start;
                                 return error.DuplicateAttribute;
                             }
@@ -384,10 +386,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (c == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     if (comptime strict_mode) {
+                        const input = self.input;
+                        try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
                         const attr_end_idx = self.doc.attrs.items.len;
                         const attr_start_usize: usize = attr_start_idx;
                         if (attr_end_idx - attr_start_usize > 2) {
-                            if (findDuplicateAttribute(self.input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                            if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
                                 self.i = duplicate_start;
                                 return error.DuplicateAttribute;
                             }
@@ -763,7 +767,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         self.doc.allocator,
                         self.input[value_start..value_end],
                         self.require_declared_entities,
+                        null,
                     );
+                    self.standalone_yes = false;
                 }
                 self.i = j + 1;
 
@@ -1007,9 +1013,34 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        inline fn validateAttributeValueSpecials(self: *const Self, value: []const u8, has_lt: bool, has_ampersand: bool, attr_start_idx: IndexInt) ParseError!void {
+        inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start_idx: IndexInt) ParseError!void {
+            if (comptime !strict_mode or expand_dtd_entities) return;
+            if (self.doctype_seen and self.standalone_yes) {
+                @branchHint(.cold);
+                const start: usize = attr_start_idx;
+                const validation: document.DtdAttributeValidation = .{
+                    .input = input,
+                    .attributes = self.doc.attrs.items[start..],
+                };
+                try document.validateDoctypeEntityConstraintsAlloc(
+                    self.doc.allocator,
+                    input[self.doctype_value_start..self.doctype_value_end],
+                    self.require_declared_entities,
+                    &validation,
+                );
+                self.standalone_yes = false;
+            }
+        }
+
+        inline fn validateAttributeValueSpecials(self: *Self, value: []const u8, has_lt: bool, has_ampersand: bool, attr_start_idx: IndexInt) ParseError!void {
             if (has_lt) return error.InvalidAttributeValue;
             if (has_ampersand) {
+                if (comptime !expand_dtd_entities) {
+                    if (self.doctype_seen) {
+                        self.standalone_yes = true;
+                        return;
+                    }
+                }
                 const attr_start: usize = attr_start_idx;
                 const previous = if (self.doc.attrs.items.len > attr_start)
                     self.doc.attrs.items[self.doc.attrs.items.len - 1].value.slice(self.input)

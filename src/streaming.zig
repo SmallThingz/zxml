@@ -993,6 +993,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             self.allocator,
                             input[value_start..end],
                             self.require_declared_entities,
+                            null,
                         );
                         self.doctype_seen = true;
                     }
@@ -2643,6 +2644,7 @@ test "streaming strict enforces declared parsed general entities" {
 
     const invalid_entities = [_][]const u8{
         "<r>&custom;</r>",
+        "<!DOCTYPE r><r a='&missing;'/>",
         "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>",
         "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>",
         "<!DOCTYPE r><r><skip><x a='&custom;'/></skip></r>",
@@ -2653,6 +2655,13 @@ test "streaming strict enforces declared parsed general entities" {
         defer parser.deinit();
         var ctx: Ctx = .{};
         try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source, &ctx, Ctx.onNode));
+    }
+
+    {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.UnterminatedEntity, parser.parse("<!DOCTYPE r><r a='&amp'/>", &ctx, Ctx.onNode));
     }
 
     {

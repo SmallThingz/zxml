@@ -997,19 +997,62 @@ pub fn validateDoctype(value: []const u8) ParseError!DoctypeInfo {
 /// Enforces entity-reference well-formedness constraints whose meaning depends
 /// on declaration order. `validateDoctypeAlloc` must have accepted the grammar
 /// first, so this pass can stay small and sequential.
+pub const DtdAttributeValidation = struct {
+    input: []const u8,
+    attributes: []const RawAttribute,
+};
+
 pub fn validateDoctypeEntityConstraintsAlloc(
     allocator: std.mem.Allocator,
     value: []const u8,
     require_declared_entities: bool,
+    attribute_validation: ?*const DtdAttributeValidation,
 ) ParseError!void {
-    const subset_range = try findInternalSubset(value) orelse return;
+    const subset_range = try findInternalSubset(value) orelse {
+        if (attribute_validation) |validation| {
+            for (validation.attributes) |attr| {
+                const raw = attr.value.slice(validation.input);
+                if (try validateXmlReferenceSyntax(raw, false) and require_declared_entities) {
+                    return error.InvalidNumericCharacterEntity;
+                }
+            }
+        }
+        return;
+    };
     const subset = value[subset_range.start..subset_range.end];
 
     var catalog = GeneralEntityCatalog.init(allocator);
     defer catalog.deinit();
+
+    if (attribute_validation) |validation| {
+        const attrs = validation.attributes;
+        var catalog_iterator = try ExpandedDtdIterator.init(allocator, subset, false);
+        defer catalog_iterator.deinit();
+        while (try catalog_iterator.next()) |decl| {
+            if (decl.kind == .entity) try addGeneralEntityDeclarationBody(&catalog, decl.body);
+        }
+
+        var frames = std.ArrayList(EntityValidationFrame).empty;
+        defer frames.deinit(allocator);
+        const input = validation.input;
+        for (attrs) |attr| {
+            const raw = attr.value.slice(input);
+            if (!try validateXmlReferenceSyntax(raw, false)) continue;
+            var search_from: usize = 0;
+            while (std.mem.indexOfScalarPos(u8, raw, search_from, '&')) |amp| {
+                const semi = std.mem.indexOfScalarPos(u8, raw, amp + 1, ';').?;
+                const body = raw[amp + 1 .. semi];
+                if (body[0] != '#' and !isPredefinedEntityName(body)) {
+                    try validateGeneralEntityUse(&catalog, &catalog_iterator.states, &frames, body, require_declared_entities, .attribute);
+                }
+                search_from = semi + 1;
+            }
+        }
+        return;
+    }
+
     var iterator = try ExpandedDtdIterator.init(allocator, subset, require_declared_entities);
     defer iterator.deinit();
-
     while (try iterator.next()) |decl| switch (decl.kind) {
         .entity => try addGeneralEntityDeclarationBody(&catalog, decl.body),
         .attlist => try validateAttlistEntityConstraints(allocator, &catalog, decl.body, require_declared_entities),

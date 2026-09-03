@@ -831,6 +831,18 @@ test "strict enforces declared parsed general entities" {
     {
         var doc = initDoc(.{});
         defer doc.deinit();
+        try std.testing.expectError(
+            error.InvalidNumericCharacterEntity,
+            doc.parse("<!DOCTYPE r><r a='&missing;'/>", .{ .mode = .strict }),
+        );
+        try std.testing.expectError(
+            error.UnterminatedEntity,
+            doc.parse("<!DOCTYPE r><r a='&amp'/>", .{ .mode = .strict }),
+        );
+    }
+    {
+        var doc = initDoc(.{});
+        defer doc.deinit();
         try doc.parse("<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>", .{ .mode = .strict });
     }
     {
