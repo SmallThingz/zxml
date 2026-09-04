@@ -693,6 +693,108 @@ test "quoted attributes tolerate whitespace around the equals sign" {
     try std.testing.expectEqualStrings("4", root.getAttributeValueRaw("d").?);
 }
 
+test "strict attribute grammar covers XML whitespace and quoted value boundaries" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    const valid = [_]struct { source: []const u8, b: ?[]const u8 = null }{
+        .{ .source = "<r a='1'/>" },
+        .{ .source = "<r\ta='1'/>" },
+        .{ .source = "<r\na='1'/>" },
+        .{ .source = "<r\ra='1'/>" },
+        .{ .source = "<r  a='1'/>" },
+        .{ .source = "<r a \t=\r\n '1'/>" },
+        .{ .source = "<r a='1'\tb='2'/>", .b = "2" },
+        .{ .source = "<r a='1'\nb='2'/>", .b = "2" },
+        .{ .source = "<r a='1'\rb='2'/>", .b = "2" },
+        .{ .source = "<r a='1'   b='2'/>", .b = "2" },
+        .{ .source = "<r a='1' \n\t b = \"2\"/>", .b = "2" },
+    };
+    for (valid) |case| {
+        try doc.parse(case.source, opts);
+        const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult);
+        if (case.b) |expected| try std.testing.expectEqualStrings(expected, root.getAttributeValueRaw("b") orelse return error.TestUnexpectedResult);
+    }
+
+    var source = std.ArrayList(u8).empty;
+    defer source.deinit(std.testing.allocator);
+    const lengths = [_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 15, 16, 31, 32, 33, 63, 64, 65, 127, 128, 129 };
+    for (lengths) |len| {
+        inline for (.{ '\'', '"' }) |quote| {
+            source.clearRetainingCapacity();
+            try source.appendSlice(std.testing.allocator, "<r a=");
+            try source.append(std.testing.allocator, quote);
+            for (0..len) |_| try source.append(std.testing.allocator, 'x');
+            try source.append(std.testing.allocator, quote);
+            try source.appendSlice(std.testing.allocator, "/>");
+            try doc.parse(source.items, opts);
+            const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+            const raw = root.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(len, raw.len);
+            for (raw) |byte| try std.testing.expectEqual(@as(u8, 'x'), byte);
+        }
+    }
+
+    const invalid = [_]struct { source: []const u8, err: ParseError }{
+        .{ .source = "<r a '1'/>", .err = error.ExpectedEq },
+        .{ .source = "<r a=1/>", .err = error.ExpectedQuote },
+        .{ .source = "<r a='x' b/>", .err = error.ExpectedEq },
+        .{ .source = "<r a='x' b =/>", .err = error.ExpectedQuote },
+        .{ .source = "<r a='x' b='y'c='z'/>", .err = error.ExpectedAttributeName },
+        .{ .source = "<r a='x<y'/>", .err = error.InvalidAttributeValue },
+        .{ .source = "<r a='&amp'/>", .err = error.UnterminatedEntity },
+        .{ .source = "<r a='&bogus;'/>", .err = error.InvalidNumericCharacterEntity },
+    };
+    for (invalid) |case| try std.testing.expectError(case.err, doc.parse(case.source, opts));
+
+    // A failure must not leave attribute spans or parser scratch visible to the next parse.
+    try doc.parse("<ok a='fresh' b='state'/>", opts);
+    const recovered = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("fresh", recovered.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult);
+    try std.testing.expectEqualStrings("state", recovered.getAttributeValueRaw("b") orelse return error.TestUnexpectedResult);
+}
+
+test "strict duplicate attributes cover short long Unicode and dispatch boundaries" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    const duplicate_pairs = [_][]const u8{
+        "<r a='1' a='2'/>",
+        "<r z='1' z='2'></r>",
+        "<r abcdefghi='1' abcdefghi='2'/>",
+        "<r ns:item='1' ns:item='2'/>",
+        "<r é='1' é='2'/>",
+    };
+    for (duplicate_pairs) |source_text| try std.testing.expectError(error.DuplicateAttribute, doc.parse(source_text, opts));
+
+    const distinct_pairs = [_][]const u8{
+        "<r A='1' a='2'/>",
+        "<r abcdefghi='1' abcdefghj='2'/>",
+        "<r ns:item='1' ns:Item='2'/>",
+        "<r é='1' É='2'/>",
+    };
+    for (distinct_pairs) |source_text| try doc.parse(source_text, opts);
+
+    var many = std.ArrayList(u8).empty;
+    defer many.deinit(std.testing.allocator);
+    const counts = [_]usize{ 3, 31, 32, 33, 95, 96, 97 };
+    for (counts) |count| {
+        many.clearRetainingCapacity();
+        try many.appendSlice(std.testing.allocator, "<r");
+        for (0..count) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
+        try many.appendSlice(std.testing.allocator, "/>");
+        try doc.parse(many.items, opts);
+
+        many.items.len -= 2;
+        const duplicate_index = count / 2;
+        try many.print(std.testing.allocator, " a{d}='duplicate'/>", .{duplicate_index});
+        try std.testing.expectError(error.DuplicateAttribute, doc.parse(many.items, opts));
+    }
+}
+
 test "namespace-like element and attribute names parse" {
     var parsed = try parseTestDoc("<ns:root xml:lang='en'><ns:item data.id='7'/></ns:root>", .{});
     defer parsed.deinit();

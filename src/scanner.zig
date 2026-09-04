@@ -695,6 +695,62 @@ test "strict fused scanners match scalar references across vector boundaries" {
     }
 }
 
+test "name whitespace and unquoted scanners match scalar references across boundaries" {
+    const Ref = struct {
+        fn name(input: []const u8, start: usize) NameEndScan {
+            var i = start;
+            var high_bits: u8 = 0;
+            while (i < input.len and tables.NameCharTable[input[i]]) : (i += 1) high_bits |= input[i];
+            return .{ .end = i, .needs_unicode_validation = (high_bits & 0x80) != 0 };
+        }
+        fn whitespace(input: []const u8, start: usize) usize {
+            var i = start;
+            while (i < input.len and tables.WhitespaceTable[input[i]]) : (i += 1) {}
+            return i;
+        }
+        fn unquoted(input: []const u8, start: usize) usize {
+            var i = start;
+            while (i < input.len and tables.AttrUnquotedValueCharTable[input[i]]) : (i += 1) {}
+            return i;
+        }
+    };
+
+    const alphabet = [_]u8{ 'a', 'Z', '0', '_', ':', '-', '.', ' ', '\t', '\n', '\r', '/', '>', '=', '\'', '"', '&', '<', 0xC3, 0xA9 };
+    var input: [193]u8 = undefined;
+    for (0..input.len) |i| input[i] = alphabet[(i * 17 + 5) % alphabet.len];
+
+    const starts = [_]usize{ 0, 1, 2, 7, 8, 9, 15, 31, 32, 33, 63, 64, 65 };
+    for (0..input.len + 1) |len| {
+        const slice = input[0..len];
+        for (starts) |start| {
+            if (start > len) continue;
+            const expected_name = Ref.name(slice, start);
+            const actual_name = scanNameEnd(slice, start);
+            try std.testing.expectEqual(expected_name.end, actual_name.end);
+            try std.testing.expectEqual(expected_name.needs_unicode_validation, actual_name.needs_unicode_validation);
+            try std.testing.expectEqual(expected_name.end, findNameEnd(slice, start));
+
+            const keyed = scanNameAndKey(slice, start);
+            try std.testing.expectEqual(expected_name.end, keyed.end);
+            try std.testing.expectEqual(expected_name.needs_unicode_validation, keyed.needs_unicode_validation);
+            try std.testing.expectEqual(prefixKey(slice[start..expected_name.end]), keyed.key);
+
+            if (start < len and tables.NameCharTable[slice[start]]) {
+                const after = scanNameEndAfterStart(slice, start);
+                try std.testing.expectEqual(expected_name.end, after.end);
+                try std.testing.expectEqual(expected_name.needs_unicode_validation, after.needs_unicode_validation);
+                const keyed_after = scanNameAndKeyAfterStart(slice, start);
+                try std.testing.expectEqual(expected_name.end, keyed_after.end);
+                try std.testing.expectEqual(expected_name.needs_unicode_validation, keyed_after.needs_unicode_validation);
+                try std.testing.expectEqual(prefixKey(slice[start..expected_name.end]), keyed_after.key);
+            }
+
+            try std.testing.expectEqual(Ref.whitespace(slice, start), skipWhitespace(slice, start));
+            try std.testing.expectEqual(Ref.unquoted(slice, start), findAttrUnquotedEnd(slice, start));
+        }
+    }
+}
+
 test "bytePairPresence finds either sentinel in short and vector-sized inputs" {
     const none = bytePairPresence("alpha123", '<', '&');
     try std.testing.expect(!none.first);

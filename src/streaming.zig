@@ -3860,12 +3860,13 @@ test "streaming cumulative strict parsing rejects malformed tokens at every spli
         }
     };
     const cases = [_][]const u8{
-        "<r>",           "<r></x>",         "<r></ r>",           "<r></r x>",         "<r a=1/>",                          "<r a='x<y'/>",
-        "<r>&#X41;</r>", "<r>&#0;</r>",     "<r>&#xD800;</r>",    "<r>&#x110000;</r>", "<r>&;</r>",                         "<r>&1x;</r>",
-        "<r>&amp</r>",   "<r a='&#0;'/>",   "<r a='&#X41;'/>",    "<r a='&1x;'/>",     "<r a='&amp'/>",                     "<r a='a&b'/>",
-        "<r a='x>",      "<r a='x'b='y'/>", "<r><!--a--b--></r>", "<r><!--a---></r>",  "<r>a]]>b</r>",                      "<? ?>",
-        "<?XML x?>",     "<r><? ?></r>",    "<r><?XML x?></r>",   "<!doctype r><r/>",  "<!DOCTYPE r [<!ELEMENT r ANY><r/>", "<r><!foo</r>",
-        "<r><x/",        "<r><x a='1'",     "<r><![CDATA[x</r>",  "<r><!--x</r>",      "<r><?pi x</r>",                     "<",
+        "<r>",                               "<r></x>",         "<r></ r>",         "<r></r x>",              "<r a=1/>",           "<r a='x<y'/>",
+        "<r>&#X41;</r>",                     "<r>&#0;</r>",     "<r>&#xD800;</r>",  "<r>&#x110000;</r>",      "<r>&;</r>",          "<r>&1x;</r>",
+        "<r>&amp</r>",                       "<r a='&#0;'/>",   "<r a='&#X41;'/>",  "<r a='&1x;'/>",          "<r a='&amp'/>",      "<r a='a&b'/>",
+        "<r a='x>",                          "<r a='x'b='y'/>", "<r a='1' a='2'/>", "<r a='1' b='2' a='3'/>", "<r><!--a--b--></r>", "<r><!--a---></r>",
+        "<r>a]]>b</r>",                      "<? ?>",           "<?XML x?>",        "<r><? ?></r>",           "<r><?XML x?></r>",   "<!doctype r><r/>",
+        "<!DOCTYPE r [<!ELEMENT r ANY><r/>", "<r><!foo</r>",    "<r><x/",           "<r><x a='1'",            "<r><![CDATA[x</r>",  "<r><!--x</r>",
+        "<r><?pi x</r>",                     "<",
     };
 
     for (cases) |source| {
