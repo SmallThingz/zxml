@@ -46,7 +46,11 @@ Benchmarks build the full DOM, including declaration/comment/CDATA/PI/doctype
 nodes. The benchmark workflow follows zhtml. zxml keeps input/setup outside the timed
 region and repeatedly resets the same logical `Document`, retaining its internal
 node/attribute capacity between parses; streaming likewise reuses its parser
-state. External runners use their native repeat-parse lifecycle.
+state. External runners use their native repeat-parse lifecycle. zxml runners are
+built with `ReleaseFast -Dcpu=native`; C++ runners use `-O3 -DNDEBUG -march=native`.
+The harness uses a system `c++` driver when available and falls back to `zig c++`
+on minimal hosts. Each generated report records the kernel, architecture, CPU model,
+frequency-scaling state, advertised CPU MHz range, Zig version, and C++ driver.
 
 Fixture setup rejects extremely opaque feeds. `synthetic_long_text.xml` remains
 a generated diagnostic-only fixture and is excluded from quick/stable profiles.

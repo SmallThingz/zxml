@@ -69,6 +69,32 @@ const Profile = struct {
     fixtures: []const FixtureCase,
 };
 
+const BenchmarkEnvironment = struct {
+    os: []const u8,
+    architecture: []const u8,
+    cpu_model: []const u8,
+    cpu_scaling: []const u8,
+    cpu_min_mhz: []const u8,
+    cpu_max_mhz: []const u8,
+    zig_version: []const u8,
+    cxx_driver: []const u8,
+
+    fn deinit(self: BenchmarkEnvironment, alloc: std.mem.Allocator) void {
+        inline for (std.meta.fields(BenchmarkEnvironment)) |field| {
+            alloc.free(@field(self, field.name));
+        }
+    }
+};
+
+const LscpuEntry = struct {
+    field: []const u8,
+    data: []const u8,
+};
+
+const LscpuOutput = struct {
+    lscpu: []const LscpuEntry,
+};
+
 const smoke_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_two_attr.xml", .iterations = 1, .is_real = false },
 };
@@ -313,7 +339,15 @@ fn setupParsers(io: std.Io, alloc: std.mem.Allocator) !void {
             };
             try common.runInherit(io, alloc, &curl, REPO_ROOT);
             const unzip = [_][]const u8{ "unzip", "-oq", zip_path, "-d", rapid_tmp };
-            try common.runInherit(io, alloc, &unzip, REPO_ROOT);
+            common.runInherit(io, alloc, &unzip, REPO_ROOT) catch |err| switch (err) {
+                error.FileNotFound => {
+                    // Minimal Linux images may omit Info-ZIP while still shipping
+                    // libarchive. Keep benchmark setup self-contained there.
+                    const bsdtar = [_][]const u8{ "bsdtar", "-xf", zip_path, "-C", rapid_tmp };
+                    try common.runInherit(io, alloc, &bsdtar, REPO_ROOT);
+                },
+                else => return err,
+            };
             if (!try allFilesExistUnder(io, alloc, rapid_cached_src, &rapidxml_files)) {
                 return error.IncompleteExternalParser;
             }
@@ -753,6 +787,23 @@ fn runInheritWithBenchTmp(io: std.Io, alloc: std.mem.Allocator, argv: []const []
     try common.runInherit(io, alloc, with_env.items, cwd);
 }
 
+fn commandAvailable(io: std.Io, alloc: std.mem.Allocator, name: []const u8) bool {
+    const argv = [_][]const u8{ name, "--version" };
+    const out = common.runCaptureStdout(io, alloc, &argv, REPO_ROOT) catch return false;
+    alloc.free(out);
+    return true;
+}
+
+fn appendCxxPrefix(io: std.Io, alloc: std.mem.Allocator, argv: *std.ArrayList([]const u8)) !void {
+    if (commandAvailable(io, alloc, "c++")) {
+        try argv.append(alloc, "c++");
+    } else {
+        // Zig ships a Clang C++ driver, so the benchmark suite does not need a
+        // separately installed system compiler on minimal hosts.
+        try argv.appendSlice(alloc, &.{ "zig", "c++" });
+    }
+}
+
 fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     try common.ensureDir(io, BUILD_DIR);
     try common.ensureDir(io, BIN_DIR);
@@ -763,38 +814,23 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     const zig_build = [_][]const u8{ "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
-    const pugixml_cc = [_][]const u8{
-        "c++",
-        "-O3",
-        "-DNDEBUG",
-        "-march=native",
-        "-std=c++17",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        "bench/runners/pugixml_runner.cpp",
-        "bench/parsers/pugixml/src/pugixml.cpp",
-        "-Ibench/parsers/pugixml/src",
-        "-o",
-        "bench/build/bin/pugixml_runner",
-    };
-    try runInheritWithBenchTmp(io, alloc, &pugixml_cc, REPO_ROOT);
+    var pugixml_cc = std.ArrayList([]const u8).empty;
+    defer pugixml_cc.deinit(alloc);
+    try appendCxxPrefix(io, alloc, &pugixml_cc);
+    try pugixml_cc.appendSlice(alloc, &.{
+        "-O3",                              "-DNDEBUG",                              "-march=native",               "-std=c++17", "-Wall",                          "-Wextra", "-Werror",
+        "bench/runners/pugixml_runner.cpp", "bench/parsers/pugixml/src/pugixml.cpp", "-Ibench/parsers/pugixml/src", "-o",         "bench/build/bin/pugixml_runner",
+    });
+    try runInheritWithBenchTmp(io, alloc, pugixml_cc.items, REPO_ROOT);
 
-    const rapidxml_cc = [_][]const u8{
-        "c++",
-        "-O3",
-        "-DNDEBUG",
-        "-march=native",
-        "-std=c++17",
-        "-Wall",
-        "-Wextra",
-        "-Werror",
-        "bench/runners/rapidxml_runner.cpp",
-        "-Ibench/parsers/rapidxml",
-        "-o",
-        "bench/build/bin/rapidxml_runner",
-    };
-    try runInheritWithBenchTmp(io, alloc, &rapidxml_cc, REPO_ROOT);
+    var rapidxml_cc = std.ArrayList([]const u8).empty;
+    defer rapidxml_cc.deinit(alloc);
+    try appendCxxPrefix(io, alloc, &rapidxml_cc);
+    try rapidxml_cc.appendSlice(alloc, &.{
+        "-O3",                               "-DNDEBUG",                 "-march=native", "-std=c++17",                      "-Wall", "-Wextra", "-Werror",
+        "bench/runners/rapidxml_runner.cpp", "-Ibench/parsers/rapidxml", "-o",            "bench/build/bin/rapidxml_runner",
+    });
+    try runInheritWithBenchTmp(io, alloc, rapidxml_cc.items, REPO_ROOT);
 }
 
 fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, iterations: usize) !u64 {
@@ -1139,6 +1175,84 @@ test "evaluateGateRows records best external parser" {
     try std.testing.expect(gates[0].pass);
 }
 
+fn lscpuField(entries: []const LscpuEntry, name: []const u8) ?[]const u8 {
+    for (entries) |entry| {
+        if (std.mem.eql(u8, entry.field, name)) return entry.data;
+    }
+    return null;
+}
+
+test "benchmark environment field lookup matches lscpu labels" {
+    const entries = [_]LscpuEntry{
+        .{ .field = "Architecture:", .data = "x86_64" },
+        .{ .field = "Model name:", .data = "Example CPU" },
+    };
+    try std.testing.expectEqualStrings("x86_64", lscpuField(&entries, "Architecture:").?);
+    try std.testing.expectEqualStrings("Example CPU", lscpuField(&entries, "Model name:").?);
+    try std.testing.expect(lscpuField(&entries, "CPU max MHz:") == null);
+}
+
+fn dupeEnvironmentValue(alloc: std.mem.Allocator, value: ?[]const u8) ![]const u8 {
+    return alloc.dupe(u8, value orelse "unavailable");
+}
+
+fn collectBenchmarkEnvironment(io: std.Io, alloc: std.mem.Allocator) !BenchmarkEnvironment {
+    const uname = common.runCaptureStdout(io, alloc, &.{ "uname", "-sr" }, REPO_ROOT) catch null;
+    defer if (uname) |value| alloc.free(value);
+    const lscpu_json = common.runCaptureStdout(io, alloc, &.{ "lscpu", "--json" }, REPO_ROOT) catch null;
+    defer if (lscpu_json) |value| alloc.free(value);
+    const zig_version_out = common.runCaptureStdout(io, alloc, &.{ "zig", "version" }, REPO_ROOT) catch null;
+    defer if (zig_version_out) |value| alloc.free(value);
+
+    var parsed: ?std.json.Parsed(LscpuOutput) = null;
+    if (lscpu_json) |json| parsed = std.json.parseFromSlice(LscpuOutput, alloc, json, .{}) catch null;
+    defer if (parsed) |value| value.deinit();
+
+    const entries = if (parsed) |value| value.value.lscpu else &[_]LscpuEntry{};
+    const os = try dupeEnvironmentValue(alloc, uname);
+    errdefer alloc.free(os);
+    const architecture = try dupeEnvironmentValue(alloc, lscpuField(entries, "Architecture:"));
+    errdefer alloc.free(architecture);
+    const cpu_model = try dupeEnvironmentValue(alloc, lscpuField(entries, "Model name:"));
+    errdefer alloc.free(cpu_model);
+    const cpu_scaling = try dupeEnvironmentValue(alloc, lscpuField(entries, "CPU(s) scaling MHz:"));
+    errdefer alloc.free(cpu_scaling);
+    const cpu_min_mhz = try dupeEnvironmentValue(alloc, lscpuField(entries, "CPU min MHz:"));
+    errdefer alloc.free(cpu_min_mhz);
+    const cpu_max_mhz = try dupeEnvironmentValue(alloc, lscpuField(entries, "CPU max MHz:"));
+    errdefer alloc.free(cpu_max_mhz);
+    const zig_version = try dupeEnvironmentValue(alloc, zig_version_out);
+    errdefer alloc.free(zig_version);
+    const cxx_driver = try alloc.dupe(u8, if (commandAvailable(io, alloc, "c++")) "c++" else "zig c++");
+    errdefer alloc.free(cxx_driver);
+    return .{
+        .os = os,
+        .architecture = architecture,
+        .cpu_model = cpu_model,
+        .cpu_scaling = cpu_scaling,
+        .cpu_min_mhz = cpu_min_mhz,
+        .cpu_max_mhz = cpu_max_mhz,
+        .zig_version = zig_version,
+        .cxx_driver = cxx_driver,
+    };
+}
+
+fn writeReadmeBenchmarkEnvironment(w: anytype, environment: BenchmarkEnvironment) !void {
+    try w.print("Tested on `{s}` with CPU `{s}` using Zig `{s}`.\n\n", .{ environment.os, environment.cpu_model, environment.zig_version });
+}
+
+fn writeBenchmarkEnvironmentTable(w: anytype, heading: []const u8, environment: BenchmarkEnvironment) !void {
+    try w.print("{s} Benchmark Environment\n\n", .{heading});
+    try w.writeAll("| Property | Value |\n|---|---|\n");
+    try w.print("| OS / kernel | {s} |\n", .{environment.os});
+    try w.print("| Architecture | {s} |\n", .{environment.architecture});
+    try w.print("| CPU | {s} |\n", .{environment.cpu_model});
+    try w.print("| CPU frequency scaling | {s} |\n", .{environment.cpu_scaling});
+    try w.print("| CPU MHz range | {s}–{s} |\n", .{ environment.cpu_min_mhz, environment.cpu_max_mhz });
+    try w.print("| Zig | {s} (`ReleaseFast -Dcpu=native`) |\n", .{environment.zig_version});
+    try w.print("| C++ driver | {s} (`-O3 -DNDEBUG -march=native`) |\n\n", .{environment.cxx_driver});
+}
+
 fn findParseResult(parse_results: []const ParseResult, parser_name: []const u8, fixture_name: []const u8) ?*const ParseResult {
     for (parse_results) |*r| {
         if (std.mem.eql(u8, r.parser, parser_name) and std.mem.eql(u8, r.fixture, fixture_name)) return r;
@@ -1182,6 +1296,7 @@ fn updateFileSection(
 
 fn renderReadmeAutoSummary(
     alloc: std.mem.Allocator,
+    environment: BenchmarkEnvironment,
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -1195,6 +1310,7 @@ fn renderReadmeAutoSummary(
     defer alloc.free(averages);
 
     try w.print("Source: `bench/results/latest.json` (`{s}` profile).\n\n", .{profile_name});
+    try writeReadmeBenchmarkEnvironment(w, environment);
     try w.writeAll("### Parse Throughput (Average Across Fixtures)\n\n");
     try w.writeAll("```text\n");
 
@@ -1243,6 +1359,7 @@ fn renderReadmeAutoSummary(
 
 fn renderBenchReadmeSnapshot(
     alloc: std.mem.Allocator,
+    environment: BenchmarkEnvironment,
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -1254,6 +1371,7 @@ fn renderBenchReadmeSnapshot(
 
     try w.print("Source: `bench/results/latest.json` (`{s}` profile).\n\n", .{profile_name});
     try w.writeAll("## Latest Benchmark Snapshot\n\n");
+    try writeBenchmarkEnvironmentTable(w, "###", environment);
     try w.writeAll("### Parse Throughput Comparison (MB/s)\n\n");
     try w.writeAll("| Fixture | ours-turbo | ours-strict | stream-turbo | stream-strict | pugixml | rapidxml |\n");
     try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
@@ -1345,16 +1463,17 @@ fn renderBenchReadmeSnapshot(
 fn updateBenchmarkReadmes(
     io: std.Io,
     alloc: std.mem.Allocator,
+    environment: BenchmarkEnvironment,
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
 ) !void {
-    const root_summary = try renderReadmeAutoSummary(alloc, profile_name, parse_results, gate_rows, stream_comparison_rows);
+    const root_summary = try renderReadmeAutoSummary(alloc, environment, profile_name, parse_results, gate_rows, stream_comparison_rows);
     defer alloc.free(root_summary);
     try updateFileSection(io, alloc, "README.md", ReadmeSummaryStartMarker, ReadmeSummaryEndMarker, root_summary);
 
-    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, profile_name, parse_results, gate_rows, stream_comparison_rows);
+    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, environment, profile_name, parse_results, gate_rows, stream_comparison_rows);
     defer alloc.free(bench_snapshot);
     try updateFileSection(io, alloc, "bench/README.md", BenchReadmeSnapshotStartMarker, BenchReadmeSnapshotEndMarker, bench_snapshot);
 }
@@ -1401,6 +1520,7 @@ fn writeTableRow(writer: anytype, cells: []const []const u8, widths: []const usi
 fn writeMarkdown(
     io: std.Io,
     alloc: std.mem.Allocator,
+    environment: BenchmarkEnvironment,
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -1412,6 +1532,7 @@ fn writeMarkdown(
     const w = &out.writer;
 
     try w.print("# ZXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
+    try writeBenchmarkEnvironmentTable(w, "##", environment);
 
     try w.writeAll("## Parse Throughput\n\n");
     try w.writeAll("| Fixture | Parser | Throughput (MB/s) | Median Time (ms) | Iterations |\n");
@@ -1809,6 +1930,7 @@ fn writeTerminalReport(
 fn writeJson(
     io: std.Io,
     alloc: std.mem.Allocator,
+    environment: BenchmarkEnvironment,
     profile_name: []const u8,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -1821,8 +1943,8 @@ fn writeJson(
     const w = &out.writer;
 
     try w.print(
-        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"parse_results\": [\n",
-        .{ common.nowUnix(io), profile_name, benchmark_methodology_version },
+        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"environment\": {f},\n  \"parse_results\": [\n",
+        .{ common.nowUnix(io), profile_name, benchmark_methodology_version, std.json.fmt(environment, .{}) },
     );
     for (parse_results, 0..) |r, i| {
         try w.print(
@@ -1923,6 +2045,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     }
 
     const profile = try getProfile(profile_name);
+    const environment = try collectBenchmarkEnvironment(io, alloc);
+    defer environment.deinit(alloc);
 
     try common.ensureDir(io, RESULTS_DIR);
     try ensureExternalParsersBuilt(io, alloc);
@@ -1953,7 +2077,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
+    const md = try writeMarkdown(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
     defer alloc.free(md);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
@@ -1963,6 +2087,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const json = try writeJson(
         io,
         alloc,
+        environment,
         profile.name,
         parse_results.items,
         gate_rows,
@@ -2018,7 +2143,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     // are useful diagnostics even for a failed run. Publish only after every
     // stable gate has succeeded.
     if (std.mem.eql(u8, profile.name, "stable")) {
-        try updateBenchmarkReadmes(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+        try updateBenchmarkReadmes(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
     }
 }
 

@@ -3,6 +3,8 @@ zig-out/
 
 # Benchmark artifacts (generated or downloaded locally)
 bench/build/
-bench/results/
+bench/results/*
+!bench/results/latest.md
+!bench/results/latest.json
 bench/fixtures/
 bench/parsers/
