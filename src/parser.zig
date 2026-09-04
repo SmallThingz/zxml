@@ -177,14 +177,19 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
     return null;
 }
 
+noinline fn equalLongAttributePairNames(input: []const u8, first: document.Span, second: document.Span) bool {
+    std.debug.assert(first.len() == second.len() and first.len() > 1);
+    return std.mem.eql(u8, first.slice(input), second.slice(input));
+}
+
 inline fn findDuplicateAttributePair(input: []const u8, attrs: []const document.RawAttribute) ?usize {
     std.debug.assert(attrs.len == 2);
-    const first = attrs[0].name.slice(input);
-    const second = attrs[1].name.slice(input);
-    if (first.len == 1 and second.len == 1) {
-        return if (first[0] == second[0]) attrs[1].name.start else null;
-    }
-    return if (std.mem.eql(u8, first, second)) attrs[1].name.start else null;
+    const first = attrs[0].name;
+    const second = attrs[1].name;
+    const first_len = first.len();
+    if (first_len != second.len()) return null;
+    if (first_len == 1) return if (input[first.start] == input[second.start]) second.start else null;
+    return if (equalLongAttributePairNames(input, first, second)) second.start else null;
 }
 
 noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {

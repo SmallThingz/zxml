@@ -1608,6 +1608,20 @@ test "strict validates processing instruction separators" {
     try doc.parse("<?pi data?><r/>", opts);
 }
 
+test "strict two-attribute duplicate pair checks exact names" {
+    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    var doc = initDoc(opts);
+    defer doc.deinit();
+
+    try doc.parse("<r id='1' kind='2'/>", opts);
+    try doc.parse("<r aa='1' bb='2'/>", opts);
+    try doc.parse("<r a='1' b='2'/>", opts);
+    try doc.parse("<r é='1' É='2'/>", opts);
+    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r id='1' id='2'/>", opts));
+    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r long_name='1' long_name='2'/>", opts));
+    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r é='1' é='2'/>", opts));
+}
+
 test "strict rejects duplicate attribute names" {
     const strict_opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
     var strict_doc = initDoc(strict_opts);
