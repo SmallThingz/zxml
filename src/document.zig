@@ -684,15 +684,37 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
         xmlAsciiPrefixLenWide(input)
     else
         0;
+    var ascii_fast = true;
     while (i < input.len) {
-        // XML is overwhelmingly ASCII. Validate full SIMD-width runs at once and
-        // drop to the scalar path only for non-ASCII or forbidden controls.
-        while (i + @sizeOf(Vec) <= input.len) {
-            const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
-            const invalid_control = (bytes < control_limit) &
-                (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
-            if (@reduce(.Or, (bytes >= high_bit) | invalid_control)) break;
-            i += @sizeOf(Vec);
+        // XML is overwhelmingly ASCII. Compact ASCII runs need only the two
+        // broad range checks. Once a non-ASCII byte appears, stay on the exact
+        // classifier so Unicode-heavy documents do not repeatedly pay both.
+        if (ascii_fast) {
+            while (i + @sizeOf(Vec) <= input.len) {
+                const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+                const non_ascii = bytes >= high_bit;
+                const exceptional = (bytes < control_limit) | non_ascii;
+                if (!@reduce(.Or, exceptional)) {
+                    i += @sizeOf(Vec);
+                    continue;
+                }
+                if (@reduce(.Or, non_ascii)) {
+                    ascii_fast = false;
+                    break;
+                }
+                const invalid_control = (bytes < control_limit) &
+                    (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
+                if (@reduce(.Or, invalid_control)) break;
+                i += @sizeOf(Vec);
+            }
+        } else {
+            while (i + @sizeOf(Vec) <= input.len) {
+                const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+                const invalid_control = (bytes < control_limit) &
+                    (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
+                if (@reduce(.Or, (bytes >= high_bit) | invalid_control)) break;
+                i += @sizeOf(Vec);
+            }
         }
         if (i == input.len) break;
 
