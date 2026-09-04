@@ -7,6 +7,7 @@ const BUILD_DIR = "bench/build";
 const BIN_DIR = "bench/build/bin";
 const TMP_SCRATCH_DIR = BUILD_DIR ++ "/tmp";
 const RESULTS_DIR = "bench/results";
+const STABLE_RESUME_PATH = RESULTS_DIR ++ "/stable.resume.json";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
 const pugixml_revision = "27b68329de32cf9c601ca8eb6c588fd639960c40";
@@ -93,6 +94,33 @@ const LscpuEntry = struct {
 
 const LscpuOutput = struct {
     lscpu: []const LscpuEntry,
+};
+
+const BenchmarkResumeRow = struct {
+    parser: []const u8,
+    fixture: []const u8,
+    is_real: bool,
+    iterations: usize,
+    samples_ns: []const u64,
+    median_ns: u64,
+    throughput_mb_s: f64,
+};
+
+const BenchmarkResumeState = struct {
+    profile: []const u8,
+    methodology_version: usize,
+    source_head: []const u8,
+    os: []const u8,
+    architecture: []const u8,
+    cpu_model: []const u8,
+    zig_version: []const u8,
+    cxx_driver: []const u8,
+    parse_results: []const BenchmarkResumeRow,
+};
+
+const BenchmarkResumeContext = struct {
+    source_head: []const u8,
+    environment: *const BenchmarkEnvironment,
 };
 
 const smoke_fixtures = [_]FixtureCase{
@@ -924,14 +952,121 @@ test "benchmark iteration calibration scales up and down" {
     try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(100, 0));
 }
 
+fn fixtureResultsComplete(rows: []const ParseResult, parsers: []const []const u8, fx: FixtureCase) bool {
+    for (parsers) |parser_name| {
+        if (!parserAppliesToFixture(parser_name, fx)) continue;
+        var found = false;
+        for (rows) |row| {
+            if (std.mem.eql(u8, row.parser, parser_name) and std.mem.eql(u8, row.fixture, fx.name)) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) return false;
+    }
+    return true;
+}
+
+fn benchmarkEnvironmentMatchesResume(environment: BenchmarkEnvironment, state: BenchmarkResumeState) bool {
+    return std.mem.eql(u8, environment.os, state.os) and
+        std.mem.eql(u8, environment.architecture, state.architecture) and
+        std.mem.eql(u8, environment.cpu_model, state.cpu_model) and
+        std.mem.eql(u8, environment.zig_version, state.zig_version) and
+        std.mem.eql(u8, environment.cxx_driver, state.cxx_driver);
+}
+
+fn writeStableResumeCheckpoint(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    context: BenchmarkResumeContext,
+    rows: []const ParseResult,
+) !void {
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    const w = &out.writer;
+    const env = context.environment.*;
+    try w.print(
+        "{{\n  \"profile\":\"stable\",\n  \"methodology_version\":{d},\n  \"source_head\":\"{s}\",\n  \"os\":{f},\n  \"architecture\":{f},\n  \"cpu_model\":{f},\n  \"zig_version\":{f},\n  \"cxx_driver\":{f},\n  \"parse_results\":[\n",
+        .{ benchmark_methodology_version, context.source_head, std.json.fmt(env.os, .{}), std.json.fmt(env.architecture, .{}), std.json.fmt(env.cpu_model, .{}), std.json.fmt(env.zig_version, .{}), std.json.fmt(env.cxx_driver, .{}) },
+    );
+    for (rows, 0..) |row, row_index| {
+        try w.print(
+            "    {{\"parser\":{f},\"fixture\":{f},\"is_real\":{s},\"iterations\":{d},\"samples_ns\":[",
+            .{ std.json.fmt(row.parser, .{}), std.json.fmt(row.fixture, .{}), if (row.is_real) "true" else "false", row.iterations },
+        );
+        for (row.samples_ns, 0..) |sample, sample_index| {
+            if (sample_index != 0) try w.writeByte(',');
+            try w.print("{d}", .{sample});
+        }
+        try w.print(
+            "],\"median_ns\":{d},\"throughput_mb_s\":{d:.9}}}{s}\n",
+            .{ row.median_ns, row.throughput_mb_s, if (row_index + 1 == rows.len) "" else "," },
+        );
+    }
+    try w.writeAll("  ]\n}\n");
+    const checkpoint = try out.toOwnedSlice();
+    defer alloc.free(checkpoint);
+    try common.writeFile(io, STABLE_RESUME_PATH, checkpoint);
+}
+
+fn loadStableResumeCheckpoint(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    source_head: []const u8,
+    environment: BenchmarkEnvironment,
+    results: *std.ArrayList(ParseResult),
+) !void {
+    if (!common.fileExists(io, STABLE_RESUME_PATH)) return;
+    const raw = try common.readFileAlloc(io, alloc, STABLE_RESUME_PATH);
+    defer alloc.free(raw);
+    var parsed = std.json.parseFromSlice(BenchmarkResumeState, alloc, raw, .{}) catch {
+        std.debug.print("ignoring unreadable stable resume checkpoint\n", .{});
+        return;
+    };
+    defer parsed.deinit();
+    const state = parsed.value;
+    if (!std.mem.eql(u8, state.profile, "stable") or
+        state.methodology_version != benchmark_methodology_version or
+        !std.mem.eql(u8, state.source_head, source_head) or
+        !benchmarkEnvironmentMatchesResume(environment, state))
+    {
+        std.debug.print("ignoring stale stable resume checkpoint\n", .{});
+        return;
+    }
+
+    for (state.parse_results) |row| {
+        const parser = try alloc.dupe(u8, row.parser);
+        errdefer alloc.free(parser);
+        const fixture = try alloc.dupe(u8, row.fixture);
+        errdefer alloc.free(fixture);
+        const samples = try alloc.dupe(u64, row.samples_ns);
+        errdefer alloc.free(samples);
+        try results.append(alloc, .{
+            .parser = parser,
+            .fixture = fixture,
+            .is_real = row.is_real,
+            .iterations = row.iterations,
+            .samples_ns = samples,
+            .median_ns = row.median_ns,
+            .throughput_mb_s = row.throughput_mb_s,
+        });
+    }
+    std.debug.print("resumed {d} stable benchmark result row(s)\n", .{state.parse_results.len});
+}
+
 fn benchmarkFixtureSet(
     io: std.Io,
     alloc: std.mem.Allocator,
     fixtures: []const FixtureCase,
     parsers: []const []const u8,
     results: *std.ArrayList(ParseResult),
+    resume_context: ?BenchmarkResumeContext,
 ) !void {
     for (fixtures, 0..) |fx, fixture_index| {
+        if (resume_context != null and fixtureResultsComplete(results.items, parsers, fx)) {
+            std.debug.print("resume skip: fixture={s}\n", .{fx.name});
+            continue;
+        }
         const fixture_path = try std.fmt.allocPrint(alloc, FIXTURES_DIR ++ "/{s}", .{fx.name});
         defer alloc.free(fixture_path);
         const fixture_stat = try std.Io.Dir.cwd().statFile(io, fixture_path, .{});
@@ -979,6 +1114,7 @@ fn benchmarkFixtureSet(
             errdefer freeParseResult(alloc, &result);
             try results.append(alloc, result);
         }
+        if (resume_context) |context| try writeStableResumeCheckpoint(io, alloc, context, results.items);
     }
 }
 
@@ -2029,6 +2165,7 @@ fn writeJson(
 fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
     var profile_name: []const u8 = "quick";
     var write_baseline = false;
+    var resume_stable = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2039,12 +2176,15 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             profile_name = args[i];
         } else if (std.mem.eql(u8, arg, "--write-baseline")) {
             write_baseline = true;
+        } else if (std.mem.eql(u8, arg, "--resume")) {
+            resume_stable = true;
         } else {
             return error.InvalidArguments;
         }
     }
 
     const profile = try getProfile(profile_name);
+    if (resume_stable and !std.mem.eql(u8, profile.name, "stable")) return error.InvalidArguments;
     const environment = try collectBenchmarkEnvironment(io, alloc);
     defer environment.deinit(alloc);
 
@@ -2057,7 +2197,15 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         for (parse_results.items) |*r| freeParseResult(alloc, r);
         parse_results.deinit(alloc);
     }
-    try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results);
+    var source_head: ?[]u8 = null;
+    defer if (source_head) |head| alloc.free(head);
+    var resume_context: ?BenchmarkResumeContext = null;
+    if (resume_stable) {
+        source_head = try common.runCaptureStdout(io, alloc, &.{ "git", "rev-parse", "HEAD" }, REPO_ROOT);
+        try loadStableResumeCheckpoint(io, alloc, source_head.?, environment, &parse_results);
+        resume_context = .{ .source_head = source_head.?, .environment = &environment };
+    }
+    try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results, resume_context);
 
     var strict_regression_results = std.ArrayList(ParseResult).empty;
     defer {
@@ -2067,7 +2215,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     var strict_regression_checks: []StrictRegressionCheck = try alloc.alloc(StrictRegressionCheck, 0);
     defer alloc.free(strict_regression_checks);
     if (std.mem.eql(u8, profile.name, "stable")) {
-        try benchmarkFixtureSet(io, alloc, &strict_regression_fixtures, &strict_regression_parsers, &strict_regression_results);
+        try benchmarkFixtureSet(io, alloc, &strict_regression_fixtures, &strict_regression_parsers, &strict_regression_results, null);
         alloc.free(strict_regression_checks);
         strict_regression_checks = try evaluateStrictRegressionChecks(alloc, parse_results.items, strict_regression_results.items);
     }
@@ -2144,6 +2292,9 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     // stable gate has succeeded.
     if (std.mem.eql(u8, profile.name, "stable")) {
         try updateBenchmarkReadmes(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+        if (resume_stable and common.fileExists(io, STABLE_RESUME_PATH)) {
+            try std.Io.Dir.cwd().deleteFile(io, STABLE_RESUME_PATH);
+        }
     }
 }
 

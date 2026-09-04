@@ -30,6 +30,7 @@ zig build conformance
 # direct tool invocation after setup, when needed
 zig build tools -- run-benchmarks --profile quick
 zig build tools -- run-benchmarks --profile stable
+zig build tools -- run-benchmarks --profile stable --resume
 ```
 
 `run-benchmarks` also updates:
@@ -51,6 +52,11 @@ built with `ReleaseFast -Dcpu=native`; C++ runners use `-O3 -DNDEBUG -march=nati
 The harness uses a system `c++` driver when available and falls back to `zig c++`
 on minimal hosts. Each generated report records the kernel, architecture, CPU model,
 frequency-scaling state, advertised CPU MHz range, Zig version, and C++ driver.
+
+For noisy/shared machines, `--resume` checkpoints only fully completed stable
+fixtures in `bench/results/stable.resume.json`. Restarting the same source revision
+and benchmark environment skips those completed fixtures; the checkpoint is removed
+automatically after the complete stable gate and README publication succeed.
 
 Fixture setup rejects extremely opaque feeds. `synthetic_long_text.xml` remains
 a generated diagnostic-only fixture and is excluded from quick/stable profiles.
