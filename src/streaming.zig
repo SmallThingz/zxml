@@ -225,7 +225,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.require_declared_entities = true;
                 self.xml_validated_offset = 0;
                 if (comptime strict_mode and options.validate_xml_characters) {
-                    try document.validateXmlCharacters(input);
+                    try document.validateXmlCharactersStreaming(input);
                     self.xml_validated_offset = input.len;
                 }
                 try self.reserveForInput(input.len);
@@ -412,7 +412,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (comptime strict_mode) {
                     if (self.xml_validated_offset > input.len) return error.UnexpectedEndOfData;
                     const suffix = input[self.xml_validated_offset..];
-                    const valid_suffix_len = try document.xmlValidPrefixLen(suffix);
+                    const valid_suffix_len = try document.xmlValidPrefixLenStreaming(suffix);
                     self.xml_validated_offset += valid_suffix_len;
                     if (valid_suffix_len != suffix.len) {
                         trailing_partial_utf8 = true;

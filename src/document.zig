@@ -671,7 +671,7 @@ noinline fn xmlAsciiPrefixLenWide(input: []const u8) usize {
     return i;
 }
 
-pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
+fn xmlValidPrefixLenImpl(input: []const u8, comptime use_wide_ascii_prefix: bool) ParseError!usize {
     const Vec = @Vector(xml_scan_vector_len, u8);
     const high_bit: Vec = @splat(0x80);
     const control_limit: Vec = @splat(0x20);
@@ -679,7 +679,10 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
     const newline: Vec = @splat('\n');
     const carriage_return: Vec = @splat('\r');
 
-    var i: usize = if (comptime (builtin.cpu.arch == .x86 or builtin.cpu.arch == .x86_64) and
+    var i: usize = if (comptime use_wide_ascii_prefix and (builtin.cpu.arch == .x86 or builtin.cpu.arch == .x86_64) and
+        (std.Target.x86.featureSetHas(builtin.cpu.features, .avx2) or std.Target.x86.featureSetHas(builtin.cpu.features, .avx512bw)))
+        xmlAsciiPrefixLenWide(input)
+    else if (comptime (builtin.cpu.arch == .x86 or builtin.cpu.arch == .x86_64) and
         std.Target.x86.featureSetHas(builtin.cpu.features, .avx512bw))
         xmlAsciiPrefixLenWide(input)
     else
@@ -759,8 +762,20 @@ pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
     return input.len;
 }
 
+pub fn xmlValidPrefixLen(input: []const u8) ParseError!usize {
+    return xmlValidPrefixLenImpl(input, false);
+}
+
+pub fn xmlValidPrefixLenStreaming(input: []const u8) ParseError!usize {
+    return xmlValidPrefixLenImpl(input, true);
+}
+
 pub fn validateXmlCharacters(input: []const u8) ParseError!void {
-    if (try xmlValidPrefixLen(input) != input.len) return error.InvalidXmlCharacter;
+    if (try xmlValidPrefixLenImpl(input, false) != input.len) return error.InvalidXmlCharacter;
+}
+
+pub fn validateXmlCharactersStreaming(input: []const u8) ParseError!void {
+    if (try xmlValidPrefixLenImpl(input, true) != input.len) return error.InvalidXmlCharacter;
 }
 
 /// Validates XML Name codepoint ranges when UTF-8 shape has already been
