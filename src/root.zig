@@ -1512,6 +1512,16 @@ test "strict rejects duplicate attribute names" {
     defer strict_doc.deinit();
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r a='1' a='2'/>", strict_opts));
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r><x a='1' b='2' a='3'/></r>", strict_opts));
+
+    const duplicate_pair_self = "<r a='1' a='2'/>";
+    const self_diag = strict_doc.parseDiagnostic(duplicate_pair_self, strict_opts) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(error.DuplicateAttribute, self_diag.err);
+    try std.testing.expectEqual(@as(usize, 9), self_diag.offset);
+
+    const duplicate_pair_open = "<r a='1' a='2'></r>";
+    const open_diag = strict_doc.parseDiagnostic(duplicate_pair_open, strict_opts) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(error.DuplicateAttribute, open_diag.err);
+    try std.testing.expectEqual(@as(usize, 9), open_diag.offset);
     // Distinct names sharing the lightweight uniqueness bucket must fall back
     // to exact comparisons rather than false-positive as duplicates.
     try strict_doc.parse("<r h='1' ab='2' z='3'/>", strict_opts);

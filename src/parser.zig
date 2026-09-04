@@ -177,6 +177,16 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
     return null;
 }
 
+inline fn findDuplicateAttributePair(input: []const u8, attrs: []const document.RawAttribute) ?usize {
+    std.debug.assert(attrs.len == 2);
+    const first = attrs[0].name.slice(input);
+    const second = attrs[1].name.slice(input);
+    if (first.len == 1 and second.len == 1) {
+        return if (first[0] == second[0]) attrs[1].name.start else null;
+    }
+    return if (std.mem.eql(u8, first, second)) attrs[1].name.start else null;
+}
+
 noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {
     if (attrs.len >= 32 and attrs.len <= 4096) {
         @branchHint(.unlikely);
@@ -446,7 +456,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
                         const attr_end_idx = self.doc.attrs.items.len;
                         const attr_start_usize: usize = attr_start_idx;
-                        if (attr_end_idx - attr_start_usize > 2) {
+                        const attr_count = attr_end_idx - attr_start_usize;
+                        if (attr_count == 2) {
+                            if (findDuplicateAttributePair(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                                self.i = duplicate_start;
+                                return error.DuplicateAttribute;
+                            }
+                        } else if (attr_count > 2) {
                             if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
                                 self.i = duplicate_start;
                                 return error.DuplicateAttribute;
@@ -473,7 +489,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
                         const attr_end_idx = self.doc.attrs.items.len;
                         const attr_start_usize: usize = attr_start_idx;
-                        if (attr_end_idx - attr_start_usize > 2) {
+                        const attr_count = attr_end_idx - attr_start_usize;
+                        if (attr_count == 2) {
+                            if (findDuplicateAttributePair(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
+                                self.i = duplicate_start;
+                                return error.DuplicateAttribute;
+                            }
+                        } else if (attr_count > 2) {
                             if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
                                 self.i = duplicate_start;
                                 return error.DuplicateAttribute;
@@ -510,16 +532,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const attr_name_end = self.i;
                 if (comptime strict_mode) {
                     if (attr_name_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
-                    const prior_count = self.doc.attrs.items.len - @as(usize, attr_start_idx);
-                    if (prior_count == 1) {
-                        const first_name = self.doc.attrs.items[@as(usize, attr_start_idx)].name.slice(self.input);
-                        const attr_name = self.input[attr_name_start..attr_name_end];
-                        if (first_name.len == 1 and attr_name.len == 1) {
-                            if (first_name[0] == attr_name[0]) return error.DuplicateAttribute;
-                        } else if (std.mem.eql(u8, first_name, attr_name)) {
-                            return error.DuplicateAttribute;
-                        }
-                    }
                 }
                 const input = self.input;
                 const input_len = input.len;
