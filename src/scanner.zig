@@ -123,7 +123,7 @@ pub const SimpleQuotedAttributeScan = struct {
     next: usize,
 };
 
-/// Fast recognition of the common turbo attribute spelling ` name="value"`.
+/// Fast recognition of the common permissive attribute spelling ` name="value"`.
 /// Returns null for any other spelling so callers can fall back to the full
 /// permissive grammar without changing accepted input.
 pub inline fn scanSimpleQuotedAttribute(noalias input: []const u8, start: usize) ?SimpleQuotedAttributeScan {
@@ -178,7 +178,7 @@ pub const QuotedValueScan = struct {
 };
 
 /// Finds a quoted attribute value's closing quote while collecting the two
-/// strict-mode sentinels that otherwise require a second pass over the value.
+/// validated-mode sentinels that otherwise require a second pass over the value.
 pub inline fn scanQuotedValueSpecials(noalias hay: []const u8, start: usize, quote: u8) QuotedValueScan {
     std.debug.assert(quote == '\'' or quote == '"');
     if (start >= hay.len) return .{ .end = hay.len };
@@ -418,7 +418,7 @@ pub const TextSpecialRun = struct {
     has_ampersand: bool = false,
 };
 
-/// Scans character data once for its end and the two strict-mode sentinels.
+/// Scans character data once for its end and the two validated-mode sentinels.
 /// The short scalar probe keeps tiny text nodes cheap; long runs use SIMD.
 pub inline fn scanTextSpecials(noalias hay: []const u8, start: usize) TextSpecialRun {
     if (start >= hay.len) return .{ .lt_index = hay.len };
@@ -505,7 +505,7 @@ pub fn scanTextRun(hay: []const u8, start: usize) TextRun {
     return .{ .lt_index = lt_index, .has_non_whitespace = false };
 }
 
-pub fn scanTextRunStrict(hay: []const u8, start: usize) TextRun {
+pub fn scanTextRunValidated(hay: []const u8, start: usize) TextRun {
     if (start >= hay.len) return .{ .lt_index = hay.len, .has_non_whitespace = false };
     if (!tables.WhitespaceTable[hay[start]]) {
         return .{
@@ -623,7 +623,7 @@ test "findByte and findSequence locate delimiters" {
     try std.testing.expectEqual(@as(?usize, null), findSequence("abcdef", 7, ""));
 }
 
-test "simple quoted attribute fast scan recognizes only its exact turbo grammar" {
+test "simple quoted attribute fast scan recognizes only its exact permissive grammar" {
     const input = " id=\"12345678\" kind='x'>";
     const first = scanSimpleQuotedAttribute(input, 0) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("id", input[first.name_start..first.name_end]);
@@ -647,7 +647,7 @@ test "simple quoted attribute fast scan recognizes only its exact turbo grammar"
     }
 }
 
-test "scanQuotedValueSpecials finds quote and strict sentinels in one pass" {
+test "scanQuotedValueSpecials finds quote and validated sentinels in one pass" {
     const plain = scanQuotedValueSpecials("alpha'ignored<&", 0, '\'');
     try std.testing.expectEqual(@as(usize, 5), plain.end);
     try std.testing.expect(!plain.has_lt);
@@ -672,7 +672,7 @@ test "scanQuotedValueSpecials finds quote and strict sentinels in one pass" {
     try std.testing.expect(missing.has_ampersand);
 }
 
-test "scanTextSpecials finds markup and strict sentinels in short and vector runs" {
+test "scanTextSpecials finds markup and validated sentinels in short and vector runs" {
     const plain = scanTextSpecials("alpha<beta", 0);
     try std.testing.expectEqual(@as(usize, 5), plain.lt_index);
     try std.testing.expect(!plain.has_close_bracket);
@@ -693,7 +693,7 @@ test "scanTextSpecials finds markup and strict sentinels in short and vector run
     try std.testing.expect(vector.has_ampersand);
 }
 
-test "strict fused scanners match scalar references across vector boundaries" {
+test "validated fused scanners match scalar references across vector boundaries" {
     const Ref = struct {
         fn quoted(input: []const u8, start: usize, quote: u8) QuotedValueScan {
             var out: QuotedValueScan = .{ .end = input.len };

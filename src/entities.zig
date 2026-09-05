@@ -29,7 +29,7 @@ pub fn resolveEntityDeclarationsBounded(
     alloc: std.mem.Allocator,
     declarations: *const std.StringHashMap([]const u8),
     resolved: *std.StringHashMap([]u8),
-    strict: bool,
+    validated: bool,
     max_output_len: usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)!void {
     var states = std.StringHashMap(ResolveState).init(alloc);
@@ -43,7 +43,7 @@ pub fn resolveEntityDeclarationsBounded(
             resolved,
             &states,
             entry.key_ptr.*,
-            strict,
+            validated,
             max_output_len,
         );
     }
@@ -62,7 +62,7 @@ fn resolveEntityDeclaration(
     resolved: *std.StringHashMap([]u8),
     states: *std.StringHashMap(ResolveState),
     name: []const u8,
-    strict: bool,
+    validated: bool,
     max_output_len: usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)![]const u8 {
     if (resolved.get(name)) |value| return value;
@@ -98,20 +98,20 @@ fn resolveEntityDeclaration(
 
             const token = parseEntityToken(input, src) catch |err| switch (err) {
                 error.UnterminatedEntity => {
-                    if (strict) return error.UnterminatedEntity;
+                    if (validated) return error.UnterminatedEntity;
                     try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
                     frames.items[frame_idx].src += 1;
                     continue;
                 },
                 error.InvalidNumericCharacterEntity => {
-                    if (strict) return error.InvalidNumericCharacterEntity;
+                    if (validated) return error.InvalidNumericCharacterEntity;
                     try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
                     frames.items[frame_idx].src += 1;
                     continue;
                 },
             };
 
-            if (try decodeEntityBody(token.body, strict)) |decoded| {
+            if (try decodeEntityBody(token.body, validated)) |decoded| {
                 try appendLimited(&frames.items[frame_idx].out, alloc, decoded.bytes[0..decoded.len], max_output_len);
                 frames.items[frame_idx].src += token.consumed;
                 continue;
@@ -134,7 +134,7 @@ fn resolveEntityDeclaration(
                 break;
             }
 
-            if (strict) return error.InvalidNumericCharacterEntity;
+            if (validated) return error.InvalidNumericCharacterEntity;
             try appendLimited(&frames.items[frame_idx].out, alloc, "&", max_output_len);
             frames.items[frame_idx].src += 1;
         }
@@ -181,10 +181,10 @@ const EntityToken = struct {
 pub fn decodeAllocWithEntityMap(
     alloc: std.mem.Allocator,
     input: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) (std.mem.Allocator.Error || DecodeError)![]u8 {
-    return decodeAllocWithEntityMapImpl(alloc, input, strict, entity_map, null) catch |err| switch (err) {
+    return decodeAllocWithEntityMapImpl(alloc, input, validated, entity_map, null) catch |err| switch (err) {
         error.OutputTooLarge => unreachable,
         else => |e| return e,
     };
@@ -193,17 +193,17 @@ pub fn decodeAllocWithEntityMap(
 pub fn decodeAllocWithEntityMapBounded(
     alloc: std.mem.Allocator,
     input: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
     max_output_len: usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)![]u8 {
-    return decodeAllocWithEntityMapImpl(alloc, input, strict, entity_map, max_output_len);
+    return decodeAllocWithEntityMapImpl(alloc, input, validated, entity_map, max_output_len);
 }
 
 fn decodeAllocWithEntityMapImpl(
     alloc: std.mem.Allocator,
     input: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
     max_output_len: ?usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)![]u8 {
@@ -213,7 +213,7 @@ fn decodeAllocWithEntityMapImpl(
     }
     var out = std.ArrayList(u8).empty;
     errdefer out.deinit(alloc);
-    try appendDecodedWithEntityMapImpl(&out, alloc, input, strict, entity_map, max_output_len);
+    try appendDecodedWithEntityMapImpl(&out, alloc, input, validated, entity_map, max_output_len);
     return out.toOwnedSlice(alloc);
 }
 
@@ -221,10 +221,10 @@ pub fn appendDecodedWithEntityMap(
     out: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
     input: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) (std.mem.Allocator.Error || DecodeError)!void {
-    appendDecodedWithEntityMapImpl(out, alloc, input, strict, entity_map, null) catch |err| switch (err) {
+    appendDecodedWithEntityMapImpl(out, alloc, input, validated, entity_map, null) catch |err| switch (err) {
         error.OutputTooLarge => unreachable,
         else => |e| return e,
     };
@@ -234,7 +234,7 @@ fn appendDecodedWithEntityMapImpl(
     out: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
     input: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
     max_output_len: ?usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)!void {
@@ -255,25 +255,25 @@ fn appendDecodedWithEntityMapImpl(
 
         const token = parseEntityToken(input, src) catch |err| switch (err) {
             error.UnterminatedEntity => {
-                if (strict) return error.UnterminatedEntity;
+                if (validated) return error.UnterminatedEntity;
                 try appendLimited(out, alloc, "&", max_output_len);
                 src += 1;
                 continue;
             },
             error.InvalidNumericCharacterEntity => {
-                if (strict) return error.InvalidNumericCharacterEntity;
+                if (validated) return error.InvalidNumericCharacterEntity;
                 try appendLimited(out, alloc, "&", max_output_len);
                 src += 1;
                 continue;
             },
         };
 
-        if (try tryAppendDecodedEntityBody(out, alloc, token.body, strict, entity_map, max_output_len)) {
+        if (try tryAppendDecodedEntityBody(out, alloc, token.body, validated, entity_map, max_output_len)) {
             src += token.consumed;
             continue;
         }
 
-        if (strict) return error.InvalidNumericCharacterEntity;
+        if (validated) return error.InvalidNumericCharacterEntity;
         try appendLimited(out, alloc, "&", max_output_len);
         src += 1;
     }
@@ -284,20 +284,20 @@ fn appendDecodedWithEntityMapImpl(
 /// leaves `input` byte-for-byte untouched.
 pub fn decodeInPlaceWithEntityMap(
     input: []u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) DecodeError!InPlaceResult {
     var scan: usize = 0;
     while (std.mem.indexOfScalarPos(u8, input, scan, '&')) |amp| {
         const token = parseEntityToken(input, amp) catch |err| switch (err) {
             error.UnterminatedEntity, error.InvalidNumericCharacterEntity => {
-                if (strict) return err;
+                if (validated) return err;
                 scan = amp + 1;
                 continue;
             },
         };
 
-        const replacement_len: ?usize = if (try decodeEntityBody(token.body, strict)) |decoded|
+        const replacement_len: ?usize = if (try decodeEntityBody(token.body, validated)) |decoded|
             decoded.len
         else if (entity_map) |map|
             if (map.get(token.body)) |value| value.len else null
@@ -308,7 +308,7 @@ pub fn decodeInPlaceWithEntityMap(
             if (len > token.consumed) return .{ .len = input.len, .complete = false };
             scan = amp + token.consumed;
         } else {
-            if (strict) return error.InvalidNumericCharacterEntity;
+            if (validated) return error.InvalidNumericCharacterEntity;
             scan = amp + 1;
         }
     }
@@ -336,7 +336,7 @@ pub fn decodeInPlaceWithEntityMap(
             continue;
         };
 
-        if (try decodeEntityBody(token.body, strict)) |decoded| {
+        if (try decodeEntityBody(token.body, validated)) |decoded| {
             @memcpy(input[dst .. dst + decoded.len], decoded.bytes[0..decoded.len]);
             dst += decoded.len;
             src = amp + token.consumed;
@@ -377,11 +377,11 @@ fn tryAppendDecodedEntityBody(
     out: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
     body: []const u8,
-    strict: bool,
+    validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
     max_output_len: ?usize,
 ) (std.mem.Allocator.Error || BoundedDecodeError)!bool {
-    if (try decodeEntityBody(body, strict)) |decoded| {
+    if (try decodeEntityBody(body, validated)) |decoded| {
         try appendLimited(out, alloc, decoded.bytes[0..decoded.len], max_output_len);
         return true;
     }
@@ -410,7 +410,7 @@ fn parseEntityToken(noalias buf: []const u8, start: usize) error{ InvalidNumeric
     };
 }
 
-fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
+fn decodeEntityBody(body: []const u8, validated: bool) DecodeError!?EntityDecode {
     const named: ?u8 = if (std.mem.eql(u8, body, "amp"))
         '&'
     else if (std.mem.eql(u8, body, "lt"))
@@ -434,14 +434,14 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
         const cp: u21 = blk: {
             const text = body[1..];
             if (text.len == 0) {
-                if (strict) return error.InvalidNumericCharacterEntity;
+                if (validated) return error.InvalidNumericCharacterEntity;
                 return null;
             }
 
-            const is_hex = text[0] == 'x' or (!strict and text[0] == 'X');
+            const is_hex = text[0] == 'x' or (!validated and text[0] == 'X');
             const digits = if (is_hex) text[1..] else text;
             if (digits.len == 0) {
-                if (strict) return error.InvalidNumericCharacterEntity;
+                if (validated) return error.InvalidNumericCharacterEntity;
                 return null;
             }
 
@@ -462,19 +462,19 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
                     255;
 
                 if (d == 255) {
-                    if (strict) return error.InvalidNumericCharacterEntity;
+                    if (validated) return error.InvalidNumericCharacterEntity;
                     return null;
                 }
                 const base: u32 = if (is_hex) 16 else 10;
                 if (value > (0x10FFFF - @as(u32, d)) / base) {
-                    if (strict) return error.InvalidNumericCharacterEntity;
+                    if (validated) return error.InvalidNumericCharacterEntity;
                     return null;
                 }
                 value = value * base + d;
             }
 
             if (!isValidXmlChar(value)) {
-                if (strict) return error.InvalidNumericCharacterEntity;
+                if (validated) return error.InvalidNumericCharacterEntity;
                 return null;
             }
             break :blk @intCast(value);
@@ -482,7 +482,7 @@ fn decodeEntityBody(body: []const u8, strict: bool) DecodeError!?EntityDecode {
 
         var out_bytes: [4]u8 = undefined;
         const written = std.unicode.utf8Encode(cp, &out_bytes) catch {
-            if (strict) return error.InvalidNumericCharacterEntity;
+            if (validated) return error.InvalidNumericCharacterEntity;
             return null;
         };
 
@@ -512,7 +512,7 @@ test "decodeAlloc decodes without mutating the source slice" {
     try std.testing.expectEqualStrings("&amp;&#65;&#x42;", input);
 }
 
-test "non-strict decode leaves malformed and unknown entities literal" {
+test "non-validated decode leaves malformed and unknown entities literal" {
     const alloc = std.testing.allocator;
 
     const unknown = try decodeAllocWithEntityMap(alloc, "&bogus; &amp", false, null);
@@ -545,20 +545,20 @@ test "decodeAllocWithEntityMap expands mapped named entities" {
     try std.testing.expectEqualStrings("SAFE&", decoded);
 }
 
-test "strict decode rejects unknown named entities without a DTD map" {
+test "validated decode rejects unknown named entities without a DTD map" {
     const alloc = std.testing.allocator;
     try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAllocWithEntityMap(alloc, "&bogus;", true, null));
 }
 
-test "strict decode rejects XML-invalid character references" {
+test "validated decode rejects XML-invalid character references" {
     const alloc = std.testing.allocator;
     inline for (.{ "&#0;", "&#x1f;", "&#xD800;", "&#xFFFE;", "&#X41;", "&#999999999999999999999999999999;", "&#xffffffffffffffffffffffffffffffff;" }) |input| {
         try std.testing.expectError(error.InvalidNumericCharacterEntity, decodeAllocWithEntityMap(alloc, input, true, null));
     }
 
-    const turbo = try decodeAllocWithEntityMap(alloc, "&#X41;", false, null);
-    defer alloc.free(turbo);
-    try std.testing.expectEqualStrings("A", turbo);
+    const permissive = try decodeAllocWithEntityMap(alloc, "&#X41;", false, null);
+    defer alloc.free(permissive);
+    try std.testing.expectEqualStrings("A", permissive);
 }
 
 test "bounded entity decoding rejects expansion before appending past the cap" {

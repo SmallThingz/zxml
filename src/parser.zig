@@ -1346,7 +1346,7 @@ test "parseInto builds a minimal DOM and enforces validated closing tags" {
     );
 }
 
-test "one-byte parser tails preserve strict and permissive behavior" {
+test "one-byte parser tails preserve validated and permissive behavior" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var doc = Document.init(std.testing.allocator);
@@ -1381,7 +1381,7 @@ test "one-byte parser tails preserve strict and permissive behavior" {
     try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 }
 
-test "strict start-tag grammar rejects malformed attributes" {
+test "validated start-tag grammar rejects malformed attributes" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var doc = Document.init(std.testing.allocator);
@@ -1497,7 +1497,7 @@ test "permissive mode accepts mixed XML whitespace around attribute equals" {
     try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
 }
 
-test "strict start tags accept mixed XML whitespace between attributes" {
+test "validated start tags accept mixed XML whitespace between attributes" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var source = "<r \n\t a='1' \r\n b=\"2\">x</r>".*;

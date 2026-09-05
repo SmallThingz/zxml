@@ -12,9 +12,9 @@ pub const RawAttribute = struct {
     has_value: bool = false,
 };
 
-/// Raw XML attribute tokenizer. Full-validation callers instantiate `strict=true`;
+/// Raw XML attribute tokenizer. Full-validation callers instantiate `validated=true`;
 /// permissive callers stay bounded and skip malformed bytes instead of crashing.
-pub fn RawIterator(comptime strict: bool) type {
+pub fn RawIterator(comptime validated: bool) type {
     return struct {
         source: []const u8,
         i: usize,
@@ -28,7 +28,7 @@ pub fn RawIterator(comptime strict: bool) type {
             var i = self.i;
             while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
             while (i < self.end and !tables.isNameStart(self.source[i])) {
-                if (comptime strict) {
+                if (comptime validated) {
                     self.i = self.end;
                     return null;
                 }
@@ -58,7 +58,7 @@ pub fn RawIterator(comptime strict: bool) type {
                         value_start = i + 1;
                         value_end = scanner.findByte(self.source[0..self.end], value_start, quote) orelse self.end;
                         i = if (value_end < self.end) value_end + 1 else self.end;
-                    } else if (comptime !strict) {
+                    } else if (comptime !validated) {
                         value_start = i;
                         value_end = @min(scanner.findAttrUnquotedEnd(self.source[0..self.end], i), self.end);
                         i = value_end;
@@ -118,7 +118,7 @@ const CompactIterator = struct {
 /// Parse a tag's raw XML attributes once and compact them in place. The result
 /// uses `name[=value]NUL ... >`. Literal NUL in permissive malformed input keeps
 /// the tag on the raw scanner because NUL is the compact-list separator.
-pub fn materialize(comptime strict: bool, source: []u8, name_end: usize) bool {
+pub fn materialize(comptime validated: bool, source: []u8, name_end: usize) bool {
     if (name_end >= source.len) return false;
     if (looksCompact(source, name_end)) return true;
     if (!tables.isWhitespace(source[name_end])) return false;
@@ -127,7 +127,7 @@ pub fn materialize(comptime strict: bool, source: []u8, name_end: usize) bool {
     const attr_end = if (tail.self_closing and tail.end > name_end) tail.end - 1 else tail.end;
     if (std.mem.indexOfScalar(u8, source[name_end..attr_end], 0) != null) return false;
 
-    var raw = RawIterator(strict).init(source, .{ .start = @intCast(name_end), .end = @intCast(attr_end) });
+    var raw = RawIterator(validated).init(source, .{ .start = @intCast(name_end), .end = @intCast(attr_end) });
     var write = name_end;
     while (raw.next()) |item| {
         const name = item.name.slice(source);
@@ -150,10 +150,10 @@ pub fn materialize(comptime strict: bool, source: []u8, name_end: usize) bool {
 
 /// Generated DOM attribute iterator. Destructive documents materialize once;
 /// non-destructive documents remain on the raw source tokenizer forever.
-pub fn Iterator(comptime non_destructive: bool, comptime strict: bool) type {
+pub fn Iterator(comptime non_destructive: bool, comptime validated: bool) type {
     return struct {
         source: []const u8,
-        raw: RawIterator(strict),
+        raw: RawIterator(validated),
         compact: CompactIterator,
         use_compact: bool = false,
 
@@ -161,10 +161,10 @@ pub fn Iterator(comptime non_destructive: bool, comptime strict: bool) type {
             const source: []const u8 = source_input;
             const name_end: usize = @intCast(name_end_idx);
             if (comptime !non_destructive) {
-                if (materialize(strict, source_input, name_end) and looksCompact(source, name_end)) {
+                if (materialize(validated, source_input, name_end) and looksCompact(source, name_end)) {
                     return .{
                         .source = source,
-                        .raw = RawIterator(strict).init(source, .{}),
+                        .raw = RawIterator(validated).init(source, .{}),
                         .compact = .{ .source = source, .cursor = name_end },
                         .use_compact = true,
                     };
@@ -173,13 +173,13 @@ pub fn Iterator(comptime non_destructive: bool, comptime strict: bool) type {
 
             const tail = scanner.scanStartTagEnd(source, name_end) orelse return .{
                 .source = source,
-                .raw = RawIterator(strict).init(source, .{}),
+                .raw = RawIterator(validated).init(source, .{}),
                 .compact = .{ .source = source, .cursor = source.len },
             };
             const end = if (tail.self_closing and tail.end > name_end) tail.end - 1 else tail.end;
             return .{
                 .source = source,
-                .raw = RawIterator(strict).init(source, .{ .start = @intCast(name_end), .end = @intCast(end) }),
+                .raw = RawIterator(validated).init(source, .{ .start = @intCast(name_end), .end = @intCast(end) }),
                 .compact = .{ .source = source, .cursor = source.len },
             };
         }

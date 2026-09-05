@@ -34,7 +34,7 @@ pub const ParseOptions = struct {
     /// Persist previous-sibling indexes. Disabled fields are zero-sized.
     store_prev_sibling: bool = false,
     /// With `validate_well_formedness`, validates XML character ranges and UTF-8
-    /// before full-buffer strict parsing. Incremental streaming still validates
+    /// before full-buffer validated parsing. Incremental streaming still validates
     /// UTF-8 boundaries required for safe chunking.
     validate_xml_characters: bool = true,
     expand_dtd_entities: bool = false,
@@ -254,7 +254,7 @@ fn validateXmlReferencesInContextAlloc(
     );
 }
 
-/// DTD-aware reference validation is intentionally out of line. Most strict XML
+/// DTD-aware reference validation is intentionally out of line. Most validated XML
 /// never declares custom entities, so keeping this larger path separate avoids
 /// perturbing the common predefined/numeric reference scanner.
 noinline fn validateXmlReferencesWithDoctypeAlloc(
@@ -796,7 +796,7 @@ pub fn validateXmlCharactersStreaming(input: []const u8) ParseError!void {
 }
 
 /// Validates XML Name codepoint ranges when UTF-8 shape has already been
-/// validated by the strict parser's whole-input XML character pass.
+/// validated by the validated parser's whole-input XML character pass.
 pub fn isValidXmlNameAssumeValidUtf8(name: []const u8) bool {
     if (name.len == 0) return false;
 
@@ -1256,7 +1256,7 @@ const DtdDeclarationKind = enum { element, attlist, entity, notation };
 
 /// Checks the physical internal subset grammar required of non-validating XML
 /// processors. Validity constraints such as unique declarations are deliberately
-/// left out, but the complete syntax and internal-subset PE restriction are
+/// left out, but the complete syntax and internal-subset PE revalidatedion are
 /// enforced.
 const DtdSequenceFrame = struct {
     input: []const u8,
@@ -1370,7 +1370,7 @@ const ExpandedDtdIterator = struct {
 
 /// Checks the physical internal subset grammar required of non-validating XML
 /// processors. Validity constraints such as unique declarations are deliberately
-/// left out, but the complete syntax and internal-subset PE restriction are
+/// left out, but the complete syntax and internal-subset PE revalidatedion are
 /// enforced.
 fn validateInternalSubset(allocator: std.mem.Allocator, subset: []const u8) ParseError!bool {
     var iterator = try ExpandedDtdIterator.init(allocator, subset, false);
