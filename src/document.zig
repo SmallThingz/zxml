@@ -2286,23 +2286,24 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         pub const Node = GetNode(options);
         pub const Attribute = GetAttribute(options);
         pub const AttributeIterator = GetAttributeIterator(options);
+        const EntityMap = if (options.expand_dtd_entities) std.StringHashMap([]u8) else void;
 
         allocator: std.mem.Allocator,
         source: options.Input() = emptyInput(options),
         /// Finished node storage. Growth and parse scratch live in parser state.
         nodes: []RawNode = &[_]RawNode{},
-        entity_map: std.StringHashMap([]u8),
+        entity_map: EntityMap,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
                 .allocator = allocator,
-                .entity_map = std.StringHashMap([]u8).init(allocator),
+                .entity_map = if (options.expand_dtd_entities) std.StringHashMap([]u8).init(allocator) else {},
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.clearEntityMap();
-            self.entity_map.deinit();
+            if (comptime options.expand_dtd_entities) self.entity_map.deinit();
             if (self.nodes.len != 0) self.allocator.free(self.nodes);
             self.nodes = &[_]RawNode{};
         }
@@ -2315,6 +2316,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         inline fn clearEntityMap(self: *Self) void {
+            if (comptime !options.expand_dtd_entities) return;
             if (self.entity_map.count() == 0) return;
             var it = self.entity_map.iterator();
             while (it.next()) |entry| {
@@ -2772,6 +2774,12 @@ test "generated DOM layout removes disabled metadata" {
     try std.testing.expectEqual(void, @FieldType(CompactNode, "last_child"));
     try std.testing.expectEqual(void, @FieldType(CompactNode, "prev_sibling"));
     try std.testing.expectEqual(void, @FieldType(CompactNode, "kind"));
+
+    const CompactDocument = compact.Document();
+    const DtdDocument = (ParseOptions{ .expand_dtd_entities = true }).Document();
+    try std.testing.expectEqual(void, @FieldType(CompactDocument, "entity_map"));
+    try std.testing.expect(@FieldType(DtdDocument, "entity_map") != void);
+    try std.testing.expect(@sizeOf(CompactDocument) < @sizeOf(DtdDocument));
 }
 
 test "parse source mutability is selected at comptime" {
