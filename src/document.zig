@@ -1850,12 +1850,6 @@ fn skipDeclarationWhitespace(body: []const u8, i: *usize) bool {
     return i.* != start;
 }
 
-pub const ParseStackEntry = struct {
-    idx: IndexInt,
-    tag_key: u64 = 0,
-    tag_len: IndexInt = 0,
-};
-
 pub const NodeType = enum(u4) {
     document,
     element,
@@ -2354,10 +2348,8 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         nodes: std.ArrayList(RawNode) = .empty,
         /// Full-validation scratch only; fastest mode never touches it.
         parse_attrs: std.ArrayList(RawAttribute) = .empty,
-        parse_validate_stack: std.ArrayList(ParseStackEntry) = .empty,
         entity_map: std.StringHashMap([]u8),
         reserved_input_hint_len: usize = 0,
-        reserved_validate_input_hint_len: usize = 0,
         last_error_offset: usize = 0,
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -2372,14 +2364,12 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             self.entity_map.deinit();
             self.nodes.deinit(self.allocator);
             self.parse_attrs.deinit(self.allocator);
-            self.parse_validate_stack.deinit(self.allocator);
         }
 
         inline fn resetForParse(self: *Self) void {
             self.clearEntityMap();
             self.nodes.items.len = 0;
             if (comptime options.validate_well_formedness) self.parse_attrs.items.len = 0;
-            if (comptime options.validate_closing_tags) self.parse_validate_stack.items.len = 0;
         }
 
         pub fn clear(self: *Self) void {
@@ -2574,27 +2564,15 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         pub inline fn reserveForInput(self: *Self, input_len: usize) !void {
-            const nodes_ready = self.nodes.capacity != 0 and input_len <= self.reserved_input_hint_len;
-            const stack_ready = if (comptime options.validate_closing_tags)
-                input_len <= self.reserved_validate_input_hint_len
-            else
-                true;
-            if (nodes_ready and stack_ready) return;
+            if (self.nodes.capacity != 0 and input_len <= self.reserved_input_hint_len) return;
             return self.reserveForInputSlow(input_len);
         }
 
         noinline fn reserveForInputSlow(self: *Self, input_len: usize) !void {
             const est_nodes = @max(@as(usize, 16), input_len / 14 +| 8);
-            const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
             if (self.nodes.capacity == 0 or input_len > self.reserved_input_hint_len) {
                 if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
                 self.reserved_input_hint_len = @max(self.reserved_input_hint_len, input_len);
-            }
-            if (comptime options.validate_closing_tags) {
-                if (input_len > self.reserved_validate_input_hint_len) {
-                    if (est_stack > self.parse_validate_stack.capacity) try self.parse_validate_stack.ensureTotalCapacity(self.allocator, est_stack);
-                    self.reserved_validate_input_hint_len = input_len;
-                }
             }
         }
     };
