@@ -22,7 +22,9 @@ pub fn Types(comptime options: ParseOptions) type {
         pub const IndexInt = doc_types.IndexInt;
         pub const Span = doc_types.Span;
         pub const RawAttribute = doc_types.RawAttribute;
+        pub const RawAttributeIterator = doc_types.RawAttributeIterator;
         pub const Attribute = doc_types.Attribute;
+        pub const AttributeIterator = doc_types.AttributeIterator;
         pub const RawNode = doc_types.RawNode;
         pub const Node = doc_types.Node;
         pub const Document = doc_types.Document;
@@ -652,7 +654,11 @@ test "attribute-heavy element parses and preserves lookups" {
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("v0", root.getAttributeValueRaw("a0").?);
     try std.testing.expectEqualStrings("v63", root.getAttributeValueRaw("a63").?);
-    try std.testing.expectEqual(@as(common.IndexInt, 64), doc.nodes.items[root.index].attributeSpan().len());
+    try std.testing.expect(doc.nodes.items[root.index].attributeSpan().len() > 64);
+    var attrs = root.attributes();
+    var attr_count: usize = 0;
+    while (attrs.next()) |_| attr_count += 1;
+    try std.testing.expectEqual(@as(usize, 64), attr_count);
 }
 
 test "firstAttribute returns the first parsed attribute" {
@@ -832,6 +838,11 @@ test "turbo unquoted attributes parse" {
 
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
+    var attrs = root.attributes();
+    const attr = attrs.next() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("a", attr.nameSlice());
+    try std.testing.expectEqualStrings("1", attr.valueRawSlice());
+    try std.testing.expect(attrs.next() == null);
 }
 
 test "strict unterminated quoted attribute fails" {

@@ -49,17 +49,19 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     const T = zxml.Types(opts);
 
     assertDeclCoverage(T, &.{
-        "IndexInt",           "Span",                       "RawAttribute",   "Attribute",       "RawNode", "Node", "Document",
+        "IndexInt",           "Span",                       "RawAttribute",   "RawAttributeIterator", "Attribute", "AttributeIterator", "RawNode", "Node", "Document",
         "StreamingAttribute", "StreamingAttributeIterator", "StreamingEvent", "StreamingParser",
     });
     assertDeclCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
     assertDeclCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
+    assertDeclCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertDeclCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
+    assertDeclCoverage(T.AttributeIterator, &.{"next"});
     assertDeclCoverage(T.Node, &.{
-        "nameSlice",         "namespacePrefix", "localName",    "namespaceUri", "valueRawSlice", "value",
-        "firstChild",        "lastChild",       "nextSibling",  "prevSibling",  "parentNode",    "getAttributeValueRaw",
-        "getAttributeValue", "firstAttribute",  "innerTextRaw", "innerText",    "querySelector", "querySelectorAll",
-        "write",
+        "nameSlice",         "namespacePrefix", "localName",   "namespaceUri", "valueRawSlice", "value",
+        "firstChild",        "lastChild",       "nextSibling", "prevSibling",  "parentNode",    "getAttributeValueRaw",
+        "getAttributeValue", "firstAttribute",  "attributes",  "innerTextRaw", "innerText",     "querySelector",
+        "querySelectorAll",  "write",
     });
     assertDeclCoverage(T.Document, &.{
         "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "nodeAt", "write", "reserveForInput",
@@ -72,12 +74,14 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
 
     assertFnCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
     assertFnCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
+    assertFnCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertFnCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
+    assertFnCoverage(T.AttributeIterator, &.{"next"});
     assertFnCoverage(T.Node, &.{
-        "nameSlice",         "namespacePrefix", "localName",    "namespaceUri", "valueRawSlice", "value",
-        "firstChild",        "lastChild",       "nextSibling",  "prevSibling",  "parentNode",    "getAttributeValueRaw",
-        "getAttributeValue", "firstAttribute",  "innerTextRaw", "innerText",    "querySelector", "querySelectorAll",
-        "write",
+        "nameSlice",         "namespacePrefix", "localName",   "namespaceUri", "valueRawSlice", "value",
+        "firstChild",        "lastChild",       "nextSibling", "prevSibling",  "parentNode",    "getAttributeValueRaw",
+        "getAttributeValue", "firstAttribute",  "attributes",  "innerTextRaw", "innerText",     "querySelector",
+        "querySelectorAll",  "write",
     });
     assertFnCoverage(T.Document, &.{
         "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "nodeAt", "write", "reserveForInput",
@@ -122,6 +126,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     _ = root.getAttributeValueRaw("a");
     if (try root.getAttributeValue(std.testing.allocator, "a")) |value| std.testing.allocator.free(value);
     const attr = root.firstAttribute().?;
+    var root_attrs = root.attributes();
+    _ = root_attrs.next();
     _ = attr.nameSlice();
     _ = attr.valueRawSlice();
     _ = attr.namespacePrefix();

@@ -829,15 +829,14 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
 }
 
 fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
-    for (doc.attrs.items, 0..) |_, i| {
-        const attr: zxml.Types(.{}).Attribute = .{
-            .doc = doc,
-            .index = @intCast(i),
-        };
-        _ = attr.value(alloc) catch |err| return mapDecodeError(err);
-    }
-
     for (doc.nodes.items, 0..) |node, i| {
+        if (node.kind == .element) {
+            const element = doc.nodeAt(@intCast(i)).?;
+            var attrs = element.attributes();
+            while (attrs.next()) |attr| {
+                _ = attr.value(alloc) catch |err| return mapDecodeError(err);
+            }
+        }
         if (node.kind != .text) continue;
         const text = doc.nodeAt(@intCast(i)).?;
         _ = text.value(alloc) catch |err| return mapDecodeError(err);
@@ -845,21 +844,16 @@ fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseErro
 }
 
 fn hasUniqueAttributes(root: anytype) bool {
-    const attrs = root.doc.attrs.items;
-    const range = root.doc.nodes.items[root.index].attributeSpan();
-    const start = range.start;
-    const end = range.end;
-
-    var i = start;
-    while (i < end) : (i += 1) {
-        var j = i + 1;
-        while (j < end) : (j += 1) {
-            if (std.mem.eql(u8, attrs[i].name.slice(root.doc.source), attrs[j].name.slice(root.doc.source))) {
-                return false;
-            }
+    var outer = root.attributes();
+    var outer_index: usize = 0;
+    while (outer.next()) |current| : (outer_index += 1) {
+        var inner = root.attributes();
+        var inner_index: usize = 0;
+        while (inner_index < outer_index) : (inner_index += 1) {
+            const previous = inner.next() orelse return false;
+            if (std.mem.eql(u8, previous.nameSlice(), current.nameSlice())) return false;
         }
     }
-
     return true;
 }
 

@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common.zig");
 const document = @import("document.zig");
 const scanner = @import("scanner.zig");
@@ -9,6 +10,11 @@ const ParseError = document.ParseError;
 const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
+
+const duplicate_helper_section = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
+    else => ".text.unlikely.zxml",
+};
 
 inline fn attributeNameHash(name: []const u8) u64 {
     var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) << 56);
@@ -177,7 +183,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
     return null;
 }
 
-noinline fn equalLongAttributePairNames(input: []const u8, first: document.Span, second: document.Span) bool {
+noinline fn equalLongAttributePairNames(input: []const u8, first: document.Span, second: document.Span) linksection(duplicate_helper_section) bool {
     std.debug.assert(first.len() == second.len() and first.len() > 1);
     return std.mem.eql(u8, first.slice(input), second.slice(input));
 }
@@ -192,7 +198,7 @@ inline fn findDuplicateAttributePair(input: []const u8, attrs: []const document.
     return if (equalLongAttributePairNames(input, first, second)) second.start else null;
 }
 
-noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) ?usize {
+noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) linksection(duplicate_helper_section) ?usize {
     if (attrs.len >= 32 and attrs.len <= 4096) {
         @branchHint(.unlikely);
         if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
@@ -297,7 +303,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 try self.doc.parse_validate_stack.ensureTotalCapacity(self.doc.allocator, self.doc.parse_stack.capacity);
                 std.debug.assert(self.doc.parse_validate_stack.items.len == 0);
             }
-            std.debug.assert(self.doc.nodes.items.len == 0 and self.doc.attrs.items.len == 0);
+            std.debug.assert(self.doc.nodes.items.len == 0);
             _ = self.doc.nodes.addOneAssumeCapacity();
             self.doc.nodes.items[0] = .{
                 .kind = .document,
@@ -410,8 +416,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
             }
             // Common path: start tag with no attributes.
-            if (self.i < self.input.len) {
-                const c0 = self.input[self.i];
+            if (self.i >= self.input.len) return error.UnexpectedEndOfData;
+            const c0 = self.input[self.i];
+            if (comptime strict_mode) {
                 if (c0 == '>') {
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
@@ -425,29 +432,42 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
                     return;
                 }
+            } else {
+                if (c0 == '>') {
+                    @branchHint(.likely);
+                    self.i += 1;
+                    self.skipDroppedWhitespaceText();
+                    if (comptime !validate_closing_tags and !strict_mode) {
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, 0, 0)) return;
+                    }
+                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
+                    if (comptime validate_closing_tags or strict_mode) {
+                        if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                    }
+                    try self.pushStack(element_idx, name_scan.key, name_end - name_start);
+                    return;
+                }
+            }
 
+            if (comptime strict_mode) {
                 if (c0 == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
+                    self.i += 2;
+                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
+                    return;
+                }
+            } else if (self.i + 1 < self.input.len) {
+                const terminator_pair = std.mem.readInt(u16, self.input[self.i..][0..2], .little);
+                if (terminator_pair == (@as(u16, '>') << 8 | @as(u16, '/'))) {
                     self.i += 2;
                     _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, 0, 0);
                     return;
                 }
             }
 
-            const attr_start_idx: IndexInt = @intCast(self.doc.attrs.items.len);
+            const attr_start = self.i;
+            if (comptime strict_mode) self.doc.parse_attrs.items.len = 0;
             if (comptime !strict_mode) {
-                while (scanner.scanSimpleQuotedAttribute(self.input, self.i)) |fast| {
-                    const attr_len = self.doc.attrs.items.len;
-                    if (attr_len == self.doc.attrs.capacity) {
-                        @branchHint(.unlikely);
-                        self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, attr_len +| attr_len / 2 +| @as(usize, 8)) catch return error.OutOfMemory;
-                    }
-                    const attr_out = self.doc.attrs.addOneAssumeCapacity();
-                    attr_out.* = .{
-                        .name = .{ .start = @intCast(fast.name_start), .end = @intCast(fast.name_end) },
-                        .value = .{ .start = @intCast(fast.value_start), .end = @intCast(fast.value_end) },
-                    };
-                    self.i = fast.next;
-                }
+                while (scanner.scanSimpleQuotedAttribute(self.input, self.i)) |fast| self.i = fast.next;
             }
             while (self.i < self.input.len) {
                 const boundary = self.i;
@@ -456,26 +476,25 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 const c = self.input[self.i];
                 if (c == '>') {
+                    const attr_end = self.i;
                     if (comptime strict_mode) {
                         const input = self.input;
-                        try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
-                        const attr_end_idx = self.doc.attrs.items.len;
-                        const attr_start_usize: usize = attr_start_idx;
-                        const attr_count = attr_end_idx - attr_start_usize;
-                        if (attr_count == 2) {
-                            if (findDuplicateAttributePair(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
-                                self.i = duplicate_start;
-                                return error.DuplicateAttribute;
-                            }
-                        } else if (attr_count > 2) {
-                            if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
-                                self.i = duplicate_start;
-                                return error.DuplicateAttribute;
-                            }
+                        try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
+                        const attrs = self.doc.parse_attrs.items;
+                        const duplicate_start = if (attrs.len == 2)
+                            findDuplicateAttributePair(input, attrs)
+                        else if (attrs.len > 2)
+                            findDuplicateAttribute(input, attrs)
+                        else
+                            null;
+                        if (duplicate_start) |duplicate| {
+                            self.i = duplicate;
+                            return error.DuplicateAttribute;
                         }
                     }
                     self.i += 1;
-                    const attr_end_idx: IndexInt = @intCast(self.doc.attrs.items.len);
+                    const attr_start_idx: IndexInt = @intCast(attr_start);
+                    const attr_end_idx: IndexInt = @intCast(attr_end);
                     self.skipDroppedWhitespaceText();
                     if (comptime !validate_closing_tags and !strict_mode) {
                         if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx)) return;
@@ -489,26 +508,24 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 if (c == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
+                    const attr_end = self.i;
                     if (comptime strict_mode) {
                         const input = self.input;
-                        try self.validateDeferredDtdAttributeReferences(input, attr_start_idx);
-                        const attr_end_idx = self.doc.attrs.items.len;
-                        const attr_start_usize: usize = attr_start_idx;
-                        const attr_count = attr_end_idx - attr_start_usize;
-                        if (attr_count == 2) {
-                            if (findDuplicateAttributePair(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
-                                self.i = duplicate_start;
-                                return error.DuplicateAttribute;
-                            }
-                        } else if (attr_count > 2) {
-                            if (findDuplicateAttribute(input, self.doc.attrs.items[attr_start_usize..attr_end_idx])) |duplicate_start| {
-                                self.i = duplicate_start;
-                                return error.DuplicateAttribute;
-                            }
+                        try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
+                        const attrs = self.doc.parse_attrs.items;
+                        const duplicate_start = if (attrs.len == 2)
+                            findDuplicateAttributePair(input, attrs)
+                        else if (attrs.len > 2)
+                            findDuplicateAttribute(input, attrs)
+                        else
+                            null;
+                        if (duplicate_start) |duplicate| {
+                            self.i = duplicate;
+                            return error.DuplicateAttribute;
                         }
                     }
                     self.i += 2;
-                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, @intCast(self.doc.attrs.items.len));
+                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(attr_start), @intCast(attr_end));
                     return;
                 }
 
@@ -553,7 +570,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
-                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand, attr_start_idx);
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
                                 self.i = scan.end + 1;
                             } else if (scanner.findByte(input, value_start, quote)) |quote_pos| {
                                 value_end = quote_pos;
@@ -580,7 +597,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
-                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand, attr_start_idx);
+                                try self.validateAttributeValueSpecials(input[value_start..value_end], scan.has_lt, scan.has_ampersand);
                                 self.i = scan.end + 1;
                             } else if (scanner.findByte(input, self.i, quote)) |quote_pos| {
                                 value_end = quote_pos;
@@ -611,16 +628,20 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     }
                 }
 
-                const attr_len = self.doc.attrs.items.len;
-                if (attr_len == self.doc.attrs.capacity) {
-                    @branchHint(.unlikely);
-                    self.doc.attrs.ensureTotalCapacityPrecise(self.doc.allocator, attr_len +| attr_len / 2 +| @as(usize, 8)) catch return error.OutOfMemory;
+                if (comptime strict_mode) {
+                    const attr_len = self.doc.parse_attrs.items.len;
+                    if (attr_len == self.doc.parse_attrs.capacity) {
+                        @branchHint(.unlikely);
+                        self.doc.parse_attrs.ensureTotalCapacityPrecise(
+                            self.doc.allocator,
+                            attr_len +| attr_len / 2 +| @as(usize, 8),
+                        ) catch return error.OutOfMemory;
+                    }
+                    self.doc.parse_attrs.addOneAssumeCapacity().* = .{
+                        .name = .{ .start = @intCast(attr_name_start), .end = @intCast(attr_name_end) },
+                        .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
+                    };
                 }
-                const attr_out = self.doc.attrs.addOneAssumeCapacity();
-                attr_out.* = .{
-                    .name = .{ .start = @intCast(attr_name_start), .end = @intCast(attr_name_end) },
-                    .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-                };
             }
 
             return error.UnexpectedEndOfData;
@@ -1180,14 +1201,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return true;
         }
 
-        inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start_idx: IndexInt) ParseError!void {
+        inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start: usize, attr_end: usize) ParseError!void {
             if (comptime !strict_mode or expand_dtd_entities) return;
             if (self.doctype_seen and self.standalone_yes) {
                 @branchHint(.cold);
-                const start: usize = attr_start_idx;
                 const validation: document.DtdAttributeValidation = .{
                     .input = input,
-                    .attributes = self.doc.attrs.items[start..],
+                    .attributes = .{ .start = @intCast(attr_start), .end = @intCast(attr_end) },
                 };
                 try document.validateDoctypeEntityConstraintsAlloc(
                     self.doc.allocator,
@@ -1199,7 +1219,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
         }
 
-        inline fn validateAttributeValueSpecials(self: *Self, value: []const u8, has_lt: bool, has_ampersand: bool, attr_start_idx: IndexInt) ParseError!void {
+        inline fn validateAttributeValueSpecials(self: *Self, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
             if (has_lt) return error.InvalidAttributeValue;
             if (has_ampersand) {
                 if (comptime !expand_dtd_entities) {
@@ -1208,12 +1228,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         return;
                     }
                 }
-                const attr_start: usize = attr_start_idx;
-                const previous = if (self.doc.attrs.items.len > attr_start)
-                    self.doc.attrs.items[self.doc.attrs.items.len - 1].value.slice(self.input)
-                else
-                    null;
-                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities, previous);
+                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities, null);
             }
         }
 
@@ -1347,5 +1362,9 @@ test "strict start tags accept mixed XML whitespace between attributes" {
     defer doc.deinit();
     doc.source = source;
     try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
-    try std.testing.expectEqual(@as(usize, 2), doc.attrs.items.len);
+    const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+    var attrs = root.attributes();
+    try std.testing.expectEqualStrings("a", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());
+    try std.testing.expectEqualStrings("b", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());
+    try std.testing.expect(attrs.next() == null);
 }
