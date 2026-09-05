@@ -13,26 +13,33 @@ pub const StreamBenchMode = enum {
     turbo,
 };
 
-const options: zxml.ParseOptions = .{};
-const Document = zxml.Types(options).Document;
+const dom_strict_options: zxml.ParseOptions = .{
+    .mode = .strict,
+    .validate_closing_tags = true,
+    .include_misc_nodes = true,
+};
+const dom_strict_trusted_options: zxml.ParseOptions = .{
+    .mode = .strict,
+    .validate_closing_tags = true,
+    .validate_xml_characters = false,
+    .include_misc_nodes = true,
+};
+const dom_turbo_options: zxml.ParseOptions = .{};
 
 fn elapsedNs(start: std.Io.Clock.Timestamp, finish: std.Io.Clock.Timestamp) u64 {
     const elapsed = start.durationTo(finish);
     return @intCast(@max(elapsed.raw.nanoseconds, 0));
 }
 
-fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_strict_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_closing_tags = true,
-            .include_misc_nodes = true,
-        });
+        try doc.parse(input);
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
@@ -40,19 +47,15 @@ fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterati
     return elapsedNs(start, finish);
 }
 
-fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_strict_trusted_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_closing_tags = true,
-            .validate_xml_characters = false,
-            .include_misc_nodes = true,
-        });
+        try doc.parse(input);
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
@@ -60,17 +63,15 @@ fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, 
     return elapsedNs(start, finish);
 }
 
-fn runDomTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+fn runDomTurbo(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_turbo_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input, .{
-            .mode = .turbo,
-            .include_misc_nodes = true,
-        });
+        try doc.parse(input);
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);

@@ -245,9 +245,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         require_declared_entities: bool = true,
 
         const Self = @This();
+        const RawNode = DocType.RawNode;
 
         const strict_mode = opts.mode == .strict and opts.validate_well_formedness;
-        const full_navigation_index = opts.navigation_index == .full;
         const validate_closing_tags = opts.validate_closing_tags;
         const require_closed_elements_on_eof = opts.require_closed_elements_on_eof;
         const expand_dtd_entities = opts.expand_dtd_entities;
@@ -304,19 +304,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         fn parse(noalias self: *Self) align(128) ParseError!void {
-            try self.doc.reserveForInput(self.input.len, opts);
+            try self.doc.reserveForInput(self.input.len);
             if (comptime validate_closing_tags) {
                 std.debug.assert(self.doc.parse_validate_stack.items.len == 0);
             }
             std.debug.assert(self.doc.nodes.items.len == 0);
             _ = self.doc.nodes.addOneAssumeCapacity();
-            self.doc.nodes.items[0] = .{
-                .kind = .document,
-                .parent = InvalidIndex,
-            };
-            if (comptime full_navigation_index) {
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = 0 });
-            }
+            self.doc.nodes.items[0] = RawNode.initDocument();
             while (self.i + 1 < self.input.len) {
                 if (self.input[self.i] != '<') {
                     if (comptime strict_mode) {
@@ -448,9 +442,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
                     if (comptime !validate_closing_tags and !strict_mode) {
-                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end))) return;
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
-                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end));
+                    const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     if (comptime validate_closing_tags or strict_mode) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
@@ -463,9 +457,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
                     if (comptime !strict_mode) {
-                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end))) return;
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
-                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end));
+                    const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     if (comptime validate_closing_tags or strict_mode) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
@@ -477,50 +471,36 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime strict_mode) {
                 if (c0 == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     self.i += 2;
-                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end));
+                    _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     return;
                 }
             } else if (self.i + 1 < self.input.len) {
                 const terminator_pair = std.mem.readInt(u16, self.input[self.i..][0..2], .little);
                 if (terminator_pair == (@as(u16, '>') << 8 | @as(u16, '/'))) {
                     self.i += 2;
-                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(name_end), @intCast(name_end));
+                    _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     return;
                 }
             }
 
             const attr_start = self.i;
             if (comptime !strict_mode) {
-                const tail = if (comptime opts.quote_aware_attribute_boundaries)
-                    scanner.scanStartTagEnd(self.input, attr_start) orelse {
-                        self.i = self.input.len;
-                        return error.UnexpectedEndOfData;
-                    }
-                else blk: {
-                    const end = scanner.findByte(self.input, attr_start + 1, '>') orelse {
-                        self.i = self.input.len;
-                        return error.UnexpectedEndOfData;
-                    };
-                    break :blk scanner.StartTagEndScan{
-                        .end = end,
-                        .self_closing = end > attr_start and self.input[end - 1] == '/',
-                    };
+                const tail = scanner.scanStartTagEnd(self.input, attr_start) orelse {
+                    self.i = self.input.len;
+                    return error.UnexpectedEndOfData;
                 };
 
-                const attr_end: usize = if (tail.self_closing) tail.end - 1 else tail.end;
                 self.i = tail.end + 1;
                 if (tail.self_closing) {
-                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(attr_start), @intCast(attr_end));
+                    _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     return;
                 }
 
-                const attr_start_idx: IndexInt = @intCast(attr_start);
-                const attr_end_idx: IndexInt = @intCast(attr_end);
                 self.skipDroppedWhitespaceText();
                 if (comptime !strict_mode) {
-                    if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx)) return;
+                    if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                 }
-                const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx);
+                const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                 if (comptime validate_closing_tags) {
                     if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                 }
@@ -552,13 +532,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                     }
                     self.i += 1;
-                    const attr_start_idx: IndexInt = @intCast(attr_start);
-                    const attr_end_idx: IndexInt = @intCast(attr_end);
                     self.skipDroppedWhitespaceText();
                     if (comptime !validate_closing_tags and !strict_mode) {
-                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx)) return;
+                        if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
-                    const element_idx = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start_idx, attr_end_idx);
+                    const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     if (comptime validate_closing_tags or strict_mode) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
@@ -584,7 +562,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                     }
                     self.i += 2;
-                    _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, @intCast(attr_start), @intCast(attr_end));
+                    _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     return;
                 }
 
@@ -725,7 +703,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     // does not validate the spelling, so use the known open-name
                     // length to jump straight to `>` and scan only unusual forms.
                     if (self.current_parent != 0) {
-                        const expected_gt = self.i + @as(usize, self.doc.nodes.items[self.current_parent].name_len);
+                        const expected_gt = self.i + @as(usize, self.doc.nodes.items[self.current_parent].name_or_text.len());
                         if (expected_gt < self.input.len and self.input[expected_gt] == '>') {
                             self.i = expected_gt + 1;
                             self.current_parent = self.doc.nodes.items[self.current_parent].parent;
@@ -763,7 +741,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_name = self.input[close_start..close_end];
             if (scanner.prefixKey(close_name) != top.tag_key) return error.InvalidClosingTagName;
             if (close_len > 8) {
-                const open_name = self.doc.nodes.items[top.idx].nameSpan().slice(self.input);
+                const open_name = self.doc.nodes.items[top.idx].name_or_text.slice(self.input);
                 if (!std.mem.eql(u8, open_name[8..], close_name[8..])) return error.InvalidClosingTagName;
             }
             self.i = close_end;
@@ -872,12 +850,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const kind: NodeType = if (decl) .declaration else .pi;
 
             const parent_idx = self.topIndex();
-            _ = try self.appendNodeTo(parent_idx, .{
-                .kind = kind,
-                .data = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-                .name_len = @truncate(target_end - target_start),
-                .name_gap = @truncate(value_start - target_end),
-            });
+            _ = try self.appendMiscNodeTo(
+                parent_idx,
+                kind,
+                .{ .start = @intCast(target_start), .end = @intCast(target_end) },
+                .{ .start = @intCast(value_start), .end = @intCast(value_end) },
+            );
         }
 
         fn parseBangNode(noalias self: *Self) ParseError!void {
@@ -894,10 +872,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (!opts.include_misc_nodes) return;
 
                 const parent_idx = self.topIndex();
-                _ = try self.appendNodeTo(parent_idx, .{
-                    .kind = .comment,
-                    .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
-                });
+                _ = try self.appendMiscNodeTo(
+                    parent_idx,
+                    .comment,
+                    .{ .start = @intCast(value_start), .end = @intCast(end) },
+                    .{},
+                );
                 return;
             }
 
@@ -922,13 +902,17 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (self.topIndex() == 0) return error.InvalidDocumentContent;
                 }
 
-                if (!opts.include_misc_nodes) return;
-
                 const parent_idx = self.topIndex();
-                _ = try self.appendNodeTo(parent_idx, .{
-                    .kind = .cdata,
-                    .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
-                });
+                if (comptime opts.include_misc_nodes) {
+                    _ = try self.appendMiscNodeTo(
+                        parent_idx,
+                        .cdata,
+                        .{ .start = @intCast(value_start), .end = @intCast(end) },
+                        .{},
+                    );
+                } else {
+                    _ = try self.appendTextNodeTo(parent_idx, value_start, end);
+                }
                 return;
             }
 
@@ -969,10 +953,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (!opts.include_misc_nodes) return;
 
                 const parent_idx = self.topIndex();
-                _ = try self.appendNodeTo(parent_idx, .{
-                    .kind = .doctype,
-                    .data = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-                });
+                _ = try self.appendMiscNodeTo(
+                    parent_idx,
+                    .doctype,
+                    .{ .start = @intCast(value_start), .end = @intCast(value_end) },
+                    .{},
+                );
                 return;
             }
 
@@ -981,90 +967,73 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (self.i < self.input.len) self.i += 1;
         }
 
-        inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
+        inline fn previousSiblingForAppend(noalias self: *Self, parent_idx: IndexInt) IndexInt {
+            if (comptime !opts.store_prev_sibling) return InvalidIndex;
             const len = self.doc.nodes.items.len;
-            if (len == self.doc.nodes.capacity) {
-                @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                if (comptime full_navigation_index) self.doc.navigation.ensureTotalCapacityPrecise(self.doc.allocator, self.doc.nodes.capacity) catch return error.OutOfMemory;
+            if (len <= 1) return InvalidIndex;
+            var candidate: IndexInt = @intCast(len - 1);
+            while (candidate != InvalidIndex and candidate > parent_idx) {
+                const parent = self.doc.nodes.items[candidate].parent;
+                if (parent == parent_idx) return candidate;
+                if (parent == InvalidIndex or parent >= candidate) return InvalidIndex;
+                candidate = parent;
             }
-            const idx: IndexInt = @intCast(len);
-            const out = self.doc.nodes.addOneAssumeCapacity();
-            out.* = .{
-                .kind = .element,
-                .data = .{ .start = @intCast(name_end), .end = @intCast(name_end) },
-                .name_len = @truncate(name_end - name_start),
-                .parent = parent_idx,
-            };
-            if (comptime full_navigation_index) {
-                const prev = self.doc.navigation.items[parent_idx].last_child;
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = idx, .prev_sibling = prev });
-                self.doc.navigation.items[parent_idx].last_child = idx;
-            }
-            return idx;
+            return InvalidIndex;
         }
 
-        inline fn appendElementNodeWithAttrsTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize, attr_start: IndexInt, attr_end: IndexInt) ParseError!IndexInt {
+        inline fn commitChildMetadata(noalias self: *Self, parent_idx: IndexInt, idx: IndexInt) void {
+            if (comptime opts.store_last_child) self.doc.nodes.items[parent_idx].last_child = idx;
+        }
+
+        inline fn ensureNodeCapacity(noalias self: *Self, needed: usize) ParseError!void {
             const len = self.doc.nodes.items.len;
-            if (len == self.doc.nodes.capacity) {
+            if (self.doc.nodes.capacity - len < needed) {
                 @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                if (comptime full_navigation_index) self.doc.navigation.ensureTotalCapacityPrecise(self.doc.allocator, self.doc.nodes.capacity) catch return error.OutOfMemory;
+                const target = @max(len + needed, len +| len / 2 +| 8);
+                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, target) catch return error.OutOfMemory;
             }
-            const idx: IndexInt = @intCast(len);
-            const out = self.doc.nodes.addOneAssumeCapacity();
-            out.* = .{
-                .kind = .element,
-                .data = .{ .start = attr_start, .end = attr_end },
-                .name_len = @truncate(name_end - name_start),
-                .parent = parent_idx,
-            };
-            if (comptime full_navigation_index) {
-                const prev = self.doc.navigation.items[parent_idx].last_child;
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = idx, .prev_sibling = prev });
-                self.doc.navigation.items[parent_idx].last_child = idx;
-            }
+        }
+
+        inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
+            try self.ensureNodeCapacity(1);
+            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const prev = self.previousSiblingForAppend(parent_idx);
+            self.doc.nodes.appendAssumeCapacity(RawNode.initElement(
+                idx,
+                parent_idx,
+                .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                prev,
+            ));
+            self.commitChildMetadata(parent_idx, idx);
             return idx;
         }
 
         inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start_: usize, end_: usize) ParseError!IndexInt {
-            const len = self.doc.nodes.items.len;
-            if (len == self.doc.nodes.capacity) {
-                @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                if (comptime full_navigation_index) self.doc.navigation.ensureTotalCapacityPrecise(self.doc.allocator, self.doc.nodes.capacity) catch return error.OutOfMemory;
-            }
-            const idx: IndexInt = @intCast(len);
-            const out = self.doc.nodes.addOneAssumeCapacity();
-            out.* = .{
-                .kind = .text,
-                .data = .{ .start = @intCast(start_), .end = @intCast(end_) },
-                .parent = parent_idx,
-            };
-            if (comptime full_navigation_index) {
-                const prev = self.doc.navigation.items[parent_idx].last_child;
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = idx, .prev_sibling = prev });
-                self.doc.navigation.items[parent_idx].last_child = idx;
-            }
+            try self.ensureNodeCapacity(1);
+            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const prev = self.previousSiblingForAppend(parent_idx);
+            self.doc.nodes.appendAssumeCapacity(RawNode.initText(
+                parent_idx,
+                .{ .start = @intCast(start_), .end = @intCast(end_) },
+                prev,
+            ));
+            self.commitChildMetadata(parent_idx, idx);
             return idx;
         }
 
-        inline fn appendNodeTo(noalias self: *Self, parent_idx: IndexInt, node: document.RawNode) ParseError!IndexInt {
-            const len = self.doc.nodes.items.len;
-            if (len == self.doc.nodes.capacity) {
-                @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                if (comptime full_navigation_index) self.doc.navigation.ensureTotalCapacityPrecise(self.doc.allocator, self.doc.nodes.capacity) catch return error.OutOfMemory;
-            }
-            const idx: IndexInt = @intCast(len);
-            const out = self.doc.nodes.addOneAssumeCapacity();
-            out.* = node;
-            out.parent = parent_idx;
-            if (comptime full_navigation_index) {
-                const prev = self.doc.navigation.items[parent_idx].last_child;
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = idx, .prev_sibling = prev });
-                self.doc.navigation.items[parent_idx].last_child = idx;
-            }
+        inline fn appendMiscNodeTo(
+            noalias self: *Self,
+            parent_idx: IndexInt,
+            kind: NodeType,
+            primary: document.Span,
+            value: document.Span,
+        ) ParseError!IndexInt {
+            comptime std.debug.assert(opts.include_misc_nodes);
+            try self.ensureNodeCapacity(1);
+            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const prev = self.previousSiblingForAppend(parent_idx);
+            self.doc.nodes.appendAssumeCapacity(RawNode.initMisc(parent_idx, kind, primary, value, prev));
+            self.commitChildMetadata(parent_idx, idx);
             return idx;
         }
 
@@ -1105,7 +1074,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
-            if (comptime full_navigation_index) self.doc.navigation.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
+            self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {
@@ -1145,8 +1114,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             parent_idx: IndexInt,
             name_start: usize,
             name_end: usize,
-            attr_start: IndexInt,
-            attr_end: IndexInt,
         ) ParseError!bool {
             comptime std.debug.assert(!strict_mode);
             const text_start = self.i;
@@ -1188,39 +1155,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i = j;
             const raw = self.input[text_start..lt];
             if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0]) and scanner.skipWhitespace(raw, 0) == raw.len) {
-                _ = try self.appendElementNodeWithAttrsTo(parent_idx, name_start, name_end, attr_start, attr_end);
+                _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                 return true;
             }
 
-            const len = self.doc.nodes.items.len;
-            if (self.doc.nodes.capacity - len < 2) {
-                @branchHint(.unlikely);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                if (self.doc.nodes.capacity - len < 2) self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, len + 2) catch return error.OutOfMemory;
-            }
-            const element_idx: IndexInt = @intCast(len);
-            const text_idx: IndexInt = @intCast(len + 1);
-            const out = self.doc.nodes.addManyAsArrayAssumeCapacity(2);
-            out[0] = .{
-                .kind = .element,
-                .data = .{ .start = attr_start, .end = attr_end },
-                .name_len = @truncate(name_end - name_start),
-                .parent = parent_idx,
-            };
-            out[1] = .{
-                .kind = .text,
-                .data = .{ .start = @intCast(text_start), .end = @intCast(lt) },
-                .parent = element_idx,
-            };
-            if (comptime full_navigation_index) {
-                if (self.doc.navigation.capacity - self.doc.navigation.items.len < 2) {
-                    self.doc.navigation.ensureTotalCapacityPrecise(self.doc.allocator, self.doc.nodes.capacity) catch return error.OutOfMemory;
-                }
-                const prev = self.doc.navigation.items[parent_idx].last_child;
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = text_idx, .last_child = text_idx, .prev_sibling = prev });
-                self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = text_idx });
-                self.doc.navigation.items[parent_idx].last_child = element_idx;
-            }
+            const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
+            _ = try self.appendTextNodeTo(element_idx, text_start, lt);
+            self.finishNode(element_idx);
             return true;
         }
 
@@ -1288,8 +1229,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 if (whitespace_only) return true;
             }
-            const text_idx = try self.appendTextNodeTo(idx, text_start, lt);
-            if (comptime full_navigation_index) self.doc.navigation.items[idx].subtree_end = text_idx;
+            _ = try self.appendTextNodeTo(idx, text_start, lt);
+            self.finishNode(idx);
             return true;
         }
 
