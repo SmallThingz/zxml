@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "dsig-structure-present",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Envelope><ds:Signature><ds:SignedInfo><ds:CanonicalizationMethod Algorithm='c14n'/></ds:SignedInfo><ds:SignatureValue>ABCD1234</ds:SignatureValue></ds:Signature></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
@@ -14,7 +17,10 @@
     },
     {
       "name": "dsig-digestvalue-pattern-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Envelope><ds:DigestValue>ABCDEF12</ds:DigestValue></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
@@ -24,7 +30,10 @@
     },
     {
       "name": "dsig-digestvalue-pattern-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Envelope><ds:DigestValue>ABCdef12</ds:DigestValue></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
@@ -34,7 +43,10 @@
     },
     {
       "name": "dsig-signaturevalue-pattern-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Envelope><ds:SignatureValue>QWERTY12</ds:SignatureValue></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
@@ -44,7 +56,10 @@
     },
     {
       "name": "dsig-signaturevalue-pattern-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Envelope><ds:SignatureValue>QWERTY-2</ds:SignatureValue></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",
@@ -54,7 +69,10 @@
     },
     {
       "name": "dsig-parser-preserves-source-whitespace",
-      "profiles": ["strict_entities_ws", "turbo_entities_ws"],
+      "profiles": [
+        "validated_entities_ws",
+        "permissive_entities_ws"
+      ],
       "xml": "<Envelope><ds:SignedInfo>  A\n\tB   C  </ds:SignedInfo></Envelope>",
       "expect_ok": true,
       "expect_root_name": "Envelope",

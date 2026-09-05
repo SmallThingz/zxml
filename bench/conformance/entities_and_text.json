@@ -3,7 +3,7 @@
   "cases": [
     {
       "name": "decode-entities-in-text-and-attribute",
-      "profile": "strict_entities",
+      "profile": "validated_entities",
       "xml": "<r a='&amp;&#65;'>&lt;x&gt;&#x41;</r>",
       "expect_ok": true,
       "expect_nodes": 3,
@@ -15,14 +15,14 @@
     },
     {
       "name": "preserve-mixed-whitespace-text",
-      "profile": "strict_entities_ws",
+      "profile": "validated_entities_ws",
       "xml": "<r> a\n\t b   c </r>",
       "expect_ok": true,
       "expect_first_text": " a\n\t b   c "
     },
     {
       "name": "cdata-remains-verbatim",
-      "profile": "strict_entities",
+      "profile": "validated_misc",
       "xml": "<r><![CDATA[a<&>b]]></r>",
       "expect_ok": true,
       "expect_nodes": 3,
@@ -32,7 +32,10 @@
     },
     {
       "name": "dtd-entity-expansion-opt-in",
-      "profiles": ["strict_dtd_entities", "turbo_dtd_entities"],
+      "profiles": [
+        "validated_dtd_entities",
+        "permissive_dtd_entities"
+      ],
       "xml": "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r a='&safe;'>&safe;</r>",
       "expect_ok": true,
       "expect_root_name": "r",

@@ -5,7 +5,6 @@ const zxml = @import("zxml");
 pub const ConformanceError = error{
     InvalidArguments,
     InvalidSuiteFormat,
-    InvalidProfile,
     NoSuitesFound,
     ConformanceFailed,
 };
@@ -275,7 +274,7 @@ fn runCase(alloc: std.mem.Allocator, obj: std.json.ObjectMap, case_idx: usize) !
         return .{ .case_name = case_name, .pass = true, .reason = null };
     }
 
-    const profile = valueString(obj, "profile") orelse "turbo_default";
+    const profile = valueString(obj, "profile") orelse "permissive";
     return runCaseWithProfile(alloc, spec, profile);
 }
 
@@ -310,6 +309,24 @@ const CaseSpec = struct {
 };
 
 fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const u8) !CaseResult {
+    if (std.mem.eql(u8, profile, "permissive")) return runCaseWithOptions(.{}, false, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "validated")) return runCaseWithOptions(.{ .validate_well_formedness = true }, false, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "permissive_misc")) return runCaseWithOptions(.{ .include_misc_nodes = true }, false, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "validated_misc")) return runCaseWithOptions(.{ .validate_well_formedness = true, .include_misc_nodes = true }, false, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "permissive_entities")) return runCaseWithOptions(.{}, true, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "validated_entities")) return runCaseWithOptions(.{ .validate_well_formedness = true }, true, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "permissive_entities_ws")) return runCaseWithOptions(.{ .drop_whitespace_text_nodes = false }, true, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "validated_entities_ws")) return runCaseWithOptions(.{ .validate_well_formedness = true, .drop_whitespace_text_nodes = false }, true, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "permissive_dtd_entities")) return runCaseWithOptions(.{ .expand_dtd_entities = true }, true, alloc, spec, profile);
+    if (std.mem.eql(u8, profile, "validated_dtd_entities")) return runCaseWithOptions(.{ .validate_well_formedness = true, .expand_dtd_entities = true }, true, alloc, spec, profile);
+    return .{
+        .case_name = spec.case_name,
+        .pass = false,
+        .reason = try std.fmt.allocPrint(alloc, "[{s}] unknown profile", .{profile}),
+    };
+}
+
+fn runCaseWithOptions(comptime options: zxml.ParseOptions, comptime decode_values: bool, alloc: std.mem.Allocator, spec: CaseSpec, profile: []const u8) !CaseResult {
     const case_name = spec.case_name;
     const expect_ok = spec.expect_ok;
     const expect_error = spec.expect_error;
@@ -325,7 +342,6 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     defer arena.deinit();
     const case_alloc = arena.allocator();
 
-    const options: zxml.ParseOptions = .{};
     const Document = zxml.Types(options).Document;
     var doc = Document.init(case_alloc);
     defer doc.deinit();
@@ -335,15 +351,12 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
 
     var parse_err: ?zxml.ParseError = null;
     const ok = blk: {
-        parseWithProfile(&doc, xml_buf, profile) catch |err| {
-            if (err == ConformanceError.InvalidProfile) {
-                break :blk false;
-            }
-            parse_err = @errorCast(err);
+        doc.parse(xml_buf) catch |err| {
+            parse_err = err;
             break :blk false;
         };
 
-        if (profileWantsDecodedValues(profile)) {
+        if (decode_values) {
             validateDecodedProfile(case_alloc, &doc) catch |err| {
                 parse_err = err;
                 break :blk false;
@@ -351,14 +364,6 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
         }
         break :blk true;
     };
-
-    if (!ok and parse_err == null) {
-        return .{
-            .case_name = case_name,
-            .pass = false,
-            .reason = try std.fmt.allocPrint(alloc, "[{s}] unknown profile", .{profile}),
-        };
-    }
 
     if (ok != expect_ok) {
         if (ok) {
@@ -440,7 +445,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
         }
 
         if (expect_root_attr_name) |attr_name| {
-            const got = try rootAttributeValue(case_alloc, root, profile, attr_name) orelse {
+            const got = try rootAttributeValue(case_alloc, root, decode_values, attr_name) orelse {
                 return .{
                     .case_name = case_name,
                     .pass = false,
@@ -460,7 +465,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     }
 
     if (expect_first_text) |expected| {
-        const got = try firstText(case_alloc, &doc, profile) orelse {
+        const got = try firstText(case_alloc, &doc, decode_values) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -531,7 +536,7 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     }
 
     if (spec.expect_field_name) |field_name| {
-        const field_text = try elementTextByName(case_alloc, &doc, profile, field_name) orelse {
+        const field_text = try elementTextByName(case_alloc, &doc, decode_values, field_name) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -592,14 +597,14 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
 
     if (left_name) |left_field| {
         const right_field = right_name.?;
-        const left_text = try elementTextByName(case_alloc, &doc, profile, left_field) orelse {
+        const left_text = try elementTextByName(case_alloc, &doc, decode_values, left_field) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
                 .reason = try std.fmt.allocPrint(alloc, "[{s}] expected date field {s}, found none", .{ profile, left_field }),
             };
         };
-        const right_text = try elementTextByName(case_alloc, &doc, profile, right_field) orelse {
+        const right_text = try elementTextByName(case_alloc, &doc, decode_values, right_field) orelse {
             return .{
                 .case_name = case_name,
                 .pass = false,
@@ -621,121 +626,6 @@ fn runCaseWithProfile(alloc: std.mem.Allocator, spec: CaseSpec, profile: []const
     return .{ .case_name = case_name, .pass = true, .reason = null };
 }
 
-fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.ParseError || ConformanceError)!void {
-    if (std.mem.eql(u8, profile, "turbo_default")) {
-        try doc.parse(input, .{});
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict_closed")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-            .require_closed_elements_on_eof = true,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict_entities")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict_entities_ws")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-            .drop_whitespace_text_nodes = false,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict_misc_off")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-            .include_misc_nodes = false,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "turbo_misc_off")) {
-        try doc.parse(input, .{
-            .mode = .turbo,
-            .include_misc_nodes = false,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "strict_dtd_entities")) {
-        try doc.parse(input, .{
-            .mode = .strict,
-            .validate_well_formedness = true,
-            .validate_closing_tags = true,
-            .expand_dtd_entities = true,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "turbo_dtd_entities")) {
-        try doc.parse(input, .{
-            .mode = .turbo,
-            .expand_dtd_entities = true,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "turbo_entities")) {
-        try doc.parse(input, .{
-            .mode = .turbo,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "turbo_entities_ws")) {
-        try doc.parse(input, .{
-            .mode = .turbo,
-            .drop_whitespace_text_nodes = false,
-        });
-        return;
-    }
-
-    if (std.mem.eql(u8, profile, "turbo_validate")) {
-        try doc.parse(input, .{
-            .mode = .turbo,
-            .validate_closing_tags = true,
-        });
-        return;
-    }
-
-    return ConformanceError.InvalidProfile;
-}
-
-fn profileWantsDecodedValues(profile: []const u8) bool {
-    return std.mem.eql(u8, profile, "strict_entities") or
-        std.mem.eql(u8, profile, "strict_entities_ws") or
-        std.mem.eql(u8, profile, "turbo_entities") or
-        std.mem.eql(u8, profile, "turbo_entities_ws") or
-        std.mem.eql(u8, profile, "strict_dtd_entities") or
-        std.mem.eql(u8, profile, "turbo_dtd_entities");
-}
-
 fn mapDecodeError(err: anyerror) zxml.ParseError {
     return switch (err) {
         error.OutOfMemory => error.OutOfMemory,
@@ -747,16 +637,16 @@ fn mapDecodeError(err: anyerror) zxml.ParseError {
 
 fn countByKind(doc: anytype, kind: zxml.NodeType) usize {
     var n: usize = 0;
-    for (doc.nodes.items) |node| {
-        if (node.kind == kind) n += 1;
+    for (doc.nodes.items, 0..) |_, i| {
+        if (doc.kindAt(@intCast(i)) == kind) n += 1;
     }
     return n;
 }
 
 fn countMisc(doc: anytype) usize {
     var n: usize = 0;
-    for (doc.nodes.items) |node| {
-        switch (node.kind) {
+    for (doc.nodes.items, 0..) |_, i| {
+        switch (doc.kindAt(@intCast(i))) {
             .comment, .cdata, .pi, .declaration, .doctype => n += 1,
             else => {},
         }
@@ -766,56 +656,59 @@ fn countMisc(doc: anytype) usize {
 
 fn countElementsByName(doc: anytype, name: []const u8) usize {
     var n: usize = 0;
-    for (doc.nodes.items) |node| {
-        if (node.kind != .element) continue;
-        if (std.mem.eql(u8, node.nameSpan().slice(doc.source), name)) n += 1;
+    for (doc.nodes.items, 0..) |_, i| {
+        if (doc.kindAt(@intCast(i)) != .element) continue;
+        if (std.mem.eql(u8, doc.nodeAt(@intCast(i)).?.nameSlice(), name)) n += 1;
     }
     return n;
 }
 
 fn firstElement(doc: anytype) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
-    for (doc.nodes.items, 0..) |node, i| {
-        if (node.kind == .element) return doc.nodeAt(@intCast(i));
+    for (doc.nodes.items, 0..) |_, i| {
+        if (doc.kindAt(@intCast(i)) == .element) return doc.nodeAt(@intCast(i));
     }
     return null;
 }
 
-fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
-    if (profileWantsDecodedValues(profile)) {
-        return root.getAttributeValue(alloc, name) catch |err| switch (err) {
-            error.OutOfMemory => error.OutOfMemory,
-            else => mapDecodeError(err),
+fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, comptime decode_values: bool, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
+    if (decode_values) {
+        const decoded = root.getAttributeValue(alloc, name) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return mapDecodeError(err),
         };
+        return if (decoded) |result| result.value else null;
     }
     return root.getAttributeValueRaw(name);
 }
 
-fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
-    for (doc.nodes.items, 0..) |node, i| {
-        if (node.kind != .text) continue;
+fn firstText(alloc: std.mem.Allocator, doc: anytype, comptime decode_values: bool) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
+    for (doc.nodes.items, 0..) |_, i| {
+        if (doc.kindAt(@intCast(i)) != .text) continue;
         const text = doc.nodeAt(@intCast(i)).?;
-        if (profileWantsDecodedValues(profile)) {
-            return text.value(alloc) catch |err| switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => mapDecodeError(err),
+        if (decode_values) {
+            const decoded = text.value(alloc) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return mapDecodeError(err),
             };
+            return decoded.value;
         }
         return text.valueRawSlice();
     }
     return null;
 }
 
-fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
-    for (doc.nodes.items, 0..) |node, i| {
-        if (node.kind != .element) continue;
-        if (!std.mem.eql(u8, node.nameSpan().slice(doc.source), name)) continue;
-
+fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, comptime decode_values: bool, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
+    for (doc.nodes.items, 0..) |_, i| {
+        if (doc.kindAt(@intCast(i)) != .element) continue;
         const element = doc.nodeAt(@intCast(i)).?;
-        if (profileWantsDecodedValues(profile)) {
-            return element.innerText(alloc) catch |err| switch (err) {
-                error.OutOfMemory => error.OutOfMemory,
-                else => mapDecodeError(err),
+        if (!std.mem.eql(u8, element.nameSlice(), name)) continue;
+
+        if (decode_values) {
+            const decoded = element.innerText(alloc) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => return mapDecodeError(err),
             };
+            return decoded.value;
         }
 
         var out = std.ArrayList(u8).empty;
@@ -830,9 +723,9 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
         };
         var child_index: usize = @intCast(element.index + 1);
         while (child_index <= subtree_end and child_index < doc.nodes.items.len) : (child_index += 1) {
-            const child = doc.nodes.items[child_index];
-            if (child.kind == .text or child.kind == .cdata) {
-                try out.appendSlice(alloc, child.valueSpan().slice(doc.source));
+            const kind = doc.kindAt(@intCast(child_index));
+            if (kind == .text or kind == .cdata) {
+                try out.appendSlice(alloc, doc.nodeAt(@intCast(child_index)).?.valueRawSlice());
             }
         }
         return try out.toOwnedSlice(alloc);
@@ -841,15 +734,16 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
 }
 
 fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
-    for (doc.nodes.items, 0..) |node, i| {
-        if (node.kind == .element) {
+    for (doc.nodes.items, 0..) |_, i| {
+        const kind = doc.kindAt(@intCast(i));
+        if (kind == .element) {
             const element = doc.nodeAt(@intCast(i)).?;
             var attrs = element.attributes();
             while (attrs.next()) |attr| {
                 _ = attr.value(alloc) catch |err| return mapDecodeError(err);
             }
         }
-        if (node.kind != .text) continue;
+        if (kind != .text) continue;
         const text = doc.nodeAt(@intCast(i)).?;
         _ = text.value(alloc) catch |err| return mapDecodeError(err);
     }
@@ -1244,7 +1138,7 @@ test "runCase rejects expectation fields that would otherwise be ignored" {
     const alloc = std.testing.allocator;
     const cases = [_]struct { json: []const u8, reason: []const u8 }{
         .{ .json =
-        \\{"name":"profiles","xml":"<r/>","profile":"strict","profiles":["strict"]}
+        \\{"name":"profiles","xml":"<r/>","profile":"validated","profiles":["validated"]}
         , .reason = "profile and profiles are mutually exclusive" },
         .{ .json =
         \\{"name":"attr","xml":"<r a='1'/>","expect_root_attr_value":"1"}
@@ -1280,7 +1174,7 @@ test "field text checks concatenate text, CDATA, and descendant text" {
     const alloc = std.testing.allocator;
 
     const raw = try std.json.parseFromSlice(std.json.Value, alloc,
-        \\{"name":"raw","profile":"strict","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&amp;G"}
+        \\{"name":"raw","profile":"validated","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&amp;G"}
     , .{});
     defer raw.deinit();
     const raw_result = try runCase(alloc, raw.value.object, 0);
@@ -1288,7 +1182,7 @@ test "field text checks concatenate text, CDATA, and descendant text" {
     try std.testing.expect(raw_result.pass);
 
     const decoded = try std.json.parseFromSlice(std.json.Value, alloc,
-        \\{"name":"decoded","profile":"strict_entities","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&G"}
+        \\{"name":"decoded","profile":"validated_entities","xml":"<r><Code>AB<![CDATA[CD]]><b>E</b>F&amp;G</Code></r>","expect_field_name":"Code","expect_field_text":"ABCDEF&G"}
     , .{});
     defer decoded.deinit();
     const decoded_result = try runCase(alloc, decoded.value.object, 0);
@@ -1313,12 +1207,12 @@ test "raw field text extraction handles deeply nested elements iteratively" {
     for (0..depth) |_| try xml.appendSlice(alloc, "</x>");
     try xml.appendSlice(alloc, "</Code></r>");
 
-    const Types = zxml.Types(.{ .mode = .strict });
+    const Types = zxml.Types(.{ .validate_well_formedness = true });
     var doc = Types.Document.init(alloc);
     defer doc.deinit();
-    try doc.parse(xml.items, .{ .mode = .strict });
+    try doc.parse(xml.items);
 
-    const text = (try elementTextByName(alloc, &doc, "strict", "Code")).?;
+    const text = (try elementTextByName(alloc, &doc, false, "Code")).?;
     defer alloc.free(text);
     try std.testing.expectEqualStrings("value", text);
 }

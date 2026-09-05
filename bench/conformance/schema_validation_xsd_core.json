@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "xsd-int-type-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Amount>42</Amount></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -13,7 +16,10 @@
     },
     {
       "name": "xsd-int-type-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Amount>42x</Amount></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -23,7 +29,10 @@
     },
     {
       "name": "xsd-date-type-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Date>2026-02-23</Date></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -33,7 +42,10 @@
     },
     {
       "name": "xsd-date-type-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Date>2026-13-99</Date></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -43,7 +55,10 @@
     },
     {
       "name": "xsd-string-type-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Customer>alice</Customer></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -53,7 +68,10 @@
     },
     {
       "name": "xsd-pattern-regex-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Code>ABC123</Code></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -63,7 +81,10 @@
     },
     {
       "name": "xsd-pattern-regex-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Code>Abc123</Code></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -73,7 +94,10 @@
     },
     {
       "name": "xsd-cardinality-minmax-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Item>1</Item><Item>2</Item></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",
@@ -84,7 +108,10 @@
     },
     {
       "name": "xsd-cardinality-max-violation-detected",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Order><Item>1</Item><Item>2</Item><Item>3</Item><Item>4</Item></Order>",
       "expect_ok": true,
       "expect_root_name": "Order",

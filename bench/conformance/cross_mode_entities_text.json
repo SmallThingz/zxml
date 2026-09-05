@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "decode-disabled-literal",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r>&lt;x&gt;&#65;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -12,7 +15,10 @@
     },
     {
       "name": "decode-enabled-text",
-      "profiles": ["strict_entities", "turbo_entities"],
+      "profiles": [
+        "validated_entities",
+        "permissive_entities"
+      ],
       "xml": "<r>&lt;x&gt;&#65;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -21,7 +27,10 @@
     },
     {
       "name": "decode-enabled-attr-and-text",
-      "profiles": ["strict_entities", "turbo_entities"],
+      "profiles": [
+        "validated_entities",
+        "permissive_entities"
+      ],
       "xml": "<r a='&amp;&#x41;'>&lt;x&gt;&#65;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -32,7 +41,10 @@
     },
     {
       "name": "preserve-whitespace-with-decode",
-      "profiles": ["strict_entities_ws", "turbo_entities_ws"],
+      "profiles": [
+        "validated_entities_ws",
+        "permissive_entities_ws"
+      ],
       "xml": "<r>  a \n\t b   c  </r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -41,7 +53,10 @@
     },
     {
       "name": "numeric-decimal-and-hex",
-      "profiles": ["strict_entities", "turbo_entities"],
+      "profiles": [
+        "validated_entities",
+        "permissive_entities"
+      ],
       "xml": "<r>&#66;&#x43;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -49,15 +64,15 @@
       "expect_first_text": "BC"
     },
     {
-      "name": "unknown-named-entity-strict-fails",
-      "profile": "strict_entities",
+      "name": "unknown-named-entity-validated-fails",
+      "profile": "validated_entities",
       "xml": "<r>&bogus;</r>",
       "expect_ok": false,
       "expect_error": "InvalidNumericCharacterEntity"
     },
     {
-      "name": "unknown-named-entity-turbo-literal",
-      "profile": "turbo_entities",
+      "name": "unknown-named-entity-permissive-literal",
+      "profile": "permissive_entities",
       "xml": "<r>&bogus;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -65,15 +80,15 @@
       "expect_first_text": "&bogus;"
     },
     {
-      "name": "unterminated-entity-strict-fails",
-      "profile": "strict_entities",
+      "name": "unterminated-entity-validated-fails",
+      "profile": "validated_entities",
       "xml": "<r>&amp</r>",
       "expect_ok": false,
       "expect_error": "UnterminatedEntity"
     },
     {
-      "name": "unterminated-entity-turbo-literal",
-      "profile": "turbo_entities",
+      "name": "unterminated-entity-permissive-literal",
+      "profile": "permissive_entities",
       "xml": "<r>&amp</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -81,15 +96,15 @@
       "expect_first_text": "&amp"
     },
     {
-      "name": "invalid-numeric-strict-fails",
-      "profile": "strict_entities",
+      "name": "invalid-numeric-validated-fails",
+      "profile": "validated_entities",
       "xml": "<r>&#x110000;</r>",
       "expect_ok": false,
       "expect_error": "InvalidNumericCharacterEntity"
     },
     {
-      "name": "invalid-numeric-turbo-literal",
-      "profile": "turbo_entities",
+      "name": "invalid-numeric-permissive-literal",
+      "profile": "permissive_entities",
       "xml": "<r>&#x110000;</r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -98,7 +113,10 @@
     },
     {
       "name": "decode-disabled-attr-literal",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r a='&amp;'></r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -108,7 +126,10 @@
     },
     {
       "name": "decode-enabled-attr",
-      "profiles": ["strict_entities", "turbo_entities"],
+      "profiles": [
+        "validated_entities",
+        "permissive_entities"
+      ],
       "xml": "<r a='&amp;'></r>",
       "expect_ok": true,
       "expect_elements": 1,
