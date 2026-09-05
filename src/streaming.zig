@@ -1505,7 +1505,7 @@ inline fn skipWs(input: []const u8, start: usize) usize {
     return scanner.skipWhitespace(input, start);
 }
 
-inline fn skipWsStrict(input: []const u8, start: usize) usize {
+inline fn skipWsValidated(input: []const u8, start: usize) usize {
     if (start >= input.len) return start;
     const c = input[start];
     if (c == ' ') {
@@ -1520,8 +1520,8 @@ inline fn skipWsStrict(input: []const u8, start: usize) usize {
     return scanner.skipWhitespace(input, start);
 }
 
-inline fn skipWsMode(input: []const u8, start: usize, comptime strict: bool) usize {
-    if (comptime strict) return skipWsStrict(input, start);
+inline fn skipWsMode(input: []const u8, start: usize, comptime validated: bool) usize {
+    if (comptime validated) return skipWsValidated(input, start);
     return skipWs(input, start);
 }
 
@@ -1641,7 +1641,7 @@ fn expectedOpenNameAtDepth(
     root_name: Span,
     before: usize,
     target_depth: usize,
-    comptime strict: bool,
+    comptime validated: bool,
 ) ParseError!Span {
     if (target_depth == 0) return error.InvalidClosingTagName;
     var depth: usize = 1;
@@ -1653,7 +1653,7 @@ fn expectedOpenNameAtDepth(
         i = lt;
         switch (input[i + 1]) {
             '/' => {
-                if (comptime strict) {
+                if (comptime validated) {
                     i = (try scanClosingTag(input, i, true, false)).next;
                 } else {
                     const gt = scanner.findByte(input, i + 2, '>') orelse return error.UnexpectedEndOfData;
@@ -1662,16 +1662,16 @@ fn expectedOpenNameAtDepth(
                 if (depth == 0) return error.InvalidClosingTagName;
                 depth -= 1;
             },
-            '?' => i = try skipPi(input, i, strict, true),
-            '!' => i = try skipBang(input, i, strict, true),
+            '?' => i = try skipPi(input, i, validated, true),
+            '!' => i = try skipBang(input, i, validated, true),
             else => {
                 if (!tables.isNameStart(input[i + 1])) {
-                    if (comptime strict) return error.ExpectedElementName;
+                    if (comptime validated) return error.ExpectedElementName;
                     const gt = scanner.findByte(input, i + 1, '>') orelse return error.UnexpectedEndOfData;
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict, null, null, false);
+                const open = try scanOpeningTagToken(input, i, validated, null, null, false);
                 i = open.next;
                 if (!open.self_closing) {
                     depth += 1;
@@ -1697,13 +1697,13 @@ const CloseToken = struct {
     key: u64,
 };
 
-fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, entity_allocator: ?std.mem.Allocator, doctype_value: ?[]const u8, require_declared_entities: bool) ParseError!OpenToken {
+fn scanOpeningTagToken(input: []const u8, start: usize, comptime validated: bool, entity_allocator: ?std.mem.Allocator, doctype_value: ?[]const u8, require_declared_entities: bool) ParseError!OpenToken {
     var i = start + 1;
     if (i >= input.len or !tables.isNameStart(input[i])) return error.ExpectedElementName;
     const name_start = i;
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
-    if (comptime strict) {
+    if (comptime validated) {
         if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.ExpectedElementName;
     }
     i = name_end;
@@ -1713,11 +1713,11 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
     var first_attr_end: usize = 0;
     while (i < input.len) {
         const boundary = i;
-        i = skipWsMode(input, i, strict);
+        i = skipWsMode(input, i, validated);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const c = input[i];
         if (c == '>') {
-            if (comptime strict) {
+            if (comptime validated) {
                 if (attr_count > 2) try validateUniqueAttributesRaw(input, name_end, i);
             }
             return .{ .next = i + 1, .name = name, .key = name_scan.key, .self_closing = false };
@@ -1725,22 +1725,22 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
         if (c == '/') {
             if (i + 1 >= input.len) return error.UnexpectedEndOfData;
             if (input[i + 1] == '>') {
-                if (comptime strict) {
+                if (comptime validated) {
                     if (attr_count > 2) try validateUniqueAttributesRaw(input, name_end, i);
                 }
                 return .{ .next = i + 2, .name = name, .key = name_scan.key, .self_closing = true };
             }
         }
-        if (strict and i == boundary) {
+        if (validated and i == boundary) {
             @branchHint(.unlikely);
             return error.ExpectedAttributeName;
         }
         if (!tables.isNameStart(c)) {
-            if (strict) return error.ExpectedAttributeName;
+            if (validated) return error.ExpectedAttributeName;
             i += 1;
             continue;
         }
-        if (comptime strict) {
+        if (comptime validated) {
             const attr_name_start = i;
             const attr_name_scan = scanner.scanNameEnd(input, i);
             i = attr_name_scan.end;
@@ -1760,22 +1760,22 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
         } else {
             i = scanner.findNameEnd(input, i);
         }
-        i = skipWsMode(input, i, strict);
+        i = skipWsMode(input, i, validated);
         if (i >= input.len) return error.UnexpectedEndOfData;
         if (input[i] != '=') {
-            if (strict) {
+            if (validated) {
                 @branchHint(.unlikely);
                 return error.ExpectedEq;
             }
             continue;
         }
         i += 1;
-        i = skipWsMode(input, i, strict);
+        i = skipWsMode(input, i, validated);
         if (i >= input.len) return error.UnexpectedEndOfData;
         const quote = input[i];
         if (quote == '\'' or quote == '"') {
             const quote_pos = scanner.findByte(input, i + 1, quote) orelse return error.UnexpectedEndOfData;
-            if (comptime strict) {
+            if (comptime validated) {
                 const value = input[i + 1 .. quote_pos];
                 const specials = scanner.bytePairPresence(value, '<', '&');
                 if (specials.first) return error.InvalidAttributeValue;
@@ -1789,7 +1789,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime strict: bool, e
             }
             i = quote_pos + 1;
         } else {
-            if (strict) return error.ExpectedQuote;
+            if (validated) return error.ExpectedQuote;
             const raw_end = scanner.findAttrUnquotedEnd(input, i);
             if (raw_end > i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
                 i = raw_end - 1;
@@ -1814,13 +1814,13 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     // This is a second, duplicate-name-only pass over an already validated
     // opening tag. Optimize the overwhelmingly common ` name='value'` shape:
     // one ASCII space before the name and no whitespace around `=`. Fall back
-    // to the strict whitespace scanner only for mixed/long whitespace.
+    // to the validated whitespace scanner only for mixed/long whitespace.
     if (input[i] == ' ') {
         i += 1;
         if (i >= end) return null;
-        if (input[i] <= ' ') i = skipWsStrict(input, i);
+        if (input[i] <= ' ') i = skipWsValidated(input, i);
     } else if (tables.isWhitespace(input[i])) {
-        i = skipWsStrict(input, i);
+        i = skipWsValidated(input, i);
     }
     if (i >= end) return null;
 
@@ -1833,14 +1833,14 @@ fn scanValidatedAttributeToken(input: []const u8, start: usize, end: usize) Pars
     const name_end = i;
 
     if (i >= end or input[i] != '=') {
-        i = skipWsStrict(input, i);
+        i = skipWsValidated(input, i);
         if (i >= end or input[i] != '=') return error.ExpectedEq;
     }
     i += 1;
     if (i >= end) return error.ExpectedQuote;
     var quote = input[i];
     if (quote != '\'' and quote != '"') {
-        i = skipWsStrict(input, i);
+        i = skipWsValidated(input, i);
         if (i >= end) return error.ExpectedQuote;
         quote = input[i];
         if (quote != '\'' and quote != '"') return error.ExpectedQuote;
@@ -2045,7 +2045,7 @@ inline fn addAttributeNameFilter(filter: *u64, name: []const u8) void {
 }
 
 inline fn oneByteAttributeNameBucket(c: u8) u6 {
-    // Strict one-byte XML names are ASCII NameStart bytes. Their low six bits
+    // Validated one-byte XML names are ASCII NameStart bytes. Their low six bits
     // are unique except ':' and 'z'; bucket zero is otherwise unused.
     return if (c == ':') 0 else @intCast(c & 63);
 }
@@ -2058,7 +2058,7 @@ inline fn addAttributeNameFilterBucket(filter: *u64, bucket: u6) void {
 
 noinline fn initAttributeNameFilter(input: []const u8, start: usize, second_start: usize, second_end: usize) u64 {
     var filter: u64 = 0;
-    const first_start = skipWsStrict(input, start);
+    const first_start = skipWsValidated(input, start);
     if (second_start > second_end) {
         const first_bucket = oneByteAttributeNameBucket(input[first_start]);
         const second_bucket = oneByteAttributeNameBucket(input[second_end]);
@@ -2510,32 +2510,32 @@ noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize,
     }
 }
 
-fn scanClosingTag(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!CloseToken {
+fn scanClosingTag(input: []const u8, start: usize, comptime validated: bool, comptime incremental: bool) ParseError!CloseToken {
     var i = start + 2;
     if (i < input.len and tables.isWhitespace(input[i])) {
-        if (strict) return error.InvalidClosingTagName;
-        i = skipWsMode(input, i, strict);
+        if (validated) return error.InvalidClosingTagName;
+        i = skipWsMode(input, i, validated);
     }
     if (i >= input.len) return error.UnexpectedEndOfData;
     if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
     const name_start = i;
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
-    if (comptime strict) {
+    if (comptime validated) {
         if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.InvalidClosingTagName;
     }
     i = name_end;
-    if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, strict);
+    if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, validated);
     if (i >= input.len) {
-        if (!strict and !incremental) return error.InvalidClosingTagName;
+        if (!validated and !incremental) return error.InvalidClosingTagName;
         return error.UnexpectedEndOfData;
     }
     if (input[i] != '>') return error.InvalidClosingTagName;
     return .{ .next = i + 1, .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) }, .key = name_scan.key };
 }
 
-fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {
-    if (comptime strict) {
+fn skipPi(input: []const u8, start: usize, comptime validated: bool, comptime incremental: bool) ParseError!usize {
+    if (comptime validated) {
         var i = start + 2;
         if (i >= input.len) {
             if (incremental) return error.UnexpectedEndOfData;
@@ -2560,7 +2560,7 @@ fn skipPi(input: []const u8, start: usize, comptime strict: bool, comptime incre
     }
 
     const end = scanner.findSequence(input, start + 2, "?>") orelse {
-        if (strict or incremental) return error.UnexpectedEndOfData;
+        if (validated or incremental) return error.UnexpectedEndOfData;
         return input.len;
     };
     return end + 2;
@@ -2581,33 +2581,33 @@ fn bangPrefixNeedsMore(input: []const u8, start: usize) bool {
         tokenPrefixNeedsMore(input, start, "<!DOCTYPE", true);
 }
 
-fn skipBang(input: []const u8, start: usize, comptime strict: bool, comptime incremental: bool) ParseError!usize {
+fn skipBang(input: []const u8, start: usize, comptime validated: bool, comptime incremental: bool) ParseError!usize {
     if (start + 3 < input.len and input[start + 2] == '-' and input[start + 3] == '-') {
         const end = scanner.findSequence(input, start + 4, "-->") orelse {
-            if (strict or incremental) return error.UnexpectedEndOfData;
+            if (validated or incremental) return error.UnexpectedEndOfData;
             return input.len;
         };
-        if (comptime strict) try validateComment(input[start + 4 .. end]);
+        if (comptime validated) try validateComment(input[start + 4 .. end]);
         return end + 3;
     }
     if (start + 8 < input.len and input[start + 2] == '[' and input[start + 3] == 'C' and input[start + 4] == 'D' and input[start + 5] == 'A' and input[start + 6] == 'T' and input[start + 7] == 'A' and input[start + 8] == '[') {
         const end = scanner.findSequence(input, start + 9, "]]>") orelse {
-            if (strict or incremental) return error.UnexpectedEndOfData;
+            if (validated or incremental) return error.UnexpectedEndOfData;
             return input.len;
         };
         return end + 3;
     }
     if (scanner.isDoctype(input, start)) {
-        if (strict and !scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
-        if (strict) return error.InvalidDoctype;
+        if (validated and !scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
+        if (validated) return error.InvalidDoctype;
         const end = scanner.findDoctypeEnd(input, start + 9) orelse {
-            if (strict or incremental) return error.UnexpectedEndOfData;
+            if (validated or incremental) return error.UnexpectedEndOfData;
             return input.len;
         };
         return end + 1;
     }
     if (incremental and bangPrefixNeedsMore(input, start)) return error.UnexpectedEndOfData;
-    if (strict) return error.ExpectedGt;
+    if (validated) return error.ExpectedGt;
     const gt = scanner.findByte(input, start + 2, '>') orelse {
         if (incremental) return error.UnexpectedEndOfData;
         return input.len;
@@ -2794,7 +2794,7 @@ test "streaming parseAvailable preserves whitespace when a later chunk extends t
     try std.testing.expect(ctx.saw_full_text);
 }
 
-test "streaming strict character-data validation crosses cumulative chunk boundaries" {
+test "streaming validated character-data validation crosses cumulative chunk boundaries" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -2893,7 +2893,7 @@ test "streaming parseAvailable accepts references split at every byte" {
     }
 }
 
-test "streaming strict enforces declared parsed general entities" {
+test "streaming validated enforces declared parsed general entities" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -2948,7 +2948,7 @@ test "streaming strict enforces declared parsed general entities" {
     }
 }
 
-test "streaming strict root attribute DTD scratch matches fallback validation" {
+test "streaming validated root attribute DTD scratch matches fallback validation" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3027,7 +3027,7 @@ test "streaming strict root attribute DTD scratch matches fallback validation" {
     }
 }
 
-test "streaming strict validates used entity replacement graphs" {
+test "streaming validated validates used entity replacement graphs" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3085,7 +3085,7 @@ test "streaming strict validates used entity replacement graphs" {
     }
 }
 
-test "streaming strict validates internal parameter entity replacement text" {
+test "streaming validated validates internal parameter entity replacement text" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3122,7 +3122,7 @@ test "streaming strict validates internal parameter entity replacement text" {
     }
 }
 
-test "streaming strict applies entity constraints to declarations from parameter entities" {
+test "streaming validated applies entity constraints to declarations from parameter entities" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3154,7 +3154,7 @@ test "streaming strict applies entity constraints to declarations from parameter
     try parser.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e 'ok'>\">%p;]><r>&e;</r>", &ctx, Ctx.onNode);
 }
 
-test "streaming strict validates DTD attribute default entity constraints" {
+test "streaming validated validates DTD attribute default entity constraints" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3227,7 +3227,7 @@ test "streaming cumulative declared entities survive every split and restore" {
     }
 }
 
-test "streaming strict validates XML Unicode and names" {
+test "streaming validated validates XML Unicode and names" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3273,7 +3273,7 @@ test "streaming strict validates XML Unicode and names" {
     try std.testing.expectError(error.ExpectedPiTarget, parser.parse("<r><?\xC3\x97?></r>", &ctx, Ctx.onNode));
 }
 
-test "streaming trusted strict skips only full-buffer XML character validation" {
+test "streaming trusted validated skips only full-buffer XML character validation" {
     const opts: ParseOptions = .{ .validate_well_formedness = true, .validate_xml_characters = false };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3292,7 +3292,7 @@ test "streaming trusted strict skips only full-buffer XML character validation" 
     try std.testing.expectError(error.InvalidXmlCharacter, parser.parseAvailable("<r>\x01</r>", &ctx, Ctx.onNode));
 }
 
-test "streaming strict cumulative UTF-8 validation handles split sequences and restore" {
+test "streaming validated cumulative UTF-8 validation handles split sequences and restore" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3355,7 +3355,7 @@ test "streaming skipped subtrees accept every valid token prefix" {
     }
 }
 
-test "streaming strict token errors match DOM parsing" {
+test "streaming validated token errors match DOM parsing" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3419,7 +3419,7 @@ test "streaming strict token errors match DOM parsing" {
     }
 }
 
-test "streaming turbo followingTextRaw uses turbo token grammar" {
+test "streaming permissive followingTextRaw uses permissive token grammar" {
     const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3442,7 +3442,7 @@ test "streaming turbo followingTextRaw uses turbo token grammar" {
     try std.testing.expect(ctx.saw_tail);
 }
 
-test "streaming turbo simple-text fast path preserves unchecked close semantics and events" {
+test "streaming permissive simple-text fast path preserves unchecked close semantics and events" {
     const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3476,7 +3476,7 @@ test "streaming turbo simple-text fast path preserves unchecked close semantics 
     var parser = ParserType.init(std.testing.allocator);
     defer parser.deinit();
 
-    // Turbo without closing validation already permits mismatched names. The
+    // Permissive without closing validation already permits mismatched names. The
     // fused simple-text path must keep that behavior and emit the same nodes.
     var ctx: Ctx = .{};
     try parser.parse("<r><a>x</wrong><c>   </also-wrong></r>", &ctx, Ctx.onNode);
@@ -3493,14 +3493,14 @@ test "streaming turbo simple-text fast path preserves unchecked close semantics 
     try std.testing.expectEqual(@as(usize, 2), ctx.texts);
 
     // A truncated close token likewise falls back and preserves permissive
-    // non-incremental turbo behavior when EOF closure is not required.
+    // non-incremental permissive behavior when EOF closure is not required.
     parser.clear();
     ctx = .{};
     try parser.parse("<r><a>x</a", &ctx, Ctx.onNode);
     try std.testing.expect(ctx.saw_a and ctx.saw_x);
 }
 
-test "streaming strict start-tag grammar matches DOM strictness" {
+test "streaming validated start-tag grammar matches DOM validatedness" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3658,7 +3658,7 @@ test "streaming permissive skipped subtrees tolerate eof before a matching close
     try parser.finish();
 }
 
-test "streaming skipped subtrees remain strict-validated" {
+test "streaming skipped subtrees remain validated-validated" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3681,7 +3681,7 @@ test "streaming skipped subtrees remain strict-validated" {
     try std.testing.expectError(error.ExpectedQuote, parser.parseAvailable("<r><skip><x a=1/></skip></r>", &ctx, Ctx.onNode));
 }
 
-test "streaming skipped subtrees preserve strict token validation" {
+test "streaming skipped subtrees preserve validated token validation" {
     const EventValidated = Types(.{
         .validate_well_formedness = true,
     }).Node;
@@ -3719,7 +3719,7 @@ test "streaming skipped subtrees preserve strict token validation" {
     try std.testing.expectError(error.InvalidClosingTagName, syntax_only.parse("<skip><x/></ ></skip>", &syntax_ctx, SyntaxOnlyCtx.onNode));
 }
 
-test "streaming turbo parseAvailable waits for an incomplete closing token" {
+test "streaming permissive parseAvailable waits for an incomplete closing token" {
     const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3743,7 +3743,7 @@ test "streaming turbo parseAvailable waits for an incomplete closing token" {
     try std.testing.expectEqual(@as(usize, 1), ctx.elements);
 }
 
-test "streaming strict validation supports tag names longer than u16" {
+test "streaming validated validation supports tag names longer than u16" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3778,7 +3778,7 @@ test "streaming strict validation supports tag names longer than u16" {
     try std.testing.expectEqual(@as(usize, 1), ctx.count);
 }
 
-test "streaming turbo accepts mixed XML whitespace around attribute equals" {
+test "streaming permissive accepts mixed XML whitespace around attribute equals" {
     const opts: ParseOptions = .{};
     const T = Types(opts);
     const input = "<r a \n \t=\r \"x>y\"><b/></r \n>";
@@ -3806,7 +3806,7 @@ test "streaming turbo accepts mixed XML whitespace around attribute equals" {
     try std.testing.expect(ctx.saw_child);
 }
 
-test "streaming strict accepts mixed XML whitespace between attributes" {
+test "streaming validated accepts mixed XML whitespace between attributes" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -3881,7 +3881,7 @@ test "streaming public save restore preserves skipped-subtree stack across diver
     try parser.finish();
 }
 
-test "streaming cumulative strict parsing rejects malformed tokens at every split" {
+test "streaming cumulative validated parsing rejects malformed tokens at every split" {
     const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3939,7 +3939,7 @@ test "streaming cumulative strict parsing rejects malformed tokens at every spli
     }
 }
 
-test "streaming turbo attribute iterator skips tolerated separators" {
+test "streaming permissive attribute iterator skips tolerated separators" {
     const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3985,7 +3985,7 @@ test "streaming followingTextRaw distinguishes validated and permissive close re
     try std.testing.expectEqualStrings("", try permissive_node.followingTextRaw());
 }
 
-test "streaming turbo rejects unterminated quoted attributes like DOM" {
+test "streaming permissive rejects unterminated quoted attributes like DOM" {
     const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -4069,7 +4069,7 @@ test "streaming permissive skipped subtree tolerates unfinished content at eof" 
     try parser.parse("<b>< unfinished", &ctx, Ctx.onNode);
 }
 
-test "streaming strict enforces document-level well-formedness" {
+test "streaming validated enforces document-level well-formedness" {
     const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -4098,7 +4098,7 @@ test "streaming strict enforces document-level well-formedness" {
     try parser.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>", &ctx, Ctx.onNode);
 }
 
-test "streaming strict validates processing instruction separators" {
+test "streaming validated validates processing instruction separators" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -4127,7 +4127,7 @@ test "streaming strict validates processing instruction separators" {
     try parser.parse("<?pi data?><r/>", &ctx, Ctx.onNode);
 }
 
-test "streaming strict incremental XML declaration survives every byte boundary" {
+test "streaming validated incremental XML declaration survives every byte boundary" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -4150,7 +4150,7 @@ test "streaming strict incremental XML declaration survives every byte boundary"
     try parser.finish();
 }
 
-test "streaming strict save restore preserves document-level state" {
+test "streaming validated save restore preserves document-level state" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -4174,7 +4174,7 @@ test "streaming strict save restore preserves document-level state" {
     try parser.finish();
 }
 
-test "streaming strict rejects duplicate attribute names including skipped subtrees" {
+test "streaming validated rejects duplicate attribute names including skipped subtrees" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -4359,7 +4359,7 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
     );
 }
 
-test "streaming strict validates XML declaration grammar" {
+test "streaming validated validates XML declaration grammar" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
@@ -4386,7 +4386,7 @@ test "streaming strict validates XML declaration grammar" {
     try parser.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"yes\" ?><r/>", &ctx, Ctx.onNode);
 }
 
-test "streaming strict validates DOCTYPE grammar" {
+test "streaming validated validates DOCTYPE grammar" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
