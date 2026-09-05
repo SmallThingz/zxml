@@ -2,7 +2,19 @@
 
 ## Mission
 
-Optimize zxml for real workloads without sacrificing correctness, portability, or edge-case behavior. Prefer measured, profiler-driven changes over speculative micro-tuning.
+Build zxml around the same architectural principles as zhtml, extrapolated to XML rather than preserving older zxml APIs or storage layouts. Throughput is the primary constraint, with bounded safe behavior on malformed input. The default path should handle the common ~98% of XML cheaply; rare malformed/spec-heavy cases may return errors, but must not crash, hang, read out of bounds, or grow memory without limit.
+
+### Architecture contract
+
+- `ParseOptions` is a comptime type generator. Options select concrete `Document`, `RawNode`, `Node`, `Attribute`, and streaming parser types; do not reintroduce runtime parse-mode option bundles.
+- Destructive `[]u8` parsing is the default. `non_destructive = true` generates an immutable `[]const u8` variant.
+- Default DOM nodes remain compact: with `u32` indexes the target layout is 16 bytes (`parent`, `subtree_end`, `name_or_text`). Optional navigation and misc-node metadata must compile out when disabled.
+- No persistent navigation sidecar. Persist subtree bounds in-node; derive navigation unless the generated type explicitly requests additional indexes.
+- Attributes and text remain source-backed and lazy. Destructive documents may compact/decode in source and cache the result; immutable documents use raw scans or owned fallbacks. Do not add document-wide attribute/value arrays to make queries easier.
+- `validate_well_formedness = true` is the explicit expensive XML-validation policy. The default parser is permissive and bounded, with named close-tag recovery and implicit EOF closure where safe.
+- Parser open-element stacks are ephemeral parser state, with a small inline stack and safe heap spill. They do not live in the finished `Document`.
+- Do not add compatibility aliases, legacy overloads, side representations, or wrappers for deleted APIs unless the user explicitly requests backwards compatibility. Migrate first-party callers instead.
+- Current headline throughput targets on the corrected corpus are >3 GiB/s validated and >5 GiB/s permissive. Do not inflate averages with byte-heavy synthetic outliers.
 
 ## Workspace rules
 
@@ -94,13 +106,13 @@ For zxml, a typical pinned-core invocation is:
 
 ```sh
 gdb-parent-sample --samples 120 --raw-log .zig-cache/perf/twoattr.raw -- \
-  taskset -c 8 .zig-cache/perf/exact-cand-dom parse strict .zig-cache/perf/twoattr32m.xml 500
+  taskset -c 6 zig-out/bin/zxml-bench parse permissive bench/fixtures/synthetic_two_attr.xml 500
 ```
 
 It prints one classified top frame per sample, followed by aggregate counts. Exit code `2` means it captured zero samples and the result is unusable.
 ## Performance methodology
 
-- Pin timing work to a stable core where possible. Recent accepted measurements used E-core CPU 8 because it has no SMT sibling.
+- Pin timing work to a stable P-core where possible. On the current i5-12450H host, accepted full-corpus work uses CPU 6 (P-core); CPU 8 is an E-core and must not be treated as the primary headline core.
 - Use swapped ABBA ordering (`B C C B`, then `C B B C`) to reduce drift bias.
 - Prefer several blocks and report the median candidate/base elapsed-time ratio.
 - Treat candidate/base ratio above `1.02` as a material regression unless a stronger rerun clearly overturns it.
@@ -118,13 +130,6 @@ It prints one classified top frame per sample, followed by aggregate counts. Exi
 - Do not keep a target-only win if unrelated common workloads regress materially.
 - Revert rejected experiments cleanly; do not stack speculative changes on top of each other.
 - Before repeating an old idea, inspect `HANDOFF-V19G-REMOTE.md` for rejected variants and why they failed.
-
-Current profiling guidance after commit `7de8968`:
-
-- `scanQuotedValueSpecials` is a major attribute-heavy strict hotspot.
-- Samples have concentrated in its initial scalar 8-byte loop, not only its SIMD body.
-- Previous scalar-prefix threshold changes around 4/6 bytes regressed common short values; do not repeat them unchanged.
-- `scanTextSpecials` is dominant on simple strict input, but prior shorter-probe variants regressed short/pretty workloads.
 
 ## Required correctness gates
 
@@ -155,9 +160,4 @@ Compile representative parser/benchmark targets when codegen, integer width, SIM
 - `powerpc64le-linux-gnu`
 - `arm-linux-gnueabihf`
 
-At baseline commit `7de8968`, two unrelated pre-existing portability failures are known:
-
-- macOS rejects existing ELF-style `linksection` names such as `.text.unlikely.zxml` / `.zxml_cold`;
-- ARMv7 hard-float rejects existing `u6` shift counts when shifting a 32-bit `usize`.
-
-Do not misattribute those baseline failures to a new optimization; compare against the parent commit before changing unrelated portability code.
+When a cross-target check fails, compare the candidate against its parent before attributing the failure to the current change.
