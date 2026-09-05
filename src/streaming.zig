@@ -3349,7 +3349,7 @@ test "streaming skipped subtrees accept every valid token prefix" {
 }
 
 test "streaming strict token errors match DOM parsing" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     const Document = document.Types(opts).Document;
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;

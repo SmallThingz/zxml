@@ -700,7 +700,7 @@ test "quoted attributes tolerate whitespace around the equals sign" {
 }
 
 test "strict attribute grammar covers XML whitespace and quoted value boundaries" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -763,7 +763,7 @@ test "strict attribute grammar covers XML whitespace and quoted value boundaries
 }
 
 test "strict duplicate attributes cover short long Unicode and dispatch boundaries" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -829,7 +829,7 @@ test "strict unquoted attributes fail" {
     defer doc.deinit();
 
     var src = "<r a=1/>".*;
-    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "turbo unquoted attributes parse" {
@@ -850,7 +850,7 @@ test "strict unterminated quoted attribute fails" {
     defer doc.deinit();
 
     var src = "<r a='x></r>".*;
-    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "strict unterminated comment fails" {
@@ -858,7 +858,7 @@ test "strict unterminated comment fails" {
     defer doc.deinit();
 
     var src = "<r><!--x</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "strict unterminated cdata fails" {
@@ -866,7 +866,7 @@ test "strict unterminated cdata fails" {
     defer doc.deinit();
 
     var src = "<r><![CDATA[x</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "strict unterminated processing instruction fails" {
@@ -874,7 +874,7 @@ test "strict unterminated processing instruction fails" {
     defer doc.deinit();
 
     var src = "<r><?build x='1'</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "strict unterminated doctype fails" {
@@ -882,7 +882,7 @@ test "strict unterminated doctype fails" {
     defer doc.deinit();
 
     var src = "<!DOCTYPE root [<!ELEMENT root ANY><root/>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict }));
+    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src, .{ .mode = .strict, .validate_well_formedness = true }));
 }
 
 test "strict rejects malformed and XML-invalid references during parse" {
@@ -906,11 +906,11 @@ test "strict rejects malformed and XML-invalid references during parse" {
         defer doc.deinit();
         try std.testing.expectError(
             if (std.mem.indexOf(u8, source, ";") == null) error.UnterminatedEntity else error.InvalidNumericCharacterEntity,
-            doc.parse(source, .{ .mode = .strict }),
+            doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
 
-    var parsed = try parseTestDoc("<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;&#x10FFFF;&#x00010FFFF;</r>", .{ .mode = .strict });
+    var parsed = try parseTestDoc("<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;&#x10FFFF;&#x00010FFFF;</r>", .{ .mode = .strict, .validate_well_formedness = true });
     defer parsed.deinit();
 }
 
@@ -918,10 +918,10 @@ test "strict enforces declared parsed general entities" {
     {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse("<r>&custom;</r>", .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse("<r>&custom;</r>", .{ .mode = .strict, .validate_well_formedness = true }));
     }
     {
-        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>", .{ .mode = .strict });
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>", .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
         try std.testing.expectEqualStrings("&custom;", parsed.doc.nodeAt(2).?.firstChild().?.valueRawSlice());
     }
@@ -929,16 +929,16 @@ test "strict enforces declared parsed general entities" {
         var doc = initDoc(.{});
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
     {
         var doc = initDoc(.{});
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n><!ENTITY custom 'later'>]><r>&custom;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
     {
-        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'first'><!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>", .{ .mode = .strict });
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'first'><!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>", .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
     }
     {
@@ -946,39 +946,39 @@ test "strict enforces declared parsed general entities" {
         defer doc.deinit();
         try std.testing.expectError(
             error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r><r a='&missing;'/>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r><r a='&missing;'/>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
         try std.testing.expectError(
             error.UnterminatedEntity,
-            doc.parse("<!DOCTYPE r><r a='&amp'/>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r><r a='&amp'/>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
     {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try doc.parse("<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>", .{ .mode = .strict });
+        try doc.parse("<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>", .{ .mode = .strict, .validate_well_formedness = true });
     }
     {
         var doc = initDoc(.{});
         defer doc.deinit();
         const source = "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
     {
         var doc = initDoc(.{});
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r a='&external;'/>";
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
     {
-        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>", .{ .mode = .strict });
+        var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>", .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
     }
     {
         var doc = initDoc(.{});
         defer doc.deinit();
         const source = "<!DOCTYPE r SYSTEM 'urn:subset' [<!NOTATION n SYSTEM 'urn:n'><!ENTITY raw SYSTEM 'urn:x' NDATA n>]><r>&raw;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 }
 
@@ -986,7 +986,7 @@ test "strict reuses validated entity references across repeated DOM attributes" 
     {
         var parsed = try parseTestDoc(
             "<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&a;'/>",
-            .{ .mode = .strict },
+            .{ .mode = .strict, .validate_well_formedness = true },
         );
         defer parsed.deinit();
     }
@@ -997,7 +997,7 @@ test "strict reuses validated entity references across repeated DOM attributes" 
             error.InvalidNumericCharacterEntity,
             doc.parse(
                 "<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&missing;'/>",
-                .{ .mode = .strict },
+                .{ .mode = .strict, .validate_well_formedness = true },
             ),
         );
     }
@@ -1008,7 +1008,7 @@ test "strict reuses validated entity references across repeated DOM attributes" 
             error.InvalidAttributeValue,
             doc.parse(
                 "<!DOCTYPE r [<!ENTITY a 'ok'><!ENTITY e SYSTEM 'urn:x'>]><r x='&a;' y='&a;' z='&e;'/>",
-                .{ .mode = .strict },
+                .{ .mode = .strict, .validate_well_formedness = true },
             ),
         );
     }
@@ -1018,7 +1018,7 @@ test "strict repeated custom entity fast path preserves later validation" {
     {
         var parsed = try parseTestDoc(
             "<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&a;&a;&a;&a;</r>",
-            .{ .mode = .strict },
+            .{ .mode = .strict, .validate_well_formedness = true },
         );
         defer parsed.deinit();
     }
@@ -1027,7 +1027,7 @@ test "strict repeated custom entity fast path preserves later validation" {
         defer doc.deinit();
         try std.testing.expectError(
             error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&#0;</r>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&#0;</r>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
     {
@@ -1035,7 +1035,7 @@ test "strict repeated custom entity fast path preserves later validation" {
         defer doc.deinit();
         try std.testing.expectError(
             error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&missing;</r>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&missing;</r>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
     {
@@ -1043,7 +1043,7 @@ test "strict repeated custom entity fast path preserves later validation" {
         defer doc.deinit();
         try std.testing.expectError(
             error.UnterminatedEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a</r>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a</r>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
 }
@@ -1057,7 +1057,7 @@ test "strict validates used entity replacement graphs" {
     inline for (invalid_entity) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const recursive = [_][]const u8{
@@ -1067,7 +1067,7 @@ test "strict validates used entity replacement graphs" {
     inline for (recursive) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.RecursiveEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.RecursiveEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1080,7 +1080,7 @@ test "strict validates used entity replacement graphs" {
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const valid = [_][]const u8{
@@ -1091,7 +1091,7 @@ test "strict validates used entity replacement graphs" {
         "<!DOCTYPE r [<!ENTITY a '&a;'>]><r/>",
     };
     inline for (valid) |source| {
-        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        var parsed = try parseTestDoc(source, .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
     }
 }
@@ -1106,7 +1106,7 @@ test "strict validates internal parameter entity replacement text" {
     inline for (invalid) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidDoctype, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidDoctype, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     {
@@ -1114,7 +1114,7 @@ test "strict validates internal parameter entity replacement text" {
         defer doc.deinit();
         try std.testing.expectError(
             error.RecursiveEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY % p '&#37;p;'>%p;]><r/>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r [<!ENTITY % p '&#37;p;'>%p;]><r/>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
 
@@ -1127,7 +1127,7 @@ test "strict validates internal parameter entity replacement text" {
         "<!DOCTYPE r [<!ENTITY % p SYSTEM 'urn:external'>%p;]><r/>",
     };
     inline for (valid) |source| {
-        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        var parsed = try parseTestDoc(source, .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
     }
 }
@@ -1139,7 +1139,7 @@ test "strict applies entity constraints to declarations from parameter entities"
     inline for (invalid_entity) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1149,7 +1149,7 @@ test "strict applies entity constraints to declarations from parameter entities"
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     {
@@ -1157,7 +1157,7 @@ test "strict applies entity constraints to declarations from parameter entities"
         defer doc.deinit();
         try std.testing.expectError(
             error.RecursiveEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>", .{ .mode = .strict }),
+            doc.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
     {
@@ -1165,13 +1165,13 @@ test "strict applies entity constraints to declarations from parameter entities"
         defer doc.deinit();
         try std.testing.expectError(
             error.InvalidDoctype,
-            doc.parse("<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>", .{ .mode = .strict }),
+            doc.parse("<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>", .{ .mode = .strict, .validate_well_formedness = true }),
         );
     }
 
     var parsed = try parseTestDoc(
         "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e 'ok'>\">%p;]><r>&e;</r>",
-        .{ .mode = .strict },
+        .{ .mode = .strict, .validate_well_formedness = true },
     );
     defer parsed.deinit();
 }
@@ -1201,7 +1201,7 @@ test "strict validates DTD attribute default entity constraints in declaration o
     inline for (undeclared_or_forward) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1213,7 +1213,7 @@ test "strict validates DTD attribute default entity constraints in declaration o
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{});
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     const valid = [_][]const u8{
@@ -1223,7 +1223,7 @@ test "strict validates DTD attribute default entity constraints in declaration o
         "<!DOCTYPE r [<!ENTITY e '&lt;'><!ATTLIST r a CDATA #FIXED '&e;'>]><r/>",
     };
     inline for (valid) |source| {
-        var parsed = try parseTestDoc(source, .{ .mode = .strict });
+        var parsed = try parseTestDoc(source, .{ .mode = .strict, .validate_well_formedness = true });
         defer parsed.deinit();
     }
 }
@@ -1582,7 +1582,7 @@ test "refAllDeclsRecursive: every zxml module compiles all declarations" {
 }
 
 test "strict enforces document-level well-formedness" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -1602,7 +1602,7 @@ test "strict enforces document-level well-formedness" {
 }
 
 test "strict validates processing instruction separators" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -1620,7 +1620,7 @@ test "strict validates processing instruction separators" {
 }
 
 test "strict two-attribute duplicate pair checks exact names" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -1634,7 +1634,7 @@ test "strict two-attribute duplicate pair checks exact names" {
 }
 
 test "strict rejects duplicate attribute names" {
-    const strict_opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const strict_opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var strict_doc = initDoc(strict_opts);
     defer strict_doc.deinit();
     try std.testing.expectError(error.DuplicateAttribute, strict_doc.parse("<r a='1' a='2'/>", strict_opts));
@@ -1833,7 +1833,7 @@ test "strict rejects duplicate attribute names" {
 }
 
 test "strict validates XML declaration grammar" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
@@ -1854,7 +1854,7 @@ test "strict validates XML declaration grammar" {
 }
 
 test "strict validates DOCTYPE grammar" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true };
     var doc = initDoc(opts);
     defer doc.deinit();
 
