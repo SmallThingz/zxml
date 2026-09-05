@@ -762,7 +762,7 @@ fn countElementsByName(doc: anytype, name: []const u8) usize {
     var n: usize = 0;
     for (doc.nodes.items) |node| {
         if (node.kind != .element) continue;
-        if (std.mem.eql(u8, node.name.slice(doc.source), name)) n += 1;
+        if (std.mem.eql(u8, node.nameSpan().slice(doc.source), name)) n += 1;
     }
     return n;
 }
@@ -802,7 +802,7 @@ fn firstText(alloc: std.mem.Allocator, doc: anytype, profile: []const u8) (std.m
 fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
     for (doc.nodes.items, 0..) |node, i| {
         if (node.kind != .element) continue;
-        if (!std.mem.eql(u8, node.name.slice(doc.source), name)) continue;
+        if (!std.mem.eql(u8, node.nameSpan().slice(doc.source), name)) continue;
 
         const element = doc.nodeAt(@intCast(i)).?;
         if (profileWantsDecodedValues(profile)) {
@@ -815,9 +815,15 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, profile: []const u8
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(alloc);
 
-        const raw_element = doc.nodes.items[element.index];
-        var child_index = element.index + 1;
-        while (child_index <= raw_element.subtree_end and child_index < doc.nodes.items.len) : (child_index += 1) {
+        const subtree_end: usize = blk: {
+            var cursor = element;
+            while (true) {
+                if (cursor.nextSibling()) |sibling| break :blk @as(usize, @intCast(sibling.index)) - 1;
+                cursor = cursor.parentNode() orelse break :blk doc.nodes.items.len - 1;
+            }
+        };
+        var child_index: usize = @intCast(element.index + 1);
+        while (child_index <= subtree_end and child_index < doc.nodes.items.len) : (child_index += 1) {
             const child = doc.nodes.items[child_index];
             if (child.kind == .text or child.kind == .cdata) {
                 try out.appendSlice(alloc, child.valueSpan().slice(doc.source));
