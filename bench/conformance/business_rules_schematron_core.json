@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "br-departure-before-arrival-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Trip><DepartureDate>2026-02-20</DepartureDate><ArrivalDate>2026-02-21</ArrivalDate></Trip>",
       "expect_ok": true,
       "expect_root_name": "Trip",
@@ -13,7 +16,10 @@
     },
     {
       "name": "br-departure-before-arrival-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Trip><DepartureDate>2026-02-22</DepartureDate><ArrivalDate>2026-02-21</ArrivalDate></Trip>",
       "expect_ok": true,
       "expect_root_name": "Trip",
@@ -23,7 +29,10 @@
     },
     {
       "name": "br-invoice-has-at-least-one-line",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Invoice><Line>1</Line><Line>2</Line></Invoice>",
       "expect_ok": true,
       "expect_root_name": "Invoice",
@@ -33,7 +42,10 @@
     },
     {
       "name": "br-invoice-missing-lines-detected",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Invoice></Invoice>",
       "expect_ok": true,
       "expect_root_name": "Invoice",
@@ -43,7 +55,10 @@
     },
     {
       "name": "br-flight-code-regex-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Flight><FlightCode>AA123</FlightCode></Flight>",
       "expect_ok": true,
       "expect_root_name": "Flight",
@@ -53,7 +68,10 @@
     },
     {
       "name": "br-flight-code-regex-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Flight><FlightCode>Aa123</FlightCode></Flight>",
       "expect_ok": true,
       "expect_root_name": "Flight",
@@ -63,7 +81,10 @@
     },
     {
       "name": "br-amount-is-int-valid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Settlement><Amount>1000</Amount></Settlement>",
       "expect_ok": true,
       "expect_root_name": "Settlement",
@@ -73,7 +94,10 @@
     },
     {
       "name": "br-amount-is-int-invalid",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<Settlement><Amount>1000USD</Amount></Settlement>",
       "expect_ok": true,
       "expect_root_name": "Settlement",

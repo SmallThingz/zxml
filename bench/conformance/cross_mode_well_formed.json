@@ -3,7 +3,10 @@
   "cases": [
     {
       "name": "basic-nested-text",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<root><a>1</a><b/></root>",
       "expect_ok": true,
       "expect_elements": 3,
@@ -12,7 +15,10 @@
     },
     {
       "name": "attributes-single-double",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<root a='x' b=\"y\"><c/></root>",
       "expect_ok": true,
       "expect_elements": 2,
@@ -22,7 +28,10 @@
     },
     {
       "name": "namespace-like-names",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<ns:root ns:id='42'><ns:child/></ns:root>",
       "expect_ok": true,
       "expect_elements": 2,
@@ -32,7 +41,10 @@
     },
     {
       "name": "deep-tree",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r><a><b><c><d><e/></d></c></b></a></r>",
       "expect_ok": true,
       "expect_elements": 6,
@@ -40,7 +52,10 @@
     },
     {
       "name": "self-closing-heavy",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r><a/><b/><c/></r>",
       "expect_ok": true,
       "expect_elements": 4,
@@ -48,7 +63,10 @@
     },
     {
       "name": "misc-nodes-enabled",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated_misc",
+        "permissive_misc"
+      ],
       "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><!--c--><?pi x?><r><![CDATA[z]]></r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -57,7 +75,10 @@
     },
     {
       "name": "misc-nodes-disabled",
-      "profiles": ["strict_misc_off", "turbo_misc_off"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<?xml version='1.0'?><!DOCTYPE r [<!ELEMENT r ANY>]><!--c--><?pi x?><r><![CDATA[z]]></r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -65,15 +86,15 @@
       "expect_root_name": "r"
     },
     {
-      "name": "strict-text-around-root-rejected",
-      "profile": "strict",
+      "name": "validated-text-around-root-rejected",
+      "profile": "validated",
       "xml": "pre<r>t</r>post",
       "expect_ok": false,
       "expect_error": "InvalidDocumentContent"
     },
     {
-      "name": "turbo-text-around-root-tolerated",
-      "profile": "turbo_default",
+      "name": "permissive-text-around-root-tolerated",
+      "profile": "permissive",
       "xml": "pre<r>t</r>post",
       "expect_ok": true,
       "expect_elements": 1,
@@ -82,7 +103,10 @@
     },
     {
       "name": "processing-instruction-before-root",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated_misc",
+        "permissive_misc"
+      ],
       "xml": "<?x y?><r/>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -91,7 +115,10 @@
     },
     {
       "name": "cdata-kept-as-misc-node",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated_misc",
+        "permissive_misc"
+      ],
       "xml": "<r><![CDATA[a<b>&c]]></r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -100,7 +127,10 @@
     },
     {
       "name": "whitespace-preserved-by-default",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r> a\n\t b </r>",
       "expect_ok": true,
       "expect_elements": 1,
@@ -109,7 +139,10 @@
     },
     {
       "name": "attribute-name-with-colon-and-dash",
-      "profiles": ["strict", "turbo_default"],
+      "profiles": [
+        "validated",
+        "permissive"
+      ],
       "xml": "<r x:y-z='1'></r>",
       "expect_ok": true,
       "expect_elements": 1,
