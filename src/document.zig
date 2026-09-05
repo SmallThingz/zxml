@@ -2289,10 +2289,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         /// Reused node buffer. Parser metadata is generated into RawNode itself;
         /// there is no parallel navigation sidecar.
         nodes: std.ArrayList(RawNode) = .empty,
-        /// Full-validation scratch only; fastest mode never touches it.
-        parse_attrs: std.ArrayList(RawAttribute) = .empty,
         entity_map: std.StringHashMap([]u8),
-        reserved_input_hint_len: usize = 0,
         last_error_offset: usize = 0,
 
         pub fn init(allocator: std.mem.Allocator) Self {
@@ -2306,13 +2303,11 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             self.clearEntityMap();
             self.entity_map.deinit();
             self.nodes.deinit(self.allocator);
-            self.parse_attrs.deinit(self.allocator);
         }
 
         inline fn resetForParse(self: *Self) void {
             self.clearEntityMap();
             self.nodes.items.len = 0;
-            if (comptime options.validate_well_formedness) self.parse_attrs.items.len = 0;
         }
 
         pub fn clear(self: *Self) void {
@@ -2577,19 +2572,6 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             try writer.writeAll("</");
             try writer.writeAll(self.nodes.items[idx].name_or_text.slice(self.source));
             try writer.writeAll(">");
-        }
-
-        pub inline fn reserveForInput(self: *Self, input_len: usize) !void {
-            if (self.nodes.capacity != 0 and input_len <= self.reserved_input_hint_len) return;
-            return self.reserveForInputSlow(input_len);
-        }
-
-        noinline fn reserveForInputSlow(self: *Self, input_len: usize) !void {
-            const est_nodes = @max(@as(usize, 16), input_len / 14 +| 8);
-            if (self.nodes.capacity == 0 or input_len > self.reserved_input_hint_len) {
-                if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
-                self.reserved_input_hint_len = @max(self.reserved_input_hint_len, input_len);
-            }
         }
     };
 }
