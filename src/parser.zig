@@ -1175,6 +1175,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
                 break :blk end;
             } else blk: {
+                const expected_gt = close_start + (name_end - name_start);
+                if (expected_gt < self.input.len and self.input[expected_gt] == '>') {
+                    break :blk expected_gt + 1;
+                }
                 const gt = scanner.findByte(self.input, close_start, '>') orelse return false;
                 break :blk gt + 1;
             };
@@ -1459,7 +1463,7 @@ test "compact DOM rejects element names longer than u16" {
     );
 }
 
-test "turbo closing fast path preserves permissive fallback forms" {
+test "turbo closing fast paths preserve permissive fallback forms" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var doc = Document.init(std.testing.allocator);
@@ -1471,6 +1475,9 @@ test "turbo closing fast path preserves permissive fallback forms" {
         .{ .source = "<r><child></x></r>", .child = "child" },
         .{ .source = "<r><x></x \n></r>", .child = "x" },
         .{ .source = "<r><x></></r>", .child = "x" },
+        .{ .source = "<r><x>t</y></r>", .child = "x" },
+        .{ .source = "<r><child>t</x></r>", .child = "child" },
+        .{ .source = "<r><x>t</x \n></r>", .child = "x" },
     }) |case| {
         doc.clear();
         doc.source = case.source;
