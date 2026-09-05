@@ -34,7 +34,6 @@ fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterati
             .include_misc_nodes = true,
         });
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
-        checksum +%= @as(u64, @intCast(doc.attrs.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);
@@ -55,7 +54,6 @@ fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, 
             .include_misc_nodes = true,
         });
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
-        checksum +%= @as(u64, @intCast(doc.attrs.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);
@@ -74,7 +72,6 @@ fn runDomTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iteratio
             .include_misc_nodes = true,
         });
         checksum +%= @as(u64, @intCast(doc.nodes.items.len));
-        checksum +%= @as(u64, @intCast(doc.attrs.items.len));
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);

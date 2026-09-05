@@ -8,7 +8,7 @@ Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an
 ## Features
 
 - Single-pass XML parsing over `[]const u8` input.
-- DOM layout backed by contiguous node/attribute arrays and span slices into source bytes.
+- DOM layout backed by a contiguous node array, with element attributes recovered lazily from source-byte spans.
 - Comptime parse configuration via `Document.parse(input, .{ ... })`.
 - Two parser profiles: `strict` and `turbo`.
 - Raw borrowed accessors plus allocator-backed decoded helpers for text and attribute values.
@@ -140,6 +140,8 @@ Use raw accessors when you want borrowed source slices:
 const attr_raw = root.getAttributeValueRaw("id").?;
 const text_raw = root.firstChild().?.valueRawSlice();
 ```
+
+Elements store their raw attribute region as a half-open byte span into `doc.source`; attributes are iterated lazily and are not kept in a persistent document-wide attribute array. Low-level `RawNode.attributeSpan()` values are source-byte offsets, not attribute indices.
 
 Use allocator-backed helpers when you want decoded values without mutating the source:
 
