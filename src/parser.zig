@@ -220,19 +220,46 @@ noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.Ra
     return null;
 }
 
-pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions) ParseError!void {
-    return parseIntoTracked(doc, input, opts, false);
+pub fn parse(comptime opts: ParseOptions, allocator: std.mem.Allocator, input: opts.Input()) ParseError!opts.Document() {
+    return parseTracked(opts, allocator, input, null);
 }
 
-pub fn parseIntoTracked(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions, comptime track_error_offset: bool) ParseError!void {
-    if (comptime track_error_offset) doc.last_error_offset = 0;
+pub fn parseDiagnostic(comptime opts: ParseOptions, allocator: std.mem.Allocator, input: opts.Input()) ?document.ParseDiagnostic {
+    var error_offset: usize = 0;
+    var doc = parseTracked(opts, allocator, input, &error_offset) catch |err| return .{
+        .err = err,
+        .offset = error_offset,
+        .source = input,
+    };
+    doc.deinit();
+    return null;
+}
+
+fn parseTracked(
+    comptime opts: ParseOptions,
+    allocator: std.mem.Allocator,
+    input: opts.Input(),
+    error_offset: ?*usize,
+) ParseError!opts.Document() {
+    if (error_offset) |offset| offset.* = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
-    if (comptime opts.validate_well_formedness and opts.validate_xml_characters) try document.validateXmlCharacters(input);
-    var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
+    if (comptime opts.validate_well_formedness and opts.validate_xml_characters) {
+        document.validateXmlCharacters(input) catch |err| return err;
+    }
+
+    const Doc = opts.Document();
+    var doc = Doc.init(allocator);
+    errdefer doc.deinit();
+    doc.source = input;
+
+    var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = 0 };
+    errdefer p.nodes.deinit(allocator);
     p.parse() catch |err| {
-        if (comptime track_error_offset) doc.last_error_offset = @min(p.i, input.len);
+        if (error_offset) |offset| offset.* = @min(p.i, input.len);
         return err;
     };
+    doc.nodes = p.nodes.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    return doc;
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
@@ -240,6 +267,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         doc: *DocType,
         input: []const u8,
         i: usize,
+        nodes: std.ArrayListUnmanaged(RawNode) = .empty,
         parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
         parse_stack_heap_owned: bool = false,
@@ -323,7 +351,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const density_estimate = projected / sample_len;
                 break :blk @max(LargeInitialNodeCapacity, density_estimate + density_estimate / 8 + 1);
             };
-            self.doc.nodes.ensureTotalCapacity(self.doc.allocator, initial_nodes) catch return error.OutOfMemory;
+            self.nodes.ensureTotalCapacity(self.doc.allocator, initial_nodes) catch return error.OutOfMemory;
         }
 
         fn parse(noalias self: *Self) align(128) ParseError!void {
@@ -332,9 +360,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (comptime validated) self.parse_attrs.deinit(self.doc.allocator);
             }
             try self.initContainers();
-            std.debug.assert(self.doc.nodes.items.len == 0);
-            _ = self.doc.nodes.addOneAssumeCapacity();
-            self.doc.nodes.items[0] = RawNode.initDocument();
+            std.debug.assert(self.nodes.items.len == 0);
+            _ = self.nodes.addOneAssumeCapacity();
+            self.nodes.items[0] = RawNode.initDocument();
             self.parse_stack = .initBuffer(&self.parse_stack_inline);
             self.parse_stack.appendAssumeCapacity(.{ .idx = 0 });
             while (self.i + 1 < self.input.len) {
@@ -412,7 +440,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             while (self.stackLen() > 1) {
                 self.finishNode(self.popStack());
             }
-            if (self.doc.nodes.items.len != 0) {
+            if (self.nodes.items.len != 0) {
                 self.finishNode(0);
             }
         }
@@ -976,11 +1004,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn previousSiblingForAppend(noalias self: *Self, parent_idx: IndexInt) IndexInt {
             if (comptime !opts.store_prev_sibling) return InvalidIndex;
-            const len = self.doc.nodes.items.len;
+            const len = self.nodes.items.len;
             if (len <= 1) return InvalidIndex;
             var candidate: IndexInt = @intCast(len - 1);
             while (candidate != InvalidIndex and candidate > parent_idx) {
-                const parent = self.doc.nodes.items[candidate].parent;
+                const parent = self.nodes.items[candidate].parent;
                 if (parent == parent_idx) return candidate;
                 if (parent == InvalidIndex or parent >= candidate) return InvalidIndex;
                 candidate = parent;
@@ -989,23 +1017,23 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn commitChildMetadata(noalias self: *Self, parent_idx: IndexInt, idx: IndexInt) void {
-            if (comptime opts.store_last_child) self.doc.nodes.items[parent_idx].last_child = idx;
+            if (comptime opts.store_last_child) self.nodes.items[parent_idx].last_child = idx;
         }
 
         inline fn ensureNodeCapacity(noalias self: *Self, needed: usize) ParseError!void {
-            const len = self.doc.nodes.items.len;
-            if (self.doc.nodes.capacity - len < needed) {
+            const len = self.nodes.items.len;
+            if (self.nodes.capacity - len < needed) {
                 @branchHint(.unlikely);
                 const target = @max(len + needed, len +| len / 2 +| 8);
-                self.doc.nodes.ensureTotalCapacityPrecise(self.doc.allocator, target) catch return error.OutOfMemory;
+                self.nodes.ensureTotalCapacityPrecise(self.doc.allocator, target) catch return error.OutOfMemory;
             }
         }
 
         inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
             try self.ensureNodeCapacity(1);
-            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const idx: IndexInt = @intCast(self.nodes.items.len);
             const prev = self.previousSiblingForAppend(parent_idx);
-            self.doc.nodes.appendAssumeCapacity(RawNode.initElement(
+            self.nodes.appendAssumeCapacity(RawNode.initElement(
                 idx,
                 parent_idx,
                 .{ .start = @intCast(name_start), .end = @intCast(name_end) },
@@ -1017,9 +1045,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn appendTextNodeTo(noalias self: *Self, parent_idx: IndexInt, start_: usize, end_: usize) ParseError!IndexInt {
             try self.ensureNodeCapacity(1);
-            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const idx: IndexInt = @intCast(self.nodes.items.len);
             const prev = self.previousSiblingForAppend(parent_idx);
-            self.doc.nodes.appendAssumeCapacity(RawNode.initText(
+            self.nodes.appendAssumeCapacity(RawNode.initText(
                 parent_idx,
                 .{ .start = @intCast(start_), .end = @intCast(end_) },
                 prev,
@@ -1037,9 +1065,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         ) ParseError!IndexInt {
             comptime std.debug.assert(opts.include_misc_nodes);
             try self.ensureNodeCapacity(1);
-            const idx: IndexInt = @intCast(self.doc.nodes.items.len);
+            const idx: IndexInt = @intCast(self.nodes.items.len);
             const prev = self.previousSiblingForAppend(parent_idx);
-            self.doc.nodes.appendAssumeCapacity(RawNode.initMisc(parent_idx, kind, primary, value, prev));
+            self.nodes.appendAssumeCapacity(RawNode.initMisc(parent_idx, kind, primary, value, prev));
             self.commitChildMetadata(parent_idx, idx);
             return idx;
         }
@@ -1080,7 +1108,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn openElemMatchesClose(noalias self: *const Self, open: OpenElem, close_name: []const u8, close_key: u64) bool {
-            const open_span = self.doc.nodes.items[open.idx].name_or_text;
+            const open_span = self.nodes.items[open.idx].name_or_text;
             if (open.tag_len != close_name.len or open.tag_key != close_key) return false;
             if (close_name.len <= 8) return true;
             return std.mem.eql(u8, open_span.slice(self.input)[8..], close_name[8..]);
@@ -1091,7 +1119,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
-            self.doc.nodes.items[idx].subtree_end = @intCast(self.doc.nodes.items.len - 1);
+            self.nodes.items[idx].subtree_end = @intCast(self.nodes.items.len - 1);
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {
@@ -1296,118 +1324,92 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 }
 
 test "permissive generated DOM recovers malformed close structure" {
-    const Options: ParseOptions = .{};
-    const Document = Options.Document();
-    var doc = Document.init(std.testing.allocator);
-    defer doc.deinit();
+    const options: ParseOptions = .{};
 
     var mismatch = "<a><b></a>".*;
-    try doc.parse(&mismatch);
-    try std.testing.expectEqual(@as(usize, 3), doc.nodes.items.len);
-    try std.testing.expectEqual(@as(IndexInt, 2), doc.nodes.items[1].subtree_end);
-    try std.testing.expectEqual(@as(IndexInt, 2), doc.nodes.items[2].subtree_end);
+    var mismatch_doc = try options.parse(std.testing.allocator, &mismatch);
+    defer mismatch_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), mismatch_doc.nodes.len);
+    try std.testing.expectEqual(@as(IndexInt, 2), mismatch_doc.nodes[1].subtree_end);
+    try std.testing.expectEqual(@as(IndexInt, 2), mismatch_doc.nodes[2].subtree_end);
 
     var unmatched = "<a></x><b/></a>".*;
-    try doc.parse(&unmatched);
-    try std.testing.expectEqual(@as(usize, 3), doc.nodes.items.len);
-    try std.testing.expectEqual(@as(IndexInt, 2), doc.nodes.items[1].subtree_end);
+    var unmatched_doc = try options.parse(std.testing.allocator, &unmatched);
+    defer unmatched_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 3), unmatched_doc.nodes.len);
+    try std.testing.expectEqual(@as(IndexInt, 2), unmatched_doc.nodes[1].subtree_end);
 
     var eof = "<a>".*;
-    try doc.parse(&eof);
-    try std.testing.expectEqual(@as(IndexInt, 1), doc.nodes.items[1].subtree_end);
+    var eof_doc = try options.parse(std.testing.allocator, &eof);
+    defer eof_doc.deinit();
+    try std.testing.expectEqual(@as(IndexInt, 1), eof_doc.nodes[1].subtree_end);
 }
 
 test "validated generated DOM rejects malformed close structure" {
-    const Options: ParseOptions = .{ .validate_well_formedness = true };
-    const Document = Options.Document();
-    var doc = Document.init(std.testing.allocator);
-    defer doc.deinit();
-
+    const options: ParseOptions = .{ .validate_well_formedness = true };
     var mismatch = "<a><b></a>".*;
-    try std.testing.expectError(error.InvalidClosingTagName, doc.parse(&mismatch));
+    try std.testing.expectError(error.InvalidClosingTagName, options.parse(std.testing.allocator, &mismatch));
     var eof = "<a>".*;
-    try std.testing.expectError(error.UnexpectedEndOfData, doc.parse(&eof));
+    try std.testing.expectError(error.UnexpectedEndOfData, options.parse(std.testing.allocator, &eof));
 }
 
 test "open-element stack spills beyond inline capacity" {
-    const Options: ParseOptions = .{};
-    const Document = Options.Document();
+    const options: ParseOptions = .{};
     var source: std.ArrayList(u8) = .empty;
     defer source.deinit(std.testing.allocator);
     for (0..80) |_| try source.appendSlice(std.testing.allocator, "<a>");
     try source.appendSlice(std.testing.allocator, "x");
     for (0..80) |_| try source.appendSlice(std.testing.allocator, "</a>");
 
-    var doc = Document.init(std.testing.allocator);
+    var doc = try options.parse(std.testing.allocator, source.items);
     defer doc.deinit();
-    try doc.parse(source.items);
-    try std.testing.expectEqual(@as(usize, 82), doc.nodes.items.len);
-    try std.testing.expectEqual(@as(IndexInt, 81), doc.nodes.items[1].subtree_end);
+    try std.testing.expectEqual(@as(usize, 82), doc.nodes.len);
+    try std.testing.expectEqual(@as(IndexInt, 81), doc.nodes[1].subtree_end);
 }
 
-test "parseInto builds a minimal DOM and enforces validated closing tags" {
-    const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
+test "generated parse builds a minimal DOM and enforces validated closing tags" {
+    const options: ParseOptions = .{ .validate_well_formedness = true };
     var ok = "<root><child>v</child></root>".*;
-    var doc = Document.init(std.testing.allocator);
+    var doc = try options.parse(std.testing.allocator, &ok);
     defer doc.deinit();
-    doc.source = &ok;
-    try parseInto(&doc, &ok, .{ .validate_well_formedness = true });
-    try std.testing.expectEqual(@as(usize, 4), doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 4), doc.nodes.len);
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("child", doc.nodeAt(2).?.nameSlice());
     try std.testing.expectEqualStrings("v", doc.nodeAt(3).?.valueRawSlice());
 
     var bad = "<root><child></root>".*;
-    doc.clear();
-    doc.source = &bad;
-    try std.testing.expectError(
-        error.InvalidClosingTagName,
-        parseInto(&doc, &bad, .{ .validate_well_formedness = true }),
-    );
+    try std.testing.expectError(error.InvalidClosingTagName, options.parse(std.testing.allocator, &bad));
 }
 
 test "one-byte parser tails preserve validated and permissive behavior" {
-    const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
-    var doc = Document.init(std.testing.allocator);
-    defer doc.deinit();
+    const permissive: ParseOptions = .{};
+    const validated: ParseOptions = .{ .validate_well_formedness = true };
 
     var lone_lt = "<".*;
-    doc.source = &lone_lt;
-    try parseInto(&doc, &lone_lt, .{});
-    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
+    var lt_doc = try permissive.parse(std.testing.allocator, &lone_lt);
+    defer lt_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), lt_doc.nodes.len);
 
-    doc.clear();
     lone_lt = "<".*;
-    doc.source = &lone_lt;
-    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, &lone_lt, .{ .validate_well_formedness = true }));
+    try std.testing.expectError(error.UnexpectedEndOfData, validated.parse(std.testing.allocator, &lone_lt));
 
-    doc.clear();
     var lone_text = "x".*;
-    doc.source = &lone_text;
-    try parseInto(&doc, &lone_text, .{});
-    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
-    try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.valueRawSlice());
+    var text_doc = try permissive.parse(std.testing.allocator, &lone_text);
+    defer text_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 2), text_doc.nodes.len);
+    try std.testing.expectEqualStrings("x", text_doc.nodeAt(1).?.valueRawSlice());
 
-    doc.clear();
     lone_text = "x".*;
-    doc.source = &lone_text;
-    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, &lone_text, .{ .validate_well_formedness = true }));
+    try std.testing.expectError(error.InvalidDocumentContent, validated.parse(std.testing.allocator, &lone_text));
 
-    doc.clear();
     var lone_space = " ".*;
-    doc.source = &lone_space;
-    try parseInto(&doc, &lone_space, .{});
-    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
+    var space_doc = try permissive.parse(std.testing.allocator, &lone_space);
+    defer space_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 1), space_doc.nodes.len);
 }
 
 test "validated start-tag grammar rejects malformed attributes" {
-    const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
-    var doc = Document.init(std.testing.allocator);
-    defer doc.deinit();
-
+    const options: ParseOptions = .{ .validate_well_formedness = true };
     const Case = struct { input: []const u8, err: ParseError };
     const cases = [_]Case{
         .{ .input = "<r a/>", .err = error.ExpectedEq },
@@ -1419,36 +1421,27 @@ test "validated start-tag grammar rejects malformed attributes" {
         .{ .input = "<r><!--a---></r>", .err = error.InvalidComment },
         .{ .input = "<r>x]]>y</r>", .err = error.InvalidCharacterData },
     };
-
     for (cases) |case| {
         const input = try std.testing.allocator.dupe(u8, case.input);
         defer std.testing.allocator.free(input);
-        doc.clear();
-        doc.source = input;
-        try std.testing.expectError(case.err, parseInto(&doc, input, .{ .validate_well_formedness = true }));
+        try std.testing.expectError(case.err, options.parse(std.testing.allocator, input));
     }
 
-    doc.clear();
     var spaced_close = "<r></ r>".*;
-    doc.source = &spaced_close;
-    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, &spaced_close, .{ .validate_well_formedness = true }));
-
+    try std.testing.expectError(error.InvalidClosingTagName, options.parse(std.testing.allocator, &spaced_close));
     inline for (.{ "<r></ r>", "<r></>", "<r></r x>", "<r></r" }) |literal| {
         var input = literal.*;
-        doc.clear();
-        doc.source = &input;
-        const result = parseInto(&doc, &input, .{ .validate_well_formedness = true });
-        if (std.mem.eql(u8, &input, "<r></r")) {
-            try std.testing.expectError(error.UnexpectedEndOfData, result);
-        } else {
+        const result = options.parse(std.testing.allocator, &input);
+        if (std.mem.eql(u8, &input, "<r></r"))
+            try std.testing.expectError(error.UnexpectedEndOfData, result)
+        else
             try std.testing.expectError(error.InvalidClosingTagName, result);
-        }
     }
 }
 
 test "full validation rejects element names longer than u16" {
-    const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
+    const validated: ParseOptions = .{ .validate_well_formedness = true };
+    const permissive: ParseOptions = .{};
     const name_len = 70_000;
     const source_len = name_len * 2 + 5;
     if (!common.lenFits(source_len)) return error.SkipZigTest;
@@ -1463,28 +1456,14 @@ test "full validation rejects element names longer than u16" {
     @memset(source[4 + name_len .. 4 + name_len * 2], 'a');
     source[source_len - 1] = '>';
 
-    var doc = Document.init(std.testing.allocator);
+    try std.testing.expectError(error.InputTooLarge, validated.parse(std.testing.allocator, source));
+    var doc = try permissive.parse(std.testing.allocator, source);
     defer doc.deinit();
-    doc.source = source;
-    try std.testing.expectError(
-        error.InputTooLarge,
-        parseInto(&doc, source, .{ .validate_well_formedness = true }),
-    );
-
-    // Fast mode deliberately skips the representation-limit check. The name
-    // may be truncated for lazy access, but parsing remains bounded and safe.
-    doc.clear();
-    doc.source = source;
-    try parseInto(&doc, source, .{});
-    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 2), doc.nodes.len);
 }
 
 test "permissive closing fast paths preserve permissive fallback forms" {
     const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
-    var doc = Document.init(std.testing.allocator);
-    defer doc.deinit();
-
     const Case = struct { source: []const u8, child: []const u8 };
     inline for ([_]Case{
         .{ .source = "<r><x></y></r>", .child = "x" },
@@ -1497,9 +1476,8 @@ test "permissive closing fast paths preserve permissive fallback forms" {
     }) |case| {
         const source = try std.testing.allocator.dupe(u8, case.source);
         defer std.testing.allocator.free(source);
-        doc.clear();
-        doc.source = source;
-        try parseInto(&doc, source, .{});
+        var doc = try options.parse(std.testing.allocator, source);
+        defer doc.deinit();
         try std.testing.expectEqualStrings("r", doc.nodeAt(1).?.nameSlice());
         try std.testing.expectEqualStrings(case.child, doc.nodeAt(2).?.nameSlice());
     }
@@ -1507,25 +1485,19 @@ test "permissive closing fast paths preserve permissive fallback forms" {
 
 test "permissive mode accepts mixed XML whitespace around attribute equals" {
     const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
     var source = "<r a \n \t=\r '1' b \r\n = \t\"2\"></r \n>".*;
-    var doc = Document.init(std.testing.allocator);
+    var doc = try options.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    doc.source = &source;
-    try parseInto(&doc, &source, .{});
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
     try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
 }
 
 test "validated start tags accept mixed XML whitespace between attributes" {
-    const options: ParseOptions = .{};
-    const Document = document.Types(options).Document;
+    const options: ParseOptions = .{ .validate_well_formedness = true };
     var source = "<r \n\t a='1' \r\n b=\"2\">x</r>".*;
-    var doc = Document.init(std.testing.allocator);
+    var doc = try options.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    doc.source = &source;
-    try parseInto(&doc, &source, .{ .validate_well_formedness = true });
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     var attrs = root.attributes();
     try std.testing.expectEqualStrings("a", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());

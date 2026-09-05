@@ -3359,7 +3359,6 @@ test "streaming validated token errors match DOM parsing" {
     const opts: ParseOptions = .{
         .validate_well_formedness = true,
     };
-    const Document = document.Types(opts).Document;
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3399,10 +3398,9 @@ test "streaming validated token errors match DOM parsing" {
     for (cases) |input_literal| {
         const input = try std.testing.allocator.dupe(u8, input_literal);
         defer std.testing.allocator.free(input);
-        var doc = Document.init(std.testing.allocator);
-        defer doc.deinit();
         const dom_err: ?ParseError = blk: {
-            doc.parse(input) catch |err| break :blk err;
+            var doc = opts.parse(std.testing.allocator, input) catch |err| break :blk err;
+            doc.deinit();
             break :blk null;
         };
 

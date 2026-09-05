@@ -351,10 +351,12 @@ fn runCaseWithOptions(comptime options: zxml.ParseOptions, comptime decode_value
 
     var parse_err: ?zxml.ParseError = null;
     const ok = blk: {
-        doc.parse(xml_buf) catch |err| {
+        const parsed = options.parse(case_alloc, xml_buf) catch |err| {
             parse_err = err;
             break :blk false;
         };
+        doc.deinit();
+        doc = parsed;
 
         if (decode_values) {
             validateDecodedProfile(case_alloc, &doc) catch |err| {
@@ -394,11 +396,11 @@ fn runCaseWithOptions(comptime options: zxml.ParseOptions, comptime decode_value
     }
 
     if (expect_nodes) |n| {
-        if (doc.nodes.items.len != n) {
+        if (doc.nodes.len != n) {
             return .{
                 .case_name = case_name,
                 .pass = false,
-                .reason = try std.fmt.allocPrint(alloc, "[{s}] expect_nodes={d}, got {d}", .{ profile, n, doc.nodes.items.len }),
+                .reason = try std.fmt.allocPrint(alloc, "[{s}] expect_nodes={d}, got {d}", .{ profile, n, doc.nodes.len }),
             };
         }
     }
@@ -637,7 +639,7 @@ fn mapDecodeError(err: anyerror) zxml.ParseError {
 
 fn countByKind(doc: anytype, kind: zxml.NodeType) usize {
     var n: usize = 0;
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         if (doc.kindAt(@intCast(i)) == kind) n += 1;
     }
     return n;
@@ -645,7 +647,7 @@ fn countByKind(doc: anytype, kind: zxml.NodeType) usize {
 
 fn countMisc(doc: anytype) usize {
     var n: usize = 0;
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         switch (doc.kindAt(@intCast(i))) {
             .comment, .cdata, .pi, .declaration, .doctype => n += 1,
             else => {},
@@ -656,7 +658,7 @@ fn countMisc(doc: anytype) usize {
 
 fn countElementsByName(doc: anytype, name: []const u8) usize {
     var n: usize = 0;
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         if (doc.kindAt(@intCast(i)) != .element) continue;
         if (std.mem.eql(u8, doc.nodeAt(@intCast(i)).?.nameSlice(), name)) n += 1;
     }
@@ -664,7 +666,7 @@ fn countElementsByName(doc: anytype, name: []const u8) usize {
 }
 
 fn firstElement(doc: anytype) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         if (doc.kindAt(@intCast(i)) == .element) return doc.nodeAt(@intCast(i));
     }
     return null;
@@ -682,7 +684,7 @@ fn rootAttributeValue(alloc: std.mem.Allocator, root: anytype, comptime decode_v
 }
 
 fn firstText(alloc: std.mem.Allocator, doc: anytype, comptime decode_values: bool) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         if (doc.kindAt(@intCast(i)) != .text) continue;
         const text = doc.nodeAt(@intCast(i)).?;
         if (decode_values) {
@@ -698,7 +700,7 @@ fn firstText(alloc: std.mem.Allocator, doc: anytype, comptime decode_values: boo
 }
 
 fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, comptime decode_values: bool, name: []const u8) (std.mem.Allocator.Error || zxml.ParseError)!?[]const u8 {
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         if (doc.kindAt(@intCast(i)) != .element) continue;
         const element = doc.nodeAt(@intCast(i)).?;
         if (!std.mem.eql(u8, element.nameSlice(), name)) continue;
@@ -718,11 +720,11 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, comptime decode_val
             var cursor = element;
             while (true) {
                 if (cursor.nextSibling()) |sibling| break :blk @as(usize, @intCast(sibling.index)) - 1;
-                cursor = cursor.parentNode() orelse break :blk doc.nodes.items.len - 1;
+                cursor = cursor.parentNode() orelse break :blk doc.nodes.len - 1;
             }
         };
         var child_index: usize = @intCast(element.index + 1);
-        while (child_index <= subtree_end and child_index < doc.nodes.items.len) : (child_index += 1) {
+        while (child_index <= subtree_end and child_index < doc.nodes.len) : (child_index += 1) {
             const kind = doc.kindAt(@intCast(child_index));
             if (kind == .text or kind == .cdata) {
                 try out.appendSlice(alloc, doc.nodeAt(@intCast(child_index)).?.valueRawSlice());
@@ -734,7 +736,7 @@ fn elementTextByName(alloc: std.mem.Allocator, doc: anytype, comptime decode_val
 }
 
 fn validateDecodedProfile(alloc: std.mem.Allocator, doc: anytype) zxml.ParseError!void {
-    for (doc.nodes.items, 0..) |_, i| {
+    for (doc.nodes, 0..) |_, i| {
         const kind = doc.kindAt(@intCast(i));
         if (kind == .element) {
             const element = doc.nodeAt(@intCast(i)).?;
@@ -1207,10 +1209,9 @@ test "raw field text extraction handles deeply nested elements iteratively" {
     for (0..depth) |_| try xml.appendSlice(alloc, "</x>");
     try xml.appendSlice(alloc, "</Code></r>");
 
-    const Types = zxml.Types(.{ .validate_well_formedness = true });
-    var doc = Types.Document.init(alloc);
+    const options: zxml.ParseOptions = .{ .validate_well_formedness = true };
+    var doc = try options.parse(alloc, xml.items);
     defer doc.deinit();
-    try doc.parse(xml.items);
 
     const text = (try elementTextByName(alloc, &doc, false, "Code")).?;
     defer alloc.free(text);

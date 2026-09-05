@@ -64,9 +64,9 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "querySelectorAll",  "write",
     });
     assertDeclCoverage(T.Document, &.{
-        "Options",                 "RawNode", "Node",   "Attribute", "AttributeIterator",
-        "init",                    "deinit",  "clear",  "parse",     "parseDiagnostic",
-        "registerDoctypeEntities", "root",    "kindAt", "nodeAt",    "write",
+        "Options", "RawNode", "Node",  "Attribute",               "AttributeIterator",
+        "init",    "deinit",  "clear", "registerDoctypeEntities", "root",
+        "kindAt",  "nodeAt",  "write",
     });
     assertDeclCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertDeclCoverage(T.StreamingAttributeIterator, &.{"next"});
@@ -86,7 +86,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "querySelectorAll",  "write",
     });
     assertFnCoverage(T.Document, &.{
-        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write",
+        "init", "deinit", "clear", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write",
     });
     assertFnCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertFnCoverage(T.StreamingAttributeIterator, &.{"next"});
@@ -96,9 +96,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     const source_text = "<!DOCTYPE ns:r [<!ENTITY e 'decoded'>]><ns:r xmlns:ns='urn:test' a='&amp;'><x>text</x><y/></ns:r>";
     const source = try std.testing.allocator.dupe(u8, source_text);
     defer std.testing.allocator.free(source);
-    var doc = T.Document.init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, source);
     defer doc.deinit();
-    try doc.parse(source);
 
     const raw_document = T.RawNode.initDocument();
     _ = raw_document.nodeKind(0);
@@ -166,7 +165,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
 
     try doc.registerDoctypeEntities(" ns:r [<!ENTITY e 'decoded'>]");
     var diagnostic_source = "<r>".*;
-    _ = doc.parseDiagnostic(&diagnostic_source);
+    _ = opts.parseDiagnostic(std.testing.allocator, &diagnostic_source);
     doc.clear();
 
     const Ctx = struct {
@@ -209,8 +208,8 @@ test "external package surface compiles and executes every public function" {
     try std.testing.expect(parse_err == error.ExpectedGt);
 
     assertFnCoverage(zxml, &.{"Types"});
-    assertDeclCoverage(zxml.ParseOptions, &.{ "Input", "parse", "Document" });
-    assertFnCoverage(zxml.ParseOptions, &.{ "Input", "parse", "Document" });
+    assertDeclCoverage(zxml.ParseOptions, &.{ "Input", "parse", "parseDiagnostic", "Document" });
+    assertFnCoverage(zxml.ParseOptions, &.{ "Input", "parse", "parseDiagnostic", "Document" });
     assertFnCoverage(zxml.ParseDiagnostic, &.{ "location", "context" });
     const diagnostic: zxml.ParseDiagnostic = .{ .err = error.ExpectedGt, .offset = 1, .source = "<" };
     _ = diagnostic.location();
