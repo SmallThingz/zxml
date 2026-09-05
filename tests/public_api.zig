@@ -52,8 +52,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "IndexInt",           "Span",                       "RawAttribute",   "RawAttributeIterator", "Attribute", "AttributeIterator", "RawNode", "Node", "Document",
         "StreamingAttribute", "StreamingAttributeIterator", "StreamingEvent", "StreamingParser",
     });
-    assertDeclCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
-    assertDeclCoverage(T.RawNode, &.{ "nameSpan", "valueSpan", "attributeSpan" });
+    assertDeclCoverage(T.Span, &.{ "len", "isEmpty", "slice", "sliceMut", "setEnd" });
+    assertDeclCoverage(T.RawNode, &.{ "initDocument", "initElement", "initText", "initMisc", "nodeKind", "isDocument", "isText", "isElement", "valueSpan" });
     assertDeclCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertDeclCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertDeclCoverage(T.AttributeIterator, &.{"next"});
@@ -64,7 +64,10 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "querySelectorAll",  "write",
     });
     assertDeclCoverage(T.Document, &.{
-        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "nodeAt", "write", "reserveForInput",
+        "Options",                 "RawNode", "Node",   "Attribute", "AttributeIterator",
+        "init",                    "deinit",  "clear",  "parse",     "parseDiagnostic",
+        "registerDoctypeEntities", "root",    "kindAt", "nodeAt",    "write",
+        "reserveForInput",
     });
     assertDeclCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertDeclCoverage(T.StreamingAttributeIterator, &.{"next"});
@@ -72,8 +75,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     assertDeclCoverage(T.StreamingParser, &.{ "State", "init", "deinit", "parse", "clear", "save", "restore", "parseAvailable", "finish" });
     assertDeclCoverage(T.StreamingParser.State, &.{});
 
-    assertFnCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
-    assertFnCoverage(T.RawNode, &.{ "nameSpan", "valueSpan", "attributeSpan" });
+    assertFnCoverage(T.Span, &.{ "len", "isEmpty", "slice", "sliceMut", "setEnd" });
+    assertFnCoverage(T.RawNode, &.{ "initDocument", "initElement", "initText", "initMisc", "nodeKind", "isDocument", "isText", "isElement", "valueSpan" });
     assertFnCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertFnCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertFnCoverage(T.AttributeIterator, &.{"next"});
@@ -84,26 +87,40 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "querySelectorAll",  "write",
     });
     assertFnCoverage(T.Document, &.{
-        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "nodeAt", "write", "reserveForInput",
+        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write", "reserveForInput",
     });
     assertFnCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertFnCoverage(T.StreamingAttributeIterator, &.{"next"});
     assertFnCoverage(T.StreamingEvent, &.{ "nameSlice", "valueRawSlice", "attributes", "getAttributeValueRaw", "leadingTextRaw", "followingTextRaw" });
     assertFnCoverage(T.StreamingParser, &.{ "init", "deinit", "parse", "clear", "save", "restore", "parseAvailable", "finish" });
 
-    const source = "<!DOCTYPE ns:r [<!ENTITY e 'decoded'>]><ns:r xmlns:ns='urn:test' a='&amp;'><x>text</x><y/></ns:r>";
+    const source_text = "<!DOCTYPE ns:r [<!ENTITY e 'decoded'>]><ns:r xmlns:ns='urn:test' a='&amp;'><x>text</x><y/></ns:r>";
+    const source = try std.testing.allocator.dupe(u8, source_text);
+    defer std.testing.allocator.free(source);
     var doc = T.Document.init(std.testing.allocator);
     defer doc.deinit();
-    try doc.reserveForInput(source.len, opts);
-    try doc.parse(source, opts);
+    try doc.reserveForInput(source.len);
+    try doc.parse(source);
 
-    _ = (T.RawNode{ .kind = .text }).nameSpan();
-    _ = (T.RawNode{ .kind = .text }).valueSpan();
-    _ = (T.RawNode{ .kind = .element }).attributeSpan();
-    const span: T.Span = .{ .start = 0, .end = 2 };
+    const raw_document = T.RawNode.initDocument();
+    _ = raw_document.nodeKind(0);
+    _ = raw_document.isDocument(0);
+    const raw_element = T.RawNode.initElement(1, 0, .{ .start = 1, .end = 2 }, zxml.InvalidIndex);
+    _ = raw_element.nodeKind(1);
+    _ = raw_element.isElement(1);
+    const raw_text = T.RawNode.initText(1, .{ .start = 0, .end = 1 }, zxml.InvalidIndex);
+    _ = raw_text.isText(2);
+    _ = raw_text.valueSpan(2);
+    if (comptime opts.include_misc_nodes) {
+        _ = T.RawNode.initMisc(0, .comment, .{}, .{}, zxml.InvalidIndex);
+    }
+    var span: T.Span = .{ .start = 0, .end = 2 };
     _ = span.len();
     _ = span.isEmpty();
     _ = span.slice("abcd");
+    var span_buf = "abcd".*;
+    _ = span.sliceMut(&span_buf);
+    span.setEnd(3);
     const index: T.IndexInt = 0;
     _ = index;
     const raw_attr: T.RawAttribute = .{ .name = span, .value = .{} };
@@ -118,14 +135,14 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     _ = root.namespaceUri();
     _ = root.valueRawSlice();
     const root_value = try root.value(std.testing.allocator);
-    std.testing.allocator.free(root_value);
+    root_value.free(std.testing.allocator);
     _ = root.firstChild();
     _ = root.lastChild();
     _ = root.nextSibling();
     _ = root.prevSibling();
     _ = root.parentNode();
     _ = root.getAttributeValueRaw("a");
-    if (try root.getAttributeValue(std.testing.allocator, "a")) |value| std.testing.allocator.free(value);
+    if (try root.getAttributeValue(std.testing.allocator, "a")) |value| value.free(std.testing.allocator);
     const attr = root.firstAttribute().?;
     var root_attrs = root.attributes();
     _ = root_attrs.next();
@@ -134,10 +151,10 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     _ = attr.namespacePrefix();
     _ = attr.localName();
     const attr_value = try attr.value(std.testing.allocator);
-    std.testing.allocator.free(attr_value);
+    attr_value.free(std.testing.allocator);
     _ = root.innerTextRaw();
     const inner = try root.innerText(std.testing.allocator);
-    std.testing.allocator.free(inner);
+    inner.free(std.testing.allocator);
     _ = root.querySelector("x");
     const matches = try root.querySelectorAll(std.testing.allocator, "x");
     std.testing.allocator.free(matches);
@@ -150,9 +167,8 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     try doc.write(&sink);
 
     try doc.registerDoctypeEntities(" ns:r [<!ENTITY e 'decoded'>]");
-    const diag = doc.parseDiagnostic("<r>", .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true }).?;
-    _ = diag.location();
-    _ = diag.context(4);
+    var diagnostic_source = "<r>".*;
+    _ = doc.parseDiagnostic(&diagnostic_source);
     doc.clear();
 
     const Ctx = struct {
@@ -185,30 +201,32 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
 
 test "external package surface compiles and executes every public function" {
     std.testing.refAllDecls(zxml);
-    assertDeclCoverage(zxml, &.{ "MaxInputLen", "NodeType", "ParseMode", "ParseOptions", "ParseError", "ParseDiagnostic", "InvalidIndex", "Types" });
+    assertDeclCoverage(zxml, &.{ "MaxInputLen", "NodeType", "ParseOptions", "ParseError", "ParseDiagnostic", "InvalidIndex", "Types" });
     assertDeclCoverage(zxml.ParseDiagnostic, &.{ "Location", "location", "context" });
     _ = zxml.MaxInputLen;
     _ = zxml.InvalidIndex;
-    const mode: zxml.ParseMode = .strict;
-    _ = mode;
     const node_kind: zxml.NodeType = .element;
     _ = node_kind;
     const parse_err: zxml.ParseError = error.ExpectedGt;
     try std.testing.expect(parse_err == error.ExpectedGt);
 
     assertFnCoverage(zxml, &.{"Types"});
-    assertDeclCoverage(zxml.ParseOptions, &.{ "parse", "Document" });
-    assertFnCoverage(zxml.ParseOptions, &.{ "parse", "Document" });
+    assertDeclCoverage(zxml.ParseOptions, &.{ "Input", "parse", "Document" });
+    assertFnCoverage(zxml.ParseOptions, &.{ "Input", "parse", "Document" });
     assertFnCoverage(zxml.ParseDiagnostic, &.{ "location", "context" });
+    const diagnostic: zxml.ParseDiagnostic = .{ .err = error.ExpectedGt, .offset = 1, .source = "<" };
+    _ = diagnostic.location();
+    _ = diagnostic.context(1);
 
-    const opts: zxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .expand_dtd_entities = true };
+    const opts: zxml.ParseOptions = .{ .validate_well_formedness = true, .expand_dtd_entities = true, .include_misc_nodes = true };
     _ = opts.Document();
-    var owned = try opts.parse(std.testing.allocator, "<r/>");
+    var owned_source = "<r/>".*;
+    var owned = try opts.parse(std.testing.allocator, &owned_source);
     owned.deinit();
     try exerciseTypes(opts);
 }
 
-test "public parser functions instantiate in turbo and strict configurations" {
-    try exerciseTypes(.{ .mode = .turbo });
-    try exerciseTypes(.{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+test "public parser functions instantiate in permissive and validated configurations" {
+    try exerciseTypes(.{});
+    try exerciseTypes(.{ .validate_well_formedness = true, .non_destructive = true, .include_misc_nodes = true });
 }
