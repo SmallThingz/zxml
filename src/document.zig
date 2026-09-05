@@ -24,12 +24,27 @@ pub const ParseMode = enum {
     strict,
 };
 
+pub const NavigationIndex = enum {
+    /// Minimize parse-time stores. Reverse navigation is derived lazily.
+    compact,
+    /// Maintain reverse-navigation links while parsing for O(1) last/previous sibling access.
+    full,
+};
+
 pub const ParseOptions = struct {
     mode: ParseMode = .turbo,
+    /// Enables expensive XML-spec well-formedness validation. The default parser
+    /// is safety-oriented: bounded, crash-free, and optimized for common input.
+    validate_well_formedness: bool = false,
+    /// Track quote state while locating the end of a start tag. Off by default:
+    /// the common path takes the first `>` and leaves full handling opt-in.
+    quote_aware_attribute_boundaries: bool = false,
+    /// Controls whether reverse-navigation links are maintained during parsing.
+    navigation_index: NavigationIndex = .compact,
     validate_closing_tags: bool = false,
-    /// Validates XML character ranges and UTF-8 before full-buffer strict parsing.
-    /// Disable only when the caller already guarantees valid XML character data.
-    /// Incremental streaming still validates UTF-8 boundaries for safe chunking.
+    /// With `validate_well_formedness`, validates XML character ranges and UTF-8
+    /// before full-buffer strict parsing. Incremental streaming still validates
+    /// UTF-8 boundaries required for safe chunking.
     validate_xml_characters: bool = true,
     require_closed_elements_on_eof: bool = false,
     expand_dtd_entities: bool = false,
@@ -1936,20 +1951,24 @@ pub const RawAttributeIterator = struct {
 };
 
 pub const RawNode = struct {
-    kind: NodeType,
-    name: Span = .{},
     /// Text/value span for non-elements; raw attribute-source byte span for elements.
+    /// For elements the span starts exactly at the end of the element name, so the
+    /// name can be recovered from `name_len` without storing a second span.
     data: Span = .{},
-
     parent: IndexInt = InvalidIndex,
-    /// Index of the last direct child, which makes append and reverse-sibling
-    /// traversal O(1) without a separate sibling list allocation.
-    last_child: IndexInt = InvalidIndex,
-    /// Previous direct sibling in document order. `nextSibling()` is derived
-    /// from `subtree_end + 1`.
-    prev_sibling: IndexInt = InvalidIndex,
-    /// Inclusive end index of this node's flattened subtree in `nodes.items`.
-    subtree_end: IndexInt = 0,
+    name_len: u16 = 0,
+    /// Bytes between the end of a PI/declaration target and its value. Elements use 0.
+    name_gap: u8 = 0,
+    kind: NodeType = .document,
+
+    pub inline fn nameSpan(self: @This()) Span {
+        const gap: IndexInt = @intCast(self.name_gap);
+        if (self.data.start < gap) return .{};
+        const end = self.data.start - gap;
+        const len: IndexInt = @intCast(self.name_len);
+        if (end < len) return .{};
+        return .{ .start = end - len, .end = end };
+    }
 
     pub inline fn valueSpan(self: @This()) Span {
         return self.data;
@@ -1960,6 +1979,12 @@ pub const RawNode = struct {
     pub inline fn attributeSpan(self: @This()) Span {
         return self.data;
     }
+};
+
+const NavigationEntry = struct {
+    subtree_end: IndexInt,
+    last_child: IndexInt = InvalidIndex,
+    prev_sibling: IndexInt = InvalidIndex,
 };
 
 const ValueError = std.mem.Allocator.Error || entities.DecodeError;
@@ -2037,7 +2062,7 @@ pub const Node = struct {
     }
 
     pub fn nameSlice(self: @This()) []const u8 {
-        return self.raw().name.slice(self.doc.source);
+        return self.raw().nameSpan().slice(self.doc.source);
     }
 
     pub fn namespacePrefix(self: @This()) ?[]const u8 {
@@ -2089,24 +2114,49 @@ pub const Node = struct {
     }
 
     pub fn firstChild(self: @This()) ?Node {
-        const node_raw = self.raw();
-        if (node_raw.subtree_end <= self.index) return null;
-        return self.doc.nodeAt(self.index + 1);
+        const idx = self.index + 1;
+        if (@as(usize, @intCast(idx)) >= self.doc.nodes.items.len) return null;
+        if (self.doc.nodes.items[idx].parent != self.index) return null;
+        return self.doc.nodeAt(idx);
     }
 
     pub fn lastChild(self: @This()) ?Node {
-        return self.doc.nodeAt(self.raw().last_child);
+        if (self.doc.navigation_index == .full) return self.doc.nodeAt(self.doc.navigation.items[self.index].last_child);
+        var idx = self.index + 1;
+        var last: IndexInt = InvalidIndex;
+        while (@as(usize, @intCast(idx)) < self.doc.nodes.items.len and self.doc.isDescendantIndex(idx, self.index)) : (idx += 1) {
+            if (self.doc.nodes.items[idx].parent == self.index) last = idx;
+        }
+        return self.doc.nodeAt(last);
     }
 
     pub fn nextSibling(self: @This()) ?Node {
-        const next_idx = self.raw().subtree_end + 1;
-        if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.items.len) return null;
-        if (self.doc.nodes.items[next_idx].prev_sibling != self.index) return null;
-        return self.doc.nodeAt(next_idx);
+        const parent_idx = self.raw().parent;
+        if (parent_idx == InvalidIndex) return null;
+        if (self.doc.navigation_index == .full) {
+            const next_idx = self.doc.navigation.items[self.index].subtree_end + 1;
+            if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.items.len) return null;
+            if (self.doc.nodes.items[next_idx].parent != parent_idx) return null;
+            return self.doc.nodeAt(next_idx);
+        }
+        var idx = self.index + 1;
+        while (@as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
+            if (self.doc.nodes.items[idx].parent == parent_idx) return self.doc.nodeAt(idx);
+            if (!self.doc.isDescendantIndex(idx, parent_idx)) return null;
+        }
+        return null;
     }
 
     pub fn prevSibling(self: @This()) ?Node {
-        return self.doc.nodeAt(self.raw().prev_sibling);
+        if (self.doc.navigation_index == .full) return self.doc.nodeAt(self.doc.navigation.items[self.index].prev_sibling);
+        const parent_idx = self.raw().parent;
+        if (parent_idx == InvalidIndex) return null;
+        var idx = parent_idx + 1;
+        var prev: IndexInt = InvalidIndex;
+        while (idx < self.index) : (idx += 1) {
+            if (self.doc.nodes.items[idx].parent == parent_idx) prev = idx;
+        }
+        return self.doc.nodeAt(prev);
     }
 
     pub fn parentNode(self: @This()) ?Node {
@@ -2133,10 +2183,10 @@ pub const Node = struct {
     pub fn innerTextRaw(self: @This()) ?[]const u8 {
         if (self.kind == .text or self.kind == .cdata) return self.valueRawSlice();
 
-        const node_raw = self.raw();
+        const end = self.doc.subtreeEndIndex(self.index);
         var first: ?[]const u8 = null;
         var idx = self.index + 1;
-        while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
+        while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodes.items[idx];
             if (child.kind != .text and child.kind != .cdata) continue;
             if (first != null) return null;
@@ -2152,9 +2202,9 @@ pub const Node = struct {
         var out = std.ArrayList(u8).empty;
         errdefer out.deinit(alloc);
 
-        const node_raw = self.raw();
+        const end = self.doc.subtreeEndIndex(self.index);
         var idx = self.index + 1;
-        while (idx <= node_raw.subtree_end and idx < self.doc.nodes.items.len) : (idx += 1) {
+        while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodes.items[idx];
             switch (child.kind) {
                 .text => try self.doc.appendDecodedValue(&out, alloc, child.valueSpan().slice(self.doc.source)),
@@ -2167,7 +2217,7 @@ pub const Node = struct {
 
     pub fn querySelector(self: @This(), selector: []const u8) ?Node {
         var idx = self.index + 1;
-        const end = self.raw().subtree_end;
+        const end = self.doc.subtreeEndIndex(self.index);
         while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodeAt(idx).?;
             if (child.kind == .element and selectorMatches(child, selector)) return child;
@@ -2180,7 +2230,7 @@ pub const Node = struct {
         errdefer out.deinit(alloc);
 
         var idx = self.index + 1;
-        const end = self.raw().subtree_end;
+        const end = self.doc.subtreeEndIndex(self.index);
         while (idx <= end and idx < self.doc.nodes.items.len) : (idx += 1) {
             const child = self.doc.nodeAt(idx).?;
             if (child.kind == .element and selectorMatches(child, selector)) try out.append(alloc, child);
@@ -2209,11 +2259,18 @@ pub const Document = struct {
     /// only the raw source span; this buffer is reset for every start tag.
     /// Its position preserves the old hot parser-state field offsets.
     parse_attrs: std.ArrayList(RawAttribute) = .empty,
-    /// Kept compact because every parse mode uses this parent stack.
-    parse_stack: std.ArrayList(IndexInt) = .empty,
     /// Interleaved validation stack selected only by strict/validated parses.
     parse_validate_stack: std.ArrayList(ParseStackEntry) = .empty,
     entity_map: std.StringHashMap([]u8),
+    /// Optional parse-time navigation index. Compact mode leaves this empty.
+    navigation: std.ArrayList(NavigationEntry) = .empty,
+    // Cold option-specific reservation hints keep repeated parse() calls on a
+    // compare-and-return fast path without redoing capacity arithmetic.
+    reserved_validate_input_hint_len: usize = 0,
+    reserved_navigation_input_hint_len: usize = 0,
+    // Keep this cold traversal-policy field after the existing hot parser state
+    // so enabling the option does not perturb established field offsets.
+    navigation_index: NavigationIndex = .compact,
 
     pub fn init(allocator: std.mem.Allocator) Document {
         return .{
@@ -2226,17 +2283,24 @@ pub const Document = struct {
         self.clearEntityMap();
         self.entity_map.deinit();
         self.nodes.deinit(self.allocator);
+        self.navigation.deinit(self.allocator);
         self.parse_attrs.deinit(self.allocator);
-        self.parse_stack.deinit(self.allocator);
         self.parse_validate_stack.deinit(self.allocator);
     }
 
     inline fn resetParsedData(self: *Document) void {
         self.clearEntityMap();
         self.nodes.items.len = 0;
+        self.navigation.items.len = 0;
         self.parse_attrs.items.len = 0;
-        self.parse_stack.items.len = 0;
         self.parse_validate_stack.items.len = 0;
+    }
+
+    inline fn resetForParse(self: *Document, comptime opts: ParseOptions) void {
+        self.clearEntityMap();
+        self.nodes.items.len = 0;
+        if (comptime opts.navigation_index == .full) self.navigation.items.len = 0;
+        if (comptime opts.validate_well_formedness) self.parse_attrs.items.len = 0;
     }
 
     pub fn clear(self: *Document) void {
@@ -2244,21 +2308,29 @@ pub const Document = struct {
         self.last_error_offset = 0;
         self.source = "";
         self.parse_mode = .turbo;
+        self.navigation_index = .compact;
         self.expand_dtd_entities = false;
         self.max_entity_value_len = 4096;
     }
 
     pub fn parse(noalias self: *Document, input: []const u8, comptime opts: ParseOptions) ParseError!void {
-        self.resetParsedData();
+        self.resetForParse(opts);
         self.source = input;
         self.parse_mode = opts.mode;
+        self.navigation_index = opts.navigation_index;
         self.expand_dtd_entities = opts.expand_dtd_entities;
         self.max_entity_value_len = opts.max_entity_value_len;
         try parser.parseInto(self, input, opts);
     }
 
     pub fn parseDiagnostic(noalias self: *Document, input: []const u8, comptime opts: ParseOptions) ?ParseDiagnostic {
-        self.parse(input, opts) catch |err| return .{
+        self.resetForParse(opts);
+        self.source = input;
+        self.parse_mode = opts.mode;
+        self.navigation_index = opts.navigation_index;
+        self.expand_dtd_entities = opts.expand_dtd_entities;
+        self.max_entity_value_len = opts.max_entity_value_len;
+        parser.parseIntoTracked(self, input, opts, true) catch |err| return .{
             .err = err,
             .offset = self.last_error_offset,
             .source = input,
@@ -2348,6 +2420,26 @@ pub const Document = struct {
         };
     }
 
+    inline fn isDescendantIndex(self: *const Document, candidate: IndexInt, ancestor: IndexInt) bool {
+        if (candidate <= ancestor or @as(usize, @intCast(candidate)) >= self.nodes.items.len) return false;
+        var cur = candidate;
+        while (cur != InvalidIndex) {
+            const parent = self.nodes.items[cur].parent;
+            if (parent == ancestor) return true;
+            if (parent == InvalidIndex or parent >= cur) return false;
+            cur = parent;
+        }
+        return false;
+    }
+
+    inline fn subtreeEndIndex(self: *const Document, start: IndexInt) IndexInt {
+        if (self.navigation_index == .full) return self.navigation.items[start].subtree_end;
+        var end = start;
+        var idx = start + 1;
+        while (@as(usize, @intCast(idx)) < self.nodes.items.len and self.isDescendantIndex(idx, start)) : (idx += 1) end = idx;
+        return end;
+    }
+
     pub fn write(self: *const Document, writer: anytype) !void {
         const root_node = self.root() orelse return;
         try self.writeNode(writer, root_node);
@@ -2357,14 +2449,14 @@ pub const Document = struct {
         if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.items.len) return;
 
         const start = node.index;
-        const end = self.nodes.items[start].subtree_end;
+        const end = self.subtreeEndIndex(start);
         var open_idx: IndexInt = InvalidIndex;
 
         var idx = start;
         while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.items.len) : (idx += 1) {
             while (open_idx != InvalidIndex and
                 self.nodes.items[open_idx].kind == .element and
-                self.nodes.items[open_idx].subtree_end < idx)
+                self.subtreeEndIndex(open_idx) < idx)
             {
                 const closing = open_idx;
                 open_idx = self.nodes.items[closing].parent;
@@ -2376,7 +2468,7 @@ pub const Document = struct {
                 .document => {},
                 .element => {
                     try self.writeOpenElement(writer, idx);
-                    if (raw.subtree_end == idx) {
+                    if (self.subtreeEndIndex(idx) == idx) {
                         try writer.writeAll("/>");
                     } else {
                         try writer.writeAll(">");
@@ -2396,7 +2488,7 @@ pub const Document = struct {
                 },
                 .pi, .declaration => {
                     try writer.writeAll("<?");
-                    try writer.writeAll(raw.name.slice(self.source));
+                    try writer.writeAll(raw.nameSpan().slice(self.source));
                     if (!raw.valueSpan().isEmpty()) {
                         try writer.writeAll(" ");
                         try writer.writeAll(raw.valueSpan().slice(self.source));
@@ -2428,7 +2520,7 @@ pub const Document = struct {
     fn writeOpenElement(self: *const Document, writer: anytype, idx: IndexInt) !void {
         const raw = self.nodes.items[idx];
         try writer.writeAll("<");
-        try writer.writeAll(raw.name.slice(self.source));
+        try writer.writeAll(raw.nameSpan().slice(self.source));
         var attrs = RawAttributeIterator.init(self.source, raw.attributeSpan(), self.parse_mode);
         while (attrs.next()) |attr| {
             try writer.writeAll(" ");
@@ -2441,21 +2533,44 @@ pub const Document = struct {
 
     fn writeCloseElement(self: *const Document, writer: anytype, idx: IndexInt) !void {
         try writer.writeAll("</");
-        try writer.writeAll(self.nodes.items[idx].name.slice(self.source));
+        try writer.writeAll(self.nodes.items[idx].nameSpan().slice(self.source));
         try writer.writeAll(">");
     }
 
-    pub fn reserveForInput(self: *Document, input_len: usize) !void {
+    pub inline fn reserveForInput(self: *Document, input_len: usize, comptime opts: ParseOptions) !void {
+        const nodes_ready = self.nodes.capacity != 0 and input_len <= self.reserved_input_hint_len;
+        const nav_ready = if (comptime opts.navigation_index == .full)
+            self.navigation.capacity != 0 and input_len <= self.reserved_navigation_input_hint_len
+        else
+            true;
+        const stack_ready = if (comptime opts.validate_closing_tags)
+            input_len <= self.reserved_validate_input_hint_len
+        else
+            true;
+        if (nodes_ready and nav_ready and stack_ready) return;
+        return self.reserveForInputSlow(input_len, opts);
+    }
+
+    noinline fn reserveForInputSlow(self: *Document, input_len: usize, comptime opts: ParseOptions) !void {
         const est_nodes = @max(@as(usize, 16), input_len / 14 +| 8);
         const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
 
-        if (input_len <= self.reserved_input_hint_len and
-            self.nodes.capacity >= est_nodes and
-            self.parse_stack.capacity >= est_stack) return;
-
-        if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
-        if (est_stack > self.parse_stack.capacity) try self.parse_stack.ensureTotalCapacity(self.allocator, est_stack);
-        self.reserved_input_hint_len = @max(self.reserved_input_hint_len, input_len);
+        if (self.nodes.capacity == 0 or input_len > self.reserved_input_hint_len) {
+            if (est_nodes > self.nodes.capacity) try self.nodes.ensureTotalCapacity(self.allocator, est_nodes);
+            self.reserved_input_hint_len = @max(self.reserved_input_hint_len, input_len);
+        }
+        if (comptime opts.navigation_index == .full) {
+            if (input_len > self.reserved_navigation_input_hint_len) {
+                if (est_nodes > self.navigation.capacity) try self.navigation.ensureTotalCapacity(self.allocator, est_nodes);
+                self.reserved_navigation_input_hint_len = input_len;
+            }
+        }
+        if (comptime opts.validate_closing_tags) {
+            if (input_len > self.reserved_validate_input_hint_len) {
+                if (est_stack > self.parse_validate_stack.capacity) try self.parse_validate_stack.ensureTotalCapacity(self.allocator, est_stack);
+                self.reserved_validate_input_hint_len = input_len;
+            }
+        }
     }
 };
 
@@ -2658,9 +2773,9 @@ test "Document reserve and lookup helpers behave on empty and populated state" {
     try std.testing.expect(doc.nodeAt(InvalidIndex) == null);
     try std.testing.expect(doc.nodeAt(0) == null);
 
-    try doc.reserveForInput(256);
+    try doc.reserveForInput(256, .{});
     try std.testing.expect(doc.nodes.capacity >= 16);
-    try std.testing.expect(doc.parse_stack.capacity >= 8);
+    try std.testing.expect(doc.parse_validate_stack.capacity == 0);
 
     const xml = "<r a='&amp;'>&lt;x&gt;</r>";
     try doc.parse(xml, .{ .mode = .strict });
@@ -2759,7 +2874,7 @@ test "selector query helpers match tag id class and attributes" {
 test "parse diagnostics report offset location and context lazily" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
-    const diag = doc.parseDiagnostic("<r>\n  <1/>", .{ .mode = .strict }) orelse return error.TestUnexpectedResult;
+    const diag = doc.parseDiagnostic("<r>\n  <1/>", .{ .mode = .strict, .validate_well_formedness = true }) orelse return error.TestUnexpectedResult;
     const loc = diag.location();
 
     try std.testing.expectEqual(ParseError.ExpectedElementName, diag.err);
@@ -2956,20 +3071,20 @@ test "strict parsing rejects malformed UTF-8 and invalid XML characters" {
     for (invalid) |input| {
         var doc = Document.init(std.testing.allocator);
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidXmlCharacter, doc.parse(input, .{ .mode = .strict }));
+        try std.testing.expectError(error.InvalidXmlCharacter, doc.parse(input, .{ .mode = .strict, .validate_well_formedness = true }));
     }
 
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
-    try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict });
+    try doc.parse("<\xC3\xA9l\xC3\xA9ment \xCE\xB1='ok'/>", .{ .mode = .strict, .validate_well_formedness = true });
 }
 
 test "strict full-buffer XML character validation is optional for trusted input" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
 
-    try std.testing.expectError(error.InvalidXmlCharacter, doc.parse("<r>\x01</r>", .{ .mode = .strict }));
-    try doc.parse("<r>\x01</r>", .{ .mode = .strict, .validate_xml_characters = false });
+    try std.testing.expectError(error.InvalidXmlCharacter, doc.parse("<r>\x01</r>", .{ .mode = .strict, .validate_well_formedness = true }));
+    try doc.parse("<r>\x01</r>", .{ .mode = .strict, .validate_well_formedness = true, .validate_xml_characters = false });
 }
 
 test "XML Name validation handles ASCII Unicode and malformed UTF-8 in one pass" {

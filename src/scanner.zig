@@ -49,6 +49,72 @@ pub inline fn findTextEnd(noalias haystack: []const u8, start: usize) ?usize {
     return findByte(haystack, start, '<');
 }
 
+pub const StartTagEndScan = struct {
+    end: usize,
+    self_closing: bool,
+};
+
+/// Finds the first `>` that is not inside a quoted attribute value.
+/// This is the source-backed DOM fast path: it deliberately does not tokenize
+/// individual attributes. Malformed unterminated quotes return null safely.
+pub noinline fn scanStartTagEnd(noalias input: []const u8, start: usize) ?StartTagEndScan {
+    if (start >= input.len) return null;
+
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const gt_vec: Vec = @splat('>');
+    const sq_vec: Vec = @splat('\'');
+    const dq_vec: Vec = @splat('"');
+
+    var quote: u8 = 0;
+    var i = start;
+    while (i + @sizeOf(Vec) <= input.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+        const gt_bits: Bits = @select(u1, bytes == gt_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const sq_bits: Bits = @select(u1, bytes == sq_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const dq_bits: Bits = @select(u1, bytes == dq_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        const gt_mask: Mask = @bitCast(gt_bits);
+        const sq_mask: Mask = @bitCast(sq_bits);
+        const dq_mask: Mask = @bitCast(dq_bits);
+
+        if (quote == 0 and (sq_mask | dq_mask) == 0) {
+            if (gt_mask != 0) {
+                const off: std.math.Log2Int(Mask) = @intCast(@ctz(gt_mask));
+                const end = i + off;
+                return .{ .end = end, .self_closing = end > start and input[end - 1] == '/' };
+            }
+            continue;
+        }
+
+        var specials = gt_mask | sq_mask | dq_mask;
+        while (specials != 0) {
+            const off: std.math.Log2Int(Mask) = @intCast(@ctz(specials));
+            const bit = @as(Mask, 1) << off;
+            specials &= ~bit;
+            const pos = i + off;
+            const c = input[pos];
+            if (quote == 0) {
+                if (c == '>') return .{ .end = pos, .self_closing = pos > start and input[pos - 1] == '/' };
+                quote = c;
+            } else if (c == quote) {
+                quote = 0;
+            }
+        }
+    }
+
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (quote == 0) {
+            if (c == '>') return .{ .end = i, .self_closing = i > start and input[i - 1] == '/' };
+            if (c == '\'' or c == '"') quote = c;
+        } else if (c == quote) {
+            quote = 0;
+        }
+    }
+    return null;
+}
+
 pub const SimpleQuotedAttributeScan = struct {
     name_start: usize,
     name_end: usize,
