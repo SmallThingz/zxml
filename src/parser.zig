@@ -497,7 +497,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         return error.UnexpectedEndOfData;
                     }
                 else blk: {
-                    const end = scanner.findByte(self.input, attr_start, '>') orelse {
+                    const end = scanner.findByte(self.input, attr_start + 1, '>') orelse {
                         self.i = self.input.len;
                         return error.UnexpectedEndOfData;
                     };
