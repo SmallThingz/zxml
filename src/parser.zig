@@ -719,6 +719,17 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (self.input[self.i] != '>') return error.InvalidClosingTagName;
                     self.i += 1;
                 } else {
+                    // Normal XML closes an element with the same-length name. Turbo
+                    // does not validate the spelling, so use the known open-name
+                    // length to jump straight to `>` and scan only unusual forms.
+                    if (self.current_parent != 0) {
+                        const expected_gt = self.i + @as(usize, self.doc.nodes.items[self.current_parent].name_len);
+                        if (expected_gt < self.input.len and self.input[expected_gt] == '>') {
+                            self.i = expected_gt + 1;
+                            self.current_parent = self.doc.nodes.items[self.current_parent].parent;
+                            return;
+                        }
+                    }
                     const gt = scanner.findByte(self.input, self.i, '>') orelse {
                         self.i = self.input.len;
                         return;
@@ -1446,6 +1457,27 @@ test "compact DOM rejects element names longer than u16" {
         error.InputTooLarge,
         parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true }),
     );
+}
+
+test "turbo closing fast path preserves permissive fallback forms" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    const Case = struct { source: []const u8, child: []const u8 };
+    inline for ([_]Case{
+        .{ .source = "<r><x></y></r>", .child = "x" },
+        .{ .source = "<r><child></x></r>", .child = "child" },
+        .{ .source = "<r><x></x \n></r>", .child = "x" },
+        .{ .source = "<r><x></></r>", .child = "x" },
+    }) |case| {
+        doc.clear();
+        doc.source = case.source;
+        try parseInto(&doc, case.source, .{ .mode = .turbo });
+        try std.testing.expectEqualStrings("r", doc.nodeAt(1).?.nameSlice());
+        try std.testing.expectEqualStrings(case.child, doc.nodeAt(2).?.nameSlice());
+    }
 }
 
 test "turbo mode accepts mixed XML whitespace around attribute equals" {
