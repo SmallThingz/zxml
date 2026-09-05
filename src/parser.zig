@@ -406,7 +406,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     .key = 0,
                     .needs_unicode_validation = scan.needs_unicode_validation,
                 };
-            } else scanner.NameScan{ .end = scanner.findNameEnd(self.input, self.i), .key = 0 };
+            } else scanner.NameScan{ .end = scanner.findNameEndAfterStart(self.input, self.i), .key = 0 };
             const name_end = name_scan.end;
             if (name_end - name_start > std.math.maxInt(u16)) {
                 @branchHint(.unlikely);
