@@ -2134,8 +2134,8 @@ fn GetNode(comptime options: ParseOptions) type {
             const end = self.raw().subtree_end;
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) {
                 if (self.doc.nodes.items[idx].parent == self.index) last = idx;
-                const tail = self.doc.nodes.items[idx].subtree_end;
-                idx = if (tail >= idx) tail + 1 else idx + 1;
+                const tail = self.doc.subtreeEndAt(idx);
+                idx = tail + 1;
             }
             return self.doc.nodeAt(last);
         }
@@ -2143,7 +2143,7 @@ fn GetNode(comptime options: ParseOptions) type {
         pub fn nextSibling(self: Self) ?Self {
             const parent_idx = self.raw().parent;
             if (parent_idx == InvalidIndex) return null;
-            const next_idx = self.raw().subtree_end + 1;
+            const next_idx = self.doc.subtreeEndAt(self.index) + 1;
             if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.items.len) return null;
             if (self.doc.nodes.items[next_idx].parent != parent_idx) return null;
             return self.doc.nodeAt(next_idx);
@@ -2157,8 +2157,8 @@ fn GetNode(comptime options: ParseOptions) type {
             var prev: IndexInt = InvalidIndex;
             while (idx < self.index) {
                 if (self.doc.nodes.items[idx].parent == parent_idx) prev = idx;
-                const tail = self.doc.nodes.items[idx].subtree_end;
-                idx = if (tail >= idx) tail + 1 else idx + 1;
+                const tail = self.doc.subtreeEndAt(idx);
+                idx = tail + 1;
             }
             return self.doc.nodeAt(prev);
         }
@@ -2434,6 +2434,15 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             return self.nodes.items[idx].nodeKind(idx);
         }
 
+        /// Inclusive subtree tail. Compact text/misc nodes store zero in the raw
+        /// field as their kind sentinel, so leaves derive their tail from index.
+        inline fn subtreeEndAt(self: *const Self, idx: IndexInt) IndexInt {
+            return switch (self.kindAt(idx)) {
+                .document, .element => self.nodes.items[idx].subtree_end,
+                else => idx,
+            };
+        }
+
         pub fn nodeAt(self: *const Self, idx: IndexInt) ?Node {
             if (idx == InvalidIndex or @as(usize, @intCast(idx)) >= self.nodes.items.len) return null;
             const doc = @constCast(self);
@@ -2448,7 +2457,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         fn writeNode(self: *const Self, writer: anytype, node: Node) !void {
             if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.items.len) return;
             const start = node.index;
-            const end = self.nodes.items[start].subtree_end;
+            const end = self.subtreeEndAt(start);
             var open_idx: IndexInt = InvalidIndex;
             var idx = start;
             while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.items.len) : (idx += 1) {
