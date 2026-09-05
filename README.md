@@ -25,19 +25,19 @@ Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-stream-turbo  │████████████████████│ 3326.37 MB/s (100.00%)
-ours-turbo    │██████████████████░░│ 2921.82 MB/s (87.84%)
-ours-strict   │█████████░░░░░░░░░░░│ 1552.30 MB/s (46.67%)
-stream-strict │█████████░░░░░░░░░░░│ 1428.59 MB/s (42.95%)
-pugixml       │██████░░░░░░░░░░░░░░│ 970.49 MB/s (29.18%)
-rapidxml      │█████░░░░░░░░░░░░░░░│ 901.10 MB/s (27.09%)
+ours-turbo    │████████████████████│ 3179.07 MB/s (100.00%)
+ours-strict   │████████████████░░░░│ 2566.88 MB/s (80.74%)
+stream-turbo  │███████████████░░░░░│ 2451.06 MB/s (77.10%)
+stream-strict │███████░░░░░░░░░░░░░│ 1109.75 MB/s (34.91%)
+rapidxml      │█████░░░░░░░░░░░░░░░│ 866.81 MB/s (27.27%)
+pugixml       │█████░░░░░░░░░░░░░░░│ 831.77 MB/s (26.16%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `stable` | 44/44 | `ours-turbo >= max(pugixml, rapidxml)` |
+| `stable` | 37/37 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
