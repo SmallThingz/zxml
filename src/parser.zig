@@ -317,7 +317,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime full_navigation_index) {
                 self.doc.navigation.appendAssumeCapacity(.{ .subtree_end = 0 });
             }
-            while (self.i < self.input.len) {
+            while (self.i + 1 < self.input.len) {
                 if (self.input[self.i] != '<') {
                     if (comptime strict_mode) {
                         const text_start = self.i;
@@ -353,12 +353,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     continue;
                 }
 
-                if (self.i + 1 >= self.input.len) {
-                    if (strict_mode) return error.UnexpectedEndOfData;
-                    self.i += 1;
-                    break;
-                }
-
                 switch (self.input[self.i + 1]) {
                     '/' => try self.parseClosingTag(),
                     '?' => try self.parsePiOrDeclaration(),
@@ -367,6 +361,26 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         @branchHint(.likely);
                         try self.parseOpeningTag();
                     },
+                }
+            }
+
+            // Handle the one-byte tail outside the hot token loop. A trailing '<'
+            // is malformed in strict mode and safely ignored by permissive turbo;
+            // any other final byte is ordinary text.
+            if (self.i < self.input.len) {
+                if (self.input[self.i] == '<') {
+                    if (strict_mode) return error.UnexpectedEndOfData;
+                    self.i += 1;
+                } else {
+                    const text_start = self.i;
+                    self.i = self.input.len;
+                    if (comptime strict_mode) {
+                        try self.validateCharacterDataSpecials(self.input[text_start..], false, self.input[text_start] == '&');
+                        if (self.topIndex() == 0 and !tables.WhitespaceTable[self.input[text_start]]) return error.InvalidDocumentContent;
+                    }
+                    if (!drop_whitespace_text_nodes or !tables.WhitespaceTable[self.input[text_start]]) {
+                        _ = try self.appendTextNodeTo(self.topIndex(), text_start, self.input.len);
+                    }
                 }
             }
 
@@ -1336,6 +1350,36 @@ test "parseInto builds a minimal DOM and enforces strict closing tags" {
         error.InvalidClosingTagName,
         parseInto(&doc, &bad, .{ .mode = .strict, .validate_closing_tags = true }),
     );
+}
+
+test "one-byte parser tails preserve strict and turbo behavior" {
+    const options: ParseOptions = .{};
+    const Document = document.Types(options).Document;
+    var doc = Document.init(std.testing.allocator);
+    defer doc.deinit();
+
+    doc.source = "<";
+    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
+
+    doc.clear();
+    doc.source = "<";
+    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_well_formedness = true }));
+
+    doc.clear();
+    doc.source = "x";
+    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
+    try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.valueRawSlice());
+
+    doc.clear();
+    doc.source = "x";
+    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_well_formedness = true }));
+
+    doc.clear();
+    doc.source = " ";
+    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 }
 
 test "strict start-tag grammar rejects malformed attributes" {
