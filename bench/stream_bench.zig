@@ -11,12 +11,12 @@ pub fn main(init: std.process.Init) !void {
     while (it.next()) |arg| try args.append(alloc, try alloc.dupe(u8, arg));
 
     if (args.items.len != 5 or !std.mem.eql(u8, args.items[1], "parse")) return error.InvalidArguments;
-    const mode: run_parse.StreamBenchMode = if (std.mem.eql(u8, args.items[2], "strict"))
-        .strict
-    else if (std.mem.eql(u8, args.items[2], "strict-trusted"))
-        .strict_trusted
-    else if (std.mem.eql(u8, args.items[2], "turbo"))
-        .turbo
+    const mode: run_parse.StreamBenchMode = if (std.mem.eql(u8, args.items[2], "validated"))
+        .validated
+    else if (std.mem.eql(u8, args.items[2], "validated-trusted"))
+        .validated_trusted
+    else if (std.mem.eql(u8, args.items[2], "permissive"))
+        .permissive
     else
         return error.InvalidBenchMode;
     const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
