@@ -9,6 +9,14 @@ pub const DecodeError = error{
 
 pub const BoundedDecodeError = DecodeError || error{OutputTooLarge};
 
+/// Result of a destructive decode attempt. `complete=false` guarantees the
+/// input was not modified because at least one replacement expands beyond its
+/// source token and therefore requires allocating fallback storage.
+pub const InPlaceResult = struct {
+    len: usize,
+    complete: bool = true,
+};
+
 const ResolveState = enum {
     visiting,
     done,
@@ -271,6 +279,88 @@ fn appendDecodedWithEntityMapImpl(
     }
 }
 
+/// Decode XML references in place when every replacement fits inside the
+/// reference token it replaces. A preflight pass guarantees `complete=false`
+/// leaves `input` byte-for-byte untouched.
+pub fn decodeInPlaceWithEntityMap(
+    input: []u8,
+    strict: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+) DecodeError!InPlaceResult {
+    var scan: usize = 0;
+    while (std.mem.indexOfScalarPos(u8, input, scan, '&')) |amp| {
+        const token = parseEntityToken(input, amp) catch |err| switch (err) {
+            error.UnterminatedEntity, error.InvalidNumericCharacterEntity => {
+                if (strict) return err;
+                scan = amp + 1;
+                continue;
+            },
+        };
+
+        const replacement_len: ?usize = if (try decodeEntityBody(token.body, strict)) |decoded|
+            decoded.len
+        else if (entity_map) |map|
+            if (map.get(token.body)) |value| value.len else null
+        else
+            null;
+
+        if (replacement_len) |len| {
+            if (len > token.consumed) return .{ .len = input.len, .complete = false };
+            scan = amp + token.consumed;
+        } else {
+            if (strict) return error.InvalidNumericCharacterEntity;
+            scan = amp + 1;
+        }
+    }
+
+    var src: usize = 0;
+    var dst: usize = 0;
+    while (src < input.len) {
+        const amp = std.mem.indexOfScalarPos(u8, input, src, '&') orelse {
+            const tail = input[src..];
+            std.mem.copyForwards(u8, input[dst .. dst + tail.len], tail);
+            dst += tail.len;
+            break;
+        };
+
+        if (amp > src) {
+            const literal = input[src..amp];
+            std.mem.copyForwards(u8, input[dst .. dst + literal.len], literal);
+            dst += literal.len;
+        }
+
+        const token = parseEntityToken(input, amp) catch {
+            input[dst] = '&';
+            dst += 1;
+            src = amp + 1;
+            continue;
+        };
+
+        if (try decodeEntityBody(token.body, strict)) |decoded| {
+            @memcpy(input[dst .. dst + decoded.len], decoded.bytes[0..decoded.len]);
+            dst += decoded.len;
+            src = amp + token.consumed;
+            continue;
+        }
+        if (entity_map) |map| {
+            if (map.get(token.body)) |value| {
+                std.mem.copyForwards(u8, input[dst .. dst + value.len], value);
+                dst += value.len;
+                src = amp + token.consumed;
+                continue;
+            }
+        }
+
+        // Permissive unknown entity: preserve it literally. Advancing only the
+        // ampersand matches the allocating decoder and leaves the remainder for
+        // the next literal-copy run.
+        input[dst] = '&';
+        dst += 1;
+        src = amp + 1;
+    }
+    return .{ .len = dst };
+}
+
 fn appendLimited(
     out: *std.ArrayList(u8),
     alloc: std.mem.Allocator,
@@ -522,4 +612,38 @@ test "entity dependency resolution is iterative for deep declaration chains" {
     try resolveEntityDeclarationsBounded(alloc, &declarations, &resolved, true, 16);
     try std.testing.expectEqualStrings("x", resolved.get("e0").?);
     try std.testing.expectEqual(@as(usize, count), resolved.count());
+}
+
+test "in-place decoder shrinks predefined and numeric references" {
+    var input = "a&amp;&#65;&#x42;z".*;
+    const result = try decodeInPlaceWithEntityMap(&input, true, null);
+    try std.testing.expect(result.complete);
+    try std.testing.expectEqualStrings("a&ABz", input[0..result.len]);
+}
+
+test "in-place decoder refuses expanding mapped entity without mutation" {
+    const alloc = std.testing.allocator;
+    var map = std.StringHashMap([]u8).init(alloc);
+    defer map.deinit();
+    var expanded = "EXPANDED".*;
+    try map.put("x", &expanded);
+
+    var input = "a&x;z".*;
+    const before = input;
+    const result = try decodeInPlaceWithEntityMap(&input, true, &map);
+    try std.testing.expect(!result.complete);
+    try std.testing.expectEqualSlices(u8, &before, &input);
+}
+
+test "in-place decoder permits mapped replacements that fit token" {
+    const alloc = std.testing.allocator;
+    var map = std.StringHashMap([]u8).init(alloc);
+    defer map.deinit();
+    var value = "OK".*;
+    try map.put("safe", &value);
+
+    var input = "<&safe;>".*;
+    const result = try decodeInPlaceWithEntityMap(&input, true, &map);
+    try std.testing.expect(result.complete);
+    try std.testing.expectEqualStrings("<OK>", input[0..result.len]);
 }

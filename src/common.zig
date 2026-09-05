@@ -35,6 +35,25 @@ pub const Span = struct {
     pub inline fn slice(self: @This(), source: []const u8) []const u8 {
         return source[self.start..self.end];
     }
+
+    pub inline fn sliceMut(self: @This(), source: []u8) []u8 {
+        return source[self.start..self.end];
+    }
+
+    pub inline fn setEnd(self: *@This(), end_offset: IndexInt) void {
+        std.debug.assert(end_offset >= self.start);
+        self.end = end_offset;
+    }
+};
+
+/// Byte-slice result that either borrows document source or owns an allocation.
+pub const SliceResult = struct {
+    value: []const u8,
+    owned: bool = false,
+
+    pub fn free(self: @This(), allocator: std.mem.Allocator) void {
+        if (self.owned) allocator.free(self.value);
+    }
 };
 
 test "IndexInt-derived bounds are self-consistent" {
