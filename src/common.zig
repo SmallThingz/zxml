@@ -19,6 +19,24 @@ pub inline fn lenFits(len: usize) bool {
 
 pub const InvalidIndex: IndexInt = std.math.maxInt(IndexInt);
 
+/// Inclusive-exclusive byte span into parser source.
+pub const Span = struct {
+    start: IndexInt = 0,
+    end: IndexInt = 0,
+
+    pub inline fn len(self: @This()) IndexInt {
+        return self.end - self.start;
+    }
+
+    pub inline fn isEmpty(self: @This()) bool {
+        return self.start == self.end;
+    }
+
+    pub inline fn slice(self: @This(), source: []const u8) []const u8 {
+        return source[self.start..self.end];
+    }
+};
+
 test "IndexInt-derived bounds are self-consistent" {
     try std.testing.expect(lenFits(0));
     try std.testing.expect(lenFits(MaxLen));

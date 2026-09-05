@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common.zig");
+const attrs_mod = @import("attr.zig");
 const parser = @import("parser.zig");
 const scanner = @import("scanner.zig");
 const entities = @import("entities.zig");
@@ -8,6 +9,8 @@ const tables = @import("tables.zig");
 
 pub const IndexInt = common.IndexInt;
 pub const InvalidIndex: IndexInt = common.InvalidIndex;
+pub const Span = common.Span;
+pub const RawAttribute = attrs_mod.RawAttribute;
 
 const cold_text_section = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
@@ -72,7 +75,7 @@ pub fn Types(comptime options: ParseOptions) type {
         pub const IndexInt = Self.IndexInt;
         pub const Span = Self.Span;
         pub const RawAttribute = Self.RawAttribute;
-        pub const RawAttributeIterator = Self.RawAttributeIterator;
+        pub const RawAttributeIterator = attrs_mod.RawIterator(options.validate_well_formedness);
         pub const RawNode = GetRawNode(options);
         pub const Attribute = GetAttribute(options);
         pub const AttributeIterator = GetAttributeIterator(options);
@@ -1073,7 +1076,7 @@ pub fn validateDoctypeEntityConstraintsAlloc(
 ) ParseError!void {
     const subset_range = try findInternalSubset(value) orelse {
         if (attribute_validation) |validation| {
-            var attrs = RawAttributeIterator.init(validation.input, validation.attributes, .strict);
+            var attrs = attrs_mod.RawIterator(true).init(validation.input, validation.attributes);
             while (attrs.next()) |attr| {
                 const raw = attr.value.slice(validation.input);
                 if (try validateXmlReferenceSyntax(raw, false) and require_declared_entities) {
@@ -1098,7 +1101,7 @@ pub fn validateDoctypeEntityConstraintsAlloc(
         var frames = std.ArrayList(EntityValidationFrame).empty;
         defer frames.deinit(allocator);
         const input = validation.input;
-        var attrs = RawAttributeIterator.init(input, validation.attributes, .strict);
+        var attrs = attrs_mod.RawIterator(true).init(input, validation.attributes);
         while (attrs.next()) |attr| {
             const raw = attr.value.slice(input);
             if (!try validateXmlReferenceSyntax(raw, false)) continue;
@@ -1861,99 +1864,6 @@ pub const NodeType = enum(u4) {
     doctype,
 };
 
-pub const Span = struct {
-    start: IndexInt = 0,
-    end: IndexInt = 0,
-
-    pub fn len(self: @This()) IndexInt {
-        return self.end - self.start;
-    }
-
-    pub fn isEmpty(self: @This()) bool {
-        return self.start == self.end;
-    }
-
-    pub fn slice(self: @This(), source: []const u8) []const u8 {
-        return source[self.start..self.end];
-    }
-};
-
-pub const RawAttribute = struct {
-    name: Span,
-    value: Span,
-};
-
-/// Iterates attributes directly from an element's raw source-byte span.
-/// The DOM parser validates this syntax once; normal access only recovers spans.
-pub const RawAttributeIterator = struct {
-    source: []const u8,
-    i: usize,
-    end: usize,
-    mode: ParseMode,
-
-    pub inline fn init(source: []const u8, span: Span, mode: ParseMode) @This() {
-        return .{ .source = source, .i = span.start, .end = span.end, .mode = mode };
-    }
-
-    /// Builds an attribute iterator directly from the end of an element name.
-    /// No attribute-end offset is persisted in the DOM; the source is scanned
-    /// lazily only when attributes are actually queried.
-    pub inline fn initElement(source: []const u8, name_end: IndexInt, mode: ParseMode) @This() {
-        const start: usize = @intCast(name_end);
-        const tail = scanner.scanStartTagEnd(source, start) orelse
-            return .{ .source = source, .i = source.len, .end = source.len, .mode = mode };
-        const end = if (tail.self_closing and tail.end > start) tail.end - 1 else tail.end;
-        return .{ .source = source, .i = start, .end = end, .mode = mode };
-    }
-
-    pub fn next(self: *@This()) ?RawAttribute {
-        var i = self.i;
-        while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
-        while (i < self.end and !tables.isNameStart(self.source[i])) {
-            if (self.mode == .strict) {
-                self.i = self.end;
-                return null;
-            }
-            i += 1;
-            while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
-        }
-        if (i >= self.end) {
-            self.i = self.end;
-            return null;
-        }
-
-        const name_start = i;
-        i = scanner.findNameEnd(self.source[0..self.end], i);
-        const name_end = i;
-        while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
-
-        var value_start = i;
-        var value_end = i;
-        if (i < self.end and self.source[i] == '=') {
-            i += 1;
-            while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
-            if (i < self.end) {
-                const quote = self.source[i];
-                if (quote == '\'' or quote == '"') {
-                    value_start = i + 1;
-                    value_end = scanner.findByte(self.source[0..self.end], value_start, quote) orelse self.end;
-                    i = if (value_end < self.end) value_end + 1 else self.end;
-                } else if (self.mode == .turbo) {
-                    value_start = i;
-                    value_end = scanner.findAttrUnquotedEnd(self.source[0..self.end], i);
-                    if (value_end > self.end) value_end = self.end;
-                    i = value_end;
-                }
-            }
-        }
-        self.i = i;
-        return .{
-            .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
-            .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-        };
-    }
-};
-
 fn OptionalIndex(comptime enabled: bool) type {
     return if (enabled) IndexInt else void;
 }
@@ -2113,12 +2023,14 @@ fn GetAttributeIterator(comptime options: ParseOptions) type {
     return struct {
         const DocumentType = GetDocument(options);
         const AttributeType = GetAttribute(options);
+        const RawIteratorType = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness);
+
         doc: *DocumentType,
-        raw: RawAttributeIterator,
+        raw: RawIteratorType,
 
         pub fn next(self: *@This()) ?AttributeType {
-            const attr = self.raw.next() orelse return null;
-            return .{ .doc = self.doc, .raw_attr = attr };
+            const raw_attr = self.raw.next() orelse return null;
+            return .{ .doc = self.doc, .raw_attr = raw_attr };
         }
     };
 }
@@ -2139,9 +2051,10 @@ fn GetNode(comptime options: ParseOptions) type {
             return &self.doc.nodes.items[self.index];
         }
 
-        inline fn rawAttributes(self: Self) RawAttributeIterator {
-            if (self.kind != .element) return RawAttributeIterator.init(self.doc.source, .{}, options.mode);
-            return RawAttributeIterator.initElement(self.doc.source, self.raw().name_or_text.end, options.mode);
+        inline fn rawAttributes(self: Self) attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness) {
+            const IteratorType = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness);
+            if (self.kind != .element) return IteratorType.initElement(self.doc.source, @intCast(self.doc.source.len));
+            return IteratorType.initElement(self.doc.source, self.raw().name_or_text.end);
         }
 
         inline fn findAttributeRaw(self: Self, name: []const u8) ?RawAttribute {
@@ -2547,13 +2460,15 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             const raw = &self.nodes.items[idx];
             try writer.writeAll("<");
             try writer.writeAll(raw.name_or_text.slice(self.source));
-            var attrs = RawAttributeIterator.initElement(self.source, raw.name_or_text.end, options.mode);
-            while (attrs.next()) |attr| {
+            var attrs = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness).initElement(self.source, raw.name_or_text.end);
+            while (attrs.next()) |raw_attr| {
                 try writer.writeAll(" ");
-                try writer.writeAll(attr.name.slice(self.source));
-                try writer.writeAll("=\"");
-                try writeDoubleQuotedAttributeValue(writer, attr.value.slice(self.source));
-                try writer.writeAll("\"");
+                try writer.writeAll(raw_attr.name.slice(self.source));
+                if (raw_attr.has_value) {
+                    try writer.writeAll("=\"");
+                    try writeDoubleQuotedAttributeValue(writer, raw_attr.value.slice(self.source));
+                    try writer.writeAll("\"");
+                }
             }
         }
 
