@@ -630,6 +630,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
         });
         return;
@@ -638,6 +639,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict_closed")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
             .require_closed_elements_on_eof = true,
         });
@@ -647,6 +649,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict_entities")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
         });
         return;
@@ -655,6 +658,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict_entities_ws")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
             .drop_whitespace_text_nodes = false,
         });
@@ -664,6 +668,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict_misc_off")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
             .include_misc_nodes = false,
         });
@@ -681,6 +686,7 @@ fn parseWithProfile(doc: anytype, input: []const u8, profile: []const u8) (zxml.
     if (std.mem.eql(u8, profile, "strict_dtd_entities")) {
         try doc.parse(input, .{
             .mode = .strict,
+            .validate_well_formedness = true,
             .validate_closing_tags = true,
             .expand_dtd_entities = true,
         });
