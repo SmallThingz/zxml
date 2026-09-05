@@ -11,12 +11,12 @@ pub fn main(init: std.process.Init) !void {
     while (it.next()) |arg| try args.append(alloc, try alloc.dupe(u8, arg));
 
     if (args.items.len == 5 and std.mem.eql(u8, args.items[1], "parse")) {
-        const mode: run_parse.DomBenchMode = if (std.mem.eql(u8, args.items[2], "strict"))
-            .strict
-        else if (std.mem.eql(u8, args.items[2], "strict-trusted"))
-            .strict_trusted
-        else if (std.mem.eql(u8, args.items[2], "turbo"))
-            .turbo
+        const mode: run_parse.DomBenchMode = if (std.mem.eql(u8, args.items[2], "validated"))
+            .validated
+        else if (std.mem.eql(u8, args.items[2], "validated-trusted"))
+            .validated_trusted
+        else if (std.mem.eql(u8, args.items[2], "permissive"))
+            .permissive
         else
             return error.InvalidBenchMode;
         const iterations = try std.fmt.parseInt(usize, args.items[4], 10);
@@ -26,12 +26,12 @@ pub fn main(init: std.process.Init) !void {
 
     if (args.items.len == 3) {
         const iterations = try std.fmt.parseInt(usize, args.items[2], 10);
-        try printMeasurement(init.io, try run_parse.runDomParseFile(init.io, args.items[1], iterations, .turbo));
+        try printMeasurement(init.io, try run_parse.runDomParseFile(init.io, args.items[1], iterations, .permissive));
         return;
     }
 
     std.debug.print(
-        "usage:\n  {s} <xml-file> <iterations>\n  {s} parse <strict|strict-trusted|turbo> <xml-file> <iterations>\n",
+        "usage:\n  {s} <xml-file> <iterations>\n  {s} parse <validated|validated-trusted|permissive> <xml-file> <iterations>\n",
         .{ args.items[0], args.items[0] },
     );
     return error.InvalidArguments;

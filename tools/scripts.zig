@@ -42,27 +42,27 @@ const tool_command_names = [_][]const u8{
 };
 
 const parse_parsers = [_][]const u8{
-    "ours-strict",
-    "ours-turbo",
-    "stream-strict",
-    "stream-turbo",
+    "ours-validated",
+    "ours-permissive",
+    "stream-validated",
+    "stream-permissive",
     "pugixml",
     "rapidxml",
 };
 
-const strict_regression_parsers = [_][]const u8{
-    "ours-strict",
-    "stream-strict",
+const validated_regression_parsers = [_][]const u8{
+    "ours-validated",
+    "stream-validated",
 };
 
-const strict_regression_reference_fixture = "synthetic_entities.xml";
-const strict_regression_min_reference_ratio: f64 = 1.25;
+const validated_regression_reference_fixture = "synthetic_entities.xml";
+const validated_regression_min_reference_ratio: f64 = 1.25;
 
 const FixtureCase = struct {
     name: []const u8,
     iterations: usize,
     is_real: bool,
-    strict_valid: bool = true,
+    validated_valid: bool = true,
 };
 
 const Profile = struct {
@@ -167,7 +167,7 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "ecb_usd.xml", .iterations = 220, .is_real = true },
     .{ .name = "tree.xml", .iterations = 240, .is_real = true },
     .{ .name = "character.xml", .iterations = 260, .is_real = true },
-    .{ .name = "transitions.xml", .iterations = 260, .is_real = true, .strict_valid = false },
+    .{ .name = "transitions.xml", .iterations = 260, .is_real = true, .validated_valid = false },
     .{ .name = "xgconsole.xml", .iterations = 320, .is_real = true },
     .{ .name = "weekly_utf8.xml", .iterations = 220, .is_real = true },
     .{ .name = "pugixml_large.xml", .iterations = 40, .is_real = true },
@@ -198,7 +198,7 @@ const stable_fixtures = [_]FixtureCase{
 // Pathological workloads do not belong in headline averages or external gates.
 // Keep them in a mode-specific lane that runs only the implementations whose
 // behavior they stress. The generated data remains available for ad-hoc work.
-const strict_regression_fixtures = [_]FixtureCase{
+const validated_regression_fixtures = [_]FixtureCase{
     .{ .name = "synthetic_doctype_entities.xml", .iterations = 80, .is_real = false },
 };
 
@@ -217,7 +217,7 @@ const ParseResult = struct {
 const GateRow = struct {
     fixture: []const u8,
     is_real: bool,
-    ours_turbo_mb_s: f64,
+    ours_permissive_mb_s: f64,
     pugixml_mb_s: f64,
     rapidxml_mb_s: f64,
     best_external_parser: []const u8,
@@ -230,15 +230,15 @@ const GateRow = struct {
 const StreamComparisonRow = struct {
     fixture: []const u8,
     is_real: bool,
-    dom_turbo_mb_s: f64,
-    stream_turbo_mb_s: f64,
-    turbo_ratio: f64,
-    dom_strict_mb_s: f64,
-    stream_strict_mb_s: f64,
-    strict_ratio: f64,
+    dom_permissive_mb_s: f64,
+    stream_permissive_mb_s: f64,
+    permissive_ratio: f64,
+    dom_validated_mb_s: f64,
+    stream_validated_mb_s: f64,
+    validated_ratio: f64,
 };
 
-const StrictRegressionCheck = struct {
+const ValidatedRegressionCheck = struct {
     parser: []const u8,
     fixture: []const u8,
     reference_fixture: []const u8,
@@ -836,17 +836,17 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
     var argv: [5][]const u8 = undefined;
     var argc: usize = 0;
 
-    if (std.mem.eql(u8, parser_name, "ours-strict")) {
-        argv = .{ "zig-out/bin/zxml-bench", "parse", "strict", fixture_path, iters };
+    if (std.mem.eql(u8, parser_name, "ours-validated")) {
+        argv = .{ "zig-out/bin/zxml-bench", "parse", "validated", fixture_path, iters };
         argc = 5;
-    } else if (std.mem.eql(u8, parser_name, "ours-turbo")) {
-        argv = .{ "zig-out/bin/zxml-bench", "parse", "turbo", fixture_path, iters };
+    } else if (std.mem.eql(u8, parser_name, "ours-permissive")) {
+        argv = .{ "zig-out/bin/zxml-bench", "parse", "permissive", fixture_path, iters };
         argc = 5;
-    } else if (std.mem.eql(u8, parser_name, "stream-strict")) {
-        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "strict", fixture_path, iters };
+    } else if (std.mem.eql(u8, parser_name, "stream-validated")) {
+        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "validated", fixture_path, iters };
         argc = 5;
-    } else if (std.mem.eql(u8, parser_name, "stream-turbo")) {
-        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "turbo", fixture_path, iters };
+    } else if (std.mem.eql(u8, parser_name, "stream-permissive")) {
+        argv = .{ "zig-out/bin/zxml-stream-bench", "parse", "permissive", fixture_path, iters };
         argc = 5;
     } else if (std.mem.eql(u8, parser_name, "pugixml")) {
         argv[0] = BIN_DIR ++ "/pugixml_runner";
@@ -1099,27 +1099,27 @@ fn findThroughput(rows: []const ParseResult, parser_name: []const u8, fixture: [
     return null;
 }
 
-fn evaluateStrictRegressionChecks(
+fn evaluateValidatedRegressionChecks(
     alloc: std.mem.Allocator,
     main_results: []const ParseResult,
     regression_results: []const ParseResult,
-) ![]StrictRegressionCheck {
-    var out = std.ArrayList(StrictRegressionCheck).empty;
+) ![]ValidatedRegressionCheck {
+    var out = std.ArrayList(ValidatedRegressionCheck).empty;
     errdefer out.deinit(alloc);
 
-    for (strict_regression_parsers) |parser_name| {
-        for (strict_regression_fixtures) |fixture| {
+    for (validated_regression_parsers) |parser_name| {
+        for (validated_regression_fixtures) |fixture| {
             const throughput = findThroughput(regression_results, parser_name, fixture.name) orelse return error.MissingBenchmarkResult;
-            const reference = findThroughput(main_results, parser_name, strict_regression_reference_fixture) orelse return error.MissingBenchmarkResult;
+            const reference = findThroughput(main_results, parser_name, validated_regression_reference_fixture) orelse return error.MissingBenchmarkResult;
             const ratio = if (reference == 0.0) 0.0 else throughput / reference;
             try out.append(alloc, .{
                 .parser = parser_name,
                 .fixture = fixture.name,
-                .reference_fixture = strict_regression_reference_fixture,
+                .reference_fixture = validated_regression_reference_fixture,
                 .throughput_mb_s = throughput,
                 .reference_mb_s = reference,
                 .reference_ratio = ratio,
-                .pass = ratio >= strict_regression_min_reference_ratio,
+                .pass = ratio >= validated_regression_min_reference_ratio,
             });
         }
     }
@@ -1127,19 +1127,19 @@ fn evaluateStrictRegressionChecks(
     return out.toOwnedSlice(alloc);
 }
 
-fn strictRegressionPassCount(checks: []const StrictRegressionCheck) usize {
+fn validatedRegressionPassCount(checks: []const ValidatedRegressionCheck) usize {
     var count: usize = 0;
     for (checks) |check| count += @intFromBool(check.pass);
     return count;
 }
 
-fn strictRegressionsAllPass(checks: []const StrictRegressionCheck) bool {
-    return strictRegressionPassCount(checks) == checks.len;
+fn validatedRegressionsAllPass(checks: []const ValidatedRegressionCheck) bool {
+    return validatedRegressionPassCount(checks) == checks.len;
 }
 
 fn parserAppliesToFixture(parser_name: []const u8, fixture: FixtureCase) bool {
-    if (fixture.strict_valid) return true;
-    return !std.mem.eql(u8, parser_name, "ours-strict") and !std.mem.eql(u8, parser_name, "stream-strict");
+    if (fixture.validated_valid) return true;
+    return !std.mem.eql(u8, parser_name, "ours-validated") and !std.mem.eql(u8, parser_name, "stream-validated");
 }
 
 fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const ParseResult) ![]GateRow {
@@ -1150,7 +1150,7 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
     }
 
     for (profile.fixtures) |fx| {
-        const ours = findThroughput(rows, "ours-turbo", fx.name) orelse return error.MissingBenchmarkResult;
+        const ours = findThroughput(rows, "ours-permissive", fx.name) orelse return error.MissingBenchmarkResult;
         const pugixml = findThroughput(rows, "pugixml", fx.name) orelse return error.MissingBenchmarkResult;
         const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse return error.MissingBenchmarkResult;
 
@@ -1163,7 +1163,7 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
         try out.append(alloc, .{
             .fixture = fixture,
             .is_real = fx.is_real,
-            .ours_turbo_mb_s = ours,
+            .ours_permissive_mb_s = ours,
             .pugixml_mb_s = pugixml,
             .rapidxml_mb_s = rapidxml,
             .best_external_parser = best_external_parser,
@@ -1189,25 +1189,25 @@ fn evaluateStreamComparisonRows(alloc: std.mem.Allocator, profile: Profile, rows
     }
 
     for (profile.fixtures) |fx| {
-        if (!fx.strict_valid) continue;
-        const dom_turbo = findThroughput(rows, "ours-turbo", fx.name) orelse return error.MissingBenchmarkResult;
-        const stream_turbo = findThroughput(rows, "stream-turbo", fx.name) orelse return error.MissingBenchmarkResult;
-        const dom_strict = findThroughput(rows, "ours-strict", fx.name) orelse return error.MissingBenchmarkResult;
-        const stream_strict = findThroughput(rows, "stream-strict", fx.name) orelse return error.MissingBenchmarkResult;
+        if (!fx.validated_valid) continue;
+        const dom_permissive = findThroughput(rows, "ours-permissive", fx.name) orelse return error.MissingBenchmarkResult;
+        const stream_permissive = findThroughput(rows, "stream-permissive", fx.name) orelse return error.MissingBenchmarkResult;
+        const dom_validated = findThroughput(rows, "ours-validated", fx.name) orelse return error.MissingBenchmarkResult;
+        const stream_validated = findThroughput(rows, "stream-validated", fx.name) orelse return error.MissingBenchmarkResult;
 
-        const turbo_ratio = if (dom_turbo == 0) 0 else stream_turbo / dom_turbo;
-        const strict_ratio = if (dom_strict == 0) 0 else stream_strict / dom_strict;
+        const permissive_ratio = if (dom_permissive == 0) 0 else stream_permissive / dom_permissive;
+        const validated_ratio = if (dom_validated == 0) 0 else stream_validated / dom_validated;
         const fixture = try alloc.dupe(u8, fx.name);
         errdefer alloc.free(fixture);
         try out.append(alloc, .{
             .fixture = fixture,
             .is_real = fx.is_real,
-            .dom_turbo_mb_s = dom_turbo,
-            .stream_turbo_mb_s = stream_turbo,
-            .turbo_ratio = turbo_ratio,
-            .dom_strict_mb_s = dom_strict,
-            .stream_strict_mb_s = stream_strict,
-            .strict_ratio = strict_ratio,
+            .dom_permissive_mb_s = dom_permissive,
+            .stream_permissive_mb_s = stream_permissive,
+            .permissive_ratio = permissive_ratio,
+            .dom_validated_mb_s = dom_validated,
+            .stream_validated_mb_s = stream_validated,
+            .validated_ratio = validated_ratio,
         });
     }
 
@@ -1225,7 +1225,7 @@ const AverageThroughputRow = struct {
 };
 
 fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const ParseResult) ![]AverageThroughputRow {
-    const parser_names = [_][]const u8{ "ours-turbo", "ours-strict", "stream-turbo", "stream-strict", "pugixml", "rapidxml" };
+    const parser_names = [_][]const u8{ "ours-permissive", "ours-validated", "stream-permissive", "stream-validated", "pugixml", "rapidxml" };
     var out = try alloc.alloc(AverageThroughputRow, parser_names.len);
     errdefer alloc.free(out);
 
@@ -1266,7 +1266,7 @@ test "evaluateGateRows records best external parser" {
     var sample_b = [_]u64{1};
     var sample_c = [_]u64{1};
     const rows = [_]ParseResult{
-        .{ .parser = "ours-turbo", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_a, .median_ns = 1, .throughput_mb_s = 120.0 },
+        .{ .parser = "ours-permissive", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_a, .median_ns = 1, .throughput_mb_s = 120.0 },
         .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_b, .median_ns = 1, .throughput_mb_s = 110.0 },
         .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_c, .median_ns = 1, .throughput_mb_s = 100.0 },
     };
@@ -1451,7 +1451,7 @@ fn renderReadmeAutoSummary(
         }
         break :blk count;
     };
-    try w.print("| `{s}` | {d}/{d} | `ours-turbo >= max(pugixml, rapidxml)` |\n", .{
+    try w.print("| `{s}` | {d}/{d} | `ours-permissive >= max(pugixml, rapidxml)` |\n", .{
         profile_name,
         pass_count,
         gate_rows.len,
@@ -1477,7 +1477,7 @@ fn renderBenchReadmeSnapshot(
     try w.writeAll("## Latest Benchmark Snapshot\n\n");
     try writeBenchmarkEnvironmentTable(w, "###", environment);
     try w.writeAll("### Parse Throughput Comparison (MB/s)\n\n");
-    try w.writeAll("| Fixture | ours-turbo | ours-strict | stream-turbo | stream-strict | pugixml | rapidxml |\n");
+    try w.writeAll("| Fixture | ours-permissive | ours-validated | stream-permissive | stream-validated | pugixml | rapidxml |\n");
     try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
 
     var fixtures = std.ArrayList([]const u8).empty;
@@ -1495,19 +1495,19 @@ fn renderBenchReadmeSnapshot(
 
     for (fixtures.items) |fixture_name| {
         try w.print("| `{s}` | ", .{fixture_name});
-        if (findParseResult(parse_results, "ours-turbo", fixture_name)) |r| {
+        if (findParseResult(parse_results, "ours-permissive", fixture_name)) |r| {
             try w.print("{d:.2}", .{r.throughput_mb_s});
         } else try w.writeAll("-");
         try w.writeAll(" | ");
-        if (findParseResult(parse_results, "ours-strict", fixture_name)) |r| {
+        if (findParseResult(parse_results, "ours-validated", fixture_name)) |r| {
             try w.print("{d:.2}", .{r.throughput_mb_s});
         } else try w.writeAll("-");
         try w.writeAll(" | ");
-        if (findParseResult(parse_results, "stream-turbo", fixture_name)) |r| {
+        if (findParseResult(parse_results, "stream-permissive", fixture_name)) |r| {
             try w.print("{d:.2}", .{r.throughput_mb_s});
         } else try w.writeAll("-");
         try w.writeAll(" | ");
-        if (findParseResult(parse_results, "stream-strict", fixture_name)) |r| {
+        if (findParseResult(parse_results, "stream-validated", fixture_name)) |r| {
             try w.print("{d:.2}", .{r.throughput_mb_s});
         } else try w.writeAll("-");
         try w.writeAll(" | ");
@@ -1522,14 +1522,14 @@ fn renderBenchReadmeSnapshot(
     }
 
     try w.writeAll("\n### Stable Gates\n\n");
-    try w.writeAll("| Fixture | ours-turbo | best external | ours/best-ext | Result |\n");
+    try w.writeAll("| Fixture | ours-permissive | best external | ours/best-ext | Result |\n");
     try w.writeAll("|---|---:|---|---:|---|\n");
     for (gate_rows) |g| {
         try w.print(
             "| `{s}` | {d:.2} | `{s}` {d:.2} | {d:.3} | {s} |\n",
             .{
                 g.fixture,
-                g.ours_turbo_mb_s,
+                g.ours_permissive_mb_s,
                 g.best_external_parser,
                 g.best_external_mb_s,
                 g.external_ratio,
@@ -1540,19 +1540,19 @@ fn renderBenchReadmeSnapshot(
 
     if (stream_comparison_rows.len != 0) {
         try w.writeAll("\n### Streaming Comparison (Advisory)\n\n");
-        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |\n");
+        try w.writeAll("| Fixture | stream-permissive | ours-permissive | stream/ours | stream-validated | ours-validated | stream/ours |\n");
         try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
         for (stream_comparison_rows) |g| {
             try w.print(
                 "| `{s}` | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
-                    g.stream_turbo_mb_s,
-                    g.dom_turbo_mb_s,
-                    g.turbo_ratio,
-                    g.stream_strict_mb_s,
-                    g.dom_strict_mb_s,
-                    g.strict_ratio,
+                    g.stream_permissive_mb_s,
+                    g.dom_permissive_mb_s,
+                    g.permissive_ratio,
+                    g.stream_validated_mb_s,
+                    g.dom_validated_mb_s,
+                    g.validated_ratio,
                 },
             );
         }
@@ -1629,7 +1629,7 @@ fn writeMarkdown(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
-    strict_regression_checks: []const StrictRegressionCheck,
+    validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1648,14 +1648,14 @@ fn writeMarkdown(
 
     if (gate_rows.len != 0) {
         try w.writeAll("\n## Stable Gates\n\n");
-        try w.writeAll("| Fixture | ours-turbo | pugixml | rapidxml | best external | ours/best-ext | Result |\n");
+        try w.writeAll("| Fixture | ours-permissive | pugixml | rapidxml | best external | ours/best-ext | Result |\n");
         try w.writeAll("|---|---:|---:|---:|---|---:|---|\n");
         for (gate_rows) |g| {
             try w.print(
                 "| {s} | {d:.2} | {d:.2} | {d:.2} | {s} {d:.2} | {d:.3} | {s} |\n",
                 .{
                     g.fixture,
-                    g.ours_turbo_mb_s,
+                    g.ours_permissive_mb_s,
                     g.pugixml_mb_s,
                     g.rapidxml_mb_s,
                     g.best_external_parser,
@@ -1669,31 +1669,31 @@ fn writeMarkdown(
 
     if (stream_comparison_rows.len != 0) {
         try w.writeAll("\n## Streaming Comparison (Advisory)\n\n");
-        try w.writeAll("| Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |\n");
+        try w.writeAll("| Fixture | stream-permissive | ours-permissive | stream/ours | stream-validated | ours-validated | stream/ours |\n");
         try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
         for (stream_comparison_rows) |g| {
             try w.print(
                 "| {s} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
-                    g.stream_turbo_mb_s,
-                    g.dom_turbo_mb_s,
-                    g.turbo_ratio,
-                    g.stream_strict_mb_s,
-                    g.dom_strict_mb_s,
-                    g.strict_ratio,
+                    g.stream_permissive_mb_s,
+                    g.dom_permissive_mb_s,
+                    g.permissive_ratio,
+                    g.stream_validated_mb_s,
+                    g.dom_validated_mb_s,
+                    g.validated_ratio,
                 },
             );
         }
     }
 
-    if (strict_regression_checks.len != 0) {
-        const passed = strictRegressionPassCount(strict_regression_checks);
-        try w.print("\n## Strict Pathology Regression Checks\n\n{d}/{d} passed. These fixtures are excluded from headline averages and stable external gates.\n", .{ passed, strict_regression_checks.len });
-        if (!strictRegressionsAllPass(strict_regression_checks)) {
+    if (validated_regression_checks.len != 0) {
+        const passed = validatedRegressionPassCount(validated_regression_checks);
+        try w.print("\n## Validated Pathology Regression Checks\n\n{d}/{d} passed. These fixtures are excluded from headline averages and stable external gates.\n", .{ passed, validated_regression_checks.len });
+        if (!validatedRegressionsAllPass(validated_regression_checks)) {
             try w.writeAll("\n| Parser | Fixture | Throughput (MB/s) | Reference | Reference MB/s | Ratio | Result |\n");
             try w.writeAll("|---|---|---:|---|---:|---:|---|\n");
-            for (strict_regression_checks) |check| {
+            for (validated_regression_checks) |check| {
                 try w.print("| {s} | {s} | {d:.2} | {s} | {d:.2} | {d:.3} | {s} |\n", .{
                     check.parser,
                     check.fixture,
@@ -1719,7 +1719,7 @@ fn writeTerminalReport(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
-    strict_regression_checks: []const StrictRegressionCheck,
+    validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1837,7 +1837,7 @@ fn writeTerminalReport(
         try w.writeAll("\nStable Gates\n");
         const gate_headers = [_][]const u8{
             "Fixture",
-            "ours-turbo",
+            "ours-permissive",
             "pugixml",
             "rapidxml",
             "best external",
@@ -1860,7 +1860,7 @@ fn writeTerminalReport(
             gate_widths[0] = maxUsize(gate_widths[0], g.fixture.len);
 
             var ours_buf: [32]u8 = undefined;
-            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_turbo_mb_s});
+            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mb_s});
             gate_widths[1] = maxUsize(gate_widths[1], ours.len);
 
             var pugixml_buf: [32]u8 = undefined;
@@ -1892,7 +1892,7 @@ fn writeTerminalReport(
             if (g.pass) pass_count += 1;
 
             var ours_buf: [32]u8 = undefined;
-            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_turbo_mb_s});
+            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mb_s});
 
             var pugixml_buf: [32]u8 = undefined;
             const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mb_s});
@@ -1925,11 +1925,11 @@ fn writeTerminalReport(
         try w.writeAll("\nStreaming Comparison (advisory)\n");
         const headers = [_][]const u8{
             "Fixture",
-            "stream-turbo",
-            "ours-turbo",
+            "stream-permissive",
+            "ours-permissive",
             "stream/ours",
-            "stream-strict",
-            "ours-strict",
+            "stream-validated",
+            "ours-validated",
             "stream/ours",
         };
         const header_align = [_]bool{ false, false, false, false, false, false, false };
@@ -1946,7 +1946,7 @@ fn writeTerminalReport(
 
         for (stream_comparison_rows) |g| {
             widths[0] = maxUsize(widths[0], g.fixture.len);
-            inline for (&.{ g.stream_turbo_mb_s, g.dom_turbo_mb_s, g.turbo_ratio, g.stream_strict_mb_s, g.dom_strict_mb_s, g.strict_ratio }, 1..) |value, col| {
+            inline for (&.{ g.stream_permissive_mb_s, g.dom_permissive_mb_s, g.permissive_ratio, g.stream_validated_mb_s, g.dom_validated_mb_s, g.validated_ratio }, 1..) |value, col| {
                 var buf: [32]u8 = undefined;
                 const txt = if (col == 3 or col == 6)
                     try std.fmt.bufPrint(&buf, "{d:.3}", .{value})
@@ -1960,40 +1960,40 @@ fn writeTerminalReport(
         try writeTableRow(w, &headers, &widths, &header_align);
         try writeTableBorder(w, &widths);
         for (stream_comparison_rows) |g| {
-            var stream_turbo_buf: [32]u8 = undefined;
-            const stream_turbo = try std.fmt.bufPrint(&stream_turbo_buf, "{d:.2}", .{g.stream_turbo_mb_s});
-            var dom_turbo_buf: [32]u8 = undefined;
-            const dom_turbo = try std.fmt.bufPrint(&dom_turbo_buf, "{d:.2}", .{g.dom_turbo_mb_s});
-            var turbo_ratio_buf: [32]u8 = undefined;
-            const turbo_ratio = try std.fmt.bufPrint(&turbo_ratio_buf, "{d:.3}", .{g.turbo_ratio});
-            var stream_strict_buf: [32]u8 = undefined;
-            const stream_strict = try std.fmt.bufPrint(&stream_strict_buf, "{d:.2}", .{g.stream_strict_mb_s});
-            var dom_strict_buf: [32]u8 = undefined;
-            const dom_strict = try std.fmt.bufPrint(&dom_strict_buf, "{d:.2}", .{g.dom_strict_mb_s});
-            var strict_ratio_buf: [32]u8 = undefined;
-            const strict_ratio = try std.fmt.bufPrint(&strict_ratio_buf, "{d:.3}", .{g.strict_ratio});
+            var stream_permissive_buf: [32]u8 = undefined;
+            const stream_permissive = try std.fmt.bufPrint(&stream_permissive_buf, "{d:.2}", .{g.stream_permissive_mb_s});
+            var dom_permissive_buf: [32]u8 = undefined;
+            const dom_permissive = try std.fmt.bufPrint(&dom_permissive_buf, "{d:.2}", .{g.dom_permissive_mb_s});
+            var permissive_ratio_buf: [32]u8 = undefined;
+            const permissive_ratio = try std.fmt.bufPrint(&permissive_ratio_buf, "{d:.3}", .{g.permissive_ratio});
+            var stream_validated_buf: [32]u8 = undefined;
+            const stream_validated = try std.fmt.bufPrint(&stream_validated_buf, "{d:.2}", .{g.stream_validated_mb_s});
+            var dom_validated_buf: [32]u8 = undefined;
+            const dom_validated = try std.fmt.bufPrint(&dom_validated_buf, "{d:.2}", .{g.dom_validated_mb_s});
+            var validated_ratio_buf: [32]u8 = undefined;
+            const validated_ratio = try std.fmt.bufPrint(&validated_ratio_buf, "{d:.3}", .{g.validated_ratio});
             const row = [_][]const u8{
                 g.fixture,
-                stream_turbo,
-                dom_turbo,
-                turbo_ratio,
-                stream_strict,
-                dom_strict,
-                strict_ratio,
+                stream_permissive,
+                dom_permissive,
+                permissive_ratio,
+                stream_validated,
+                dom_validated,
+                validated_ratio,
             };
             try writeTableRow(w, &row, &widths, &row_align);
         }
         try writeTableBorder(w, &widths);
     }
 
-    if (strict_regression_checks.len != 0) {
-        const passed = strictRegressionPassCount(strict_regression_checks);
-        try w.print("\nStrict Pathology Regression Checks: {d}/{d} passed\n", .{ passed, strict_regression_checks.len });
-        if (!strictRegressionsAllPass(strict_regression_checks)) {
+    if (validated_regression_checks.len != 0) {
+        const passed = validatedRegressionPassCount(validated_regression_checks);
+        try w.print("\nValidated Pathology Regression Checks: {d}/{d} passed\n", .{ passed, validated_regression_checks.len });
+        if (!validatedRegressionsAllPass(validated_regression_checks)) {
             const headers = [_][]const u8{ "Parser", "Fixture", "MB/s", "Reference", "Ref MB/s", "Ratio", "Result" };
             const row_align = [_]bool{ false, false, true, false, true, true, false };
             var widths = [_]usize{ headers[0].len, headers[1].len, headers[2].len, headers[3].len, headers[4].len, headers[5].len, headers[6].len };
-            for (strict_regression_checks) |check| {
+            for (validated_regression_checks) |check| {
                 widths[0] = maxUsize(widths[0], check.parser.len);
                 widths[1] = maxUsize(widths[1], check.fixture.len);
                 widths[3] = maxUsize(widths[3], check.reference_fixture.len);
@@ -2007,7 +2007,7 @@ fn writeTerminalReport(
             try writeTableBorder(w, &widths);
             try writeTableRow(w, &headers, &widths, &row_align);
             try writeTableBorder(w, &widths);
-            for (strict_regression_checks) |check| {
+            for (validated_regression_checks) |check| {
                 var a: [32]u8 = undefined;
                 var b: [32]u8 = undefined;
                 var c: [32]u8 = undefined;
@@ -2024,7 +2024,7 @@ fn writeTerminalReport(
             }
             try writeTableBorder(w, &widths);
         } else {
-            try w.writeAll("Pathological strict timings are hidden from the headline report; raw samples remain in latest.json.\n");
+            try w.writeAll("Pathological validated timings are hidden from the headline report; raw samples remain in latest.json.\n");
         }
     }
 
@@ -2039,8 +2039,8 @@ fn writeJson(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
-    strict_regression_results: []const ParseResult,
-    strict_regression_checks: []const StrictRegressionCheck,
+    validated_regression_results: []const ParseResult,
+    validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -2064,11 +2064,11 @@ fn writeJson(
     try w.writeAll("  ],\n  \"gates\": [\n");
     for (gate_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_turbo_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_permissive_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
-                g.ours_turbo_mb_s,
+                g.ours_permissive_mb_s,
                 g.pugixml_mb_s,
                 g.rapidxml_mb_s,
                 g.best_external_parser,
@@ -2082,22 +2082,22 @@ fn writeJson(
     try w.writeAll("  ],\n  \"stream_comparisons\": [\n");
     for (stream_comparison_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_turbo_mb_s\":{d:.6},\"stream_turbo_mb_s\":{d:.6},\"turbo_ratio\":{d:.6},\"dom_strict_mb_s\":{d:.6},\"stream_strict_mb_s\":{d:.6},\"strict_ratio\":{d:.6}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_permissive_mb_s\":{d:.6},\"stream_permissive_mb_s\":{d:.6},\"permissive_ratio\":{d:.6},\"dom_validated_mb_s\":{d:.6},\"stream_validated_mb_s\":{d:.6},\"validated_ratio\":{d:.6}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
-                g.dom_turbo_mb_s,
-                g.stream_turbo_mb_s,
-                g.turbo_ratio,
-                g.dom_strict_mb_s,
-                g.stream_strict_mb_s,
-                g.strict_ratio,
+                g.dom_permissive_mb_s,
+                g.stream_permissive_mb_s,
+                g.permissive_ratio,
+                g.dom_validated_mb_s,
+                g.stream_validated_mb_s,
+                g.validated_ratio,
                 if (i + 1 == stream_comparison_rows.len) "" else ",",
             },
         );
     }
-    try w.writeAll("  ],\n  \"strict_regression_results\": [\n");
-    for (strict_regression_results, 0..) |r, i| {
+    try w.writeAll("  ],\n  \"validated_regression_results\": [\n");
+    for (validated_regression_results, 0..) |r, i| {
         try w.print(
             "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mb_s\":{d:.6},\"samples_ns\":[",
             .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mb_s },
@@ -2106,10 +2106,10 @@ fn writeJson(
             if (sample_index != 0) try w.writeByte(',');
             try w.print("{d}", .{sample});
         }
-        try w.print("]}}{s}\n", .{if (i + 1 == strict_regression_results.len) "" else ","});
+        try w.print("]}}{s}\n", .{if (i + 1 == validated_regression_results.len) "" else ","});
     }
-    try w.writeAll("  ],\n  \"strict_regression_checks\": [\n");
-    for (strict_regression_checks, 0..) |check, i| {
+    try w.writeAll("  ],\n  \"validated_regression_checks\": [\n");
+    for (validated_regression_checks, 0..) |check, i| {
         try w.print(
             "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"reference_fixture\":\"{s}\",\"throughput_mb_s\":{d:.6},\"reference_mb_s\":{d:.6},\"reference_ratio\":{d:.6},\"minimum_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
@@ -2119,9 +2119,9 @@ fn writeJson(
                 check.throughput_mb_s,
                 check.reference_mb_s,
                 check.reference_ratio,
-                strict_regression_min_reference_ratio,
+                validated_regression_min_reference_ratio,
                 if (check.pass) "true" else "false",
-                if (i + 1 == strict_regression_checks.len) "" else ",",
+                if (i + 1 == validated_regression_checks.len) "" else ",",
             },
         );
     }
@@ -2175,17 +2175,17 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     }
     try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results, resume_context);
 
-    var strict_regression_results = std.ArrayList(ParseResult).empty;
+    var validated_regression_results = std.ArrayList(ParseResult).empty;
     defer {
-        for (strict_regression_results.items) |*r| freeParseResult(alloc, r);
-        strict_regression_results.deinit(alloc);
+        for (validated_regression_results.items) |*r| freeParseResult(alloc, r);
+        validated_regression_results.deinit(alloc);
     }
-    var strict_regression_checks: []StrictRegressionCheck = try alloc.alloc(StrictRegressionCheck, 0);
-    defer alloc.free(strict_regression_checks);
+    var validated_regression_checks: []ValidatedRegressionCheck = try alloc.alloc(ValidatedRegressionCheck, 0);
+    defer alloc.free(validated_regression_checks);
     if (std.mem.eql(u8, profile.name, "stable")) {
-        try benchmarkFixtureSet(io, alloc, &strict_regression_fixtures, &strict_regression_parsers, &strict_regression_results, null);
-        alloc.free(strict_regression_checks);
-        strict_regression_checks = try evaluateStrictRegressionChecks(alloc, parse_results.items, strict_regression_results.items);
+        try benchmarkFixtureSet(io, alloc, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null);
+        alloc.free(validated_regression_checks);
+        validated_regression_checks = try evaluateValidatedRegressionChecks(alloc, parse_results.items, validated_regression_results.items);
     }
 
     const gate_rows = try evaluateGateRows(alloc, profile, parse_results.items);
@@ -2193,11 +2193,11 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
+    const md = try writeMarkdown(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
     defer alloc.free(md);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
-    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, strict_regression_checks);
+    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
     defer alloc.free(terminal);
 
     const json = try writeJson(
@@ -2208,8 +2208,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         parse_results.items,
         gate_rows,
         stream_comparison_rows,
-        strict_regression_results.items,
-        strict_regression_checks,
+        validated_regression_results.items,
+        validated_regression_checks,
     );
     defer alloc.free(json);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
@@ -2229,16 +2229,16 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
                 failed = true;
                 std.debug.print(
                     "gate fail: {s} ours={d:.2} best={s} {d:.2} ratio={d:.3}\n",
-                    .{ g.fixture, g.ours_turbo_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio },
+                    .{ g.fixture, g.ours_permissive_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio },
                 );
             }
         }
-        for (strict_regression_checks) |check| {
+        for (validated_regression_checks) |check| {
             if (!check.pass) {
                 failed = true;
                 std.debug.print(
-                    "strict regression fail: parser={s} fixture={s} reference={s} ratio={d:.3} minimum={d:.3}\n",
-                    .{ check.parser, check.fixture, check.reference_fixture, check.reference_ratio, strict_regression_min_reference_ratio },
+                    "validated regression fail: parser={s} fixture={s} reference={s} ratio={d:.3} minimum={d:.3}\n",
+                    .{ check.parser, check.fixture, check.reference_fixture, check.reference_ratio, validated_regression_min_reference_ratio },
                 );
             }
         }
@@ -2623,7 +2623,7 @@ test "benchmark gates reject missing parser rows" {
     const profile = Profile{ .name = "test", .fixtures = &fixtures };
     var samples = [_]u64{1};
     const incomplete = [_]ParseResult{.{
-        .parser = "ours-turbo",
+        .parser = "ours-permissive",
         .fixture = "fixture.xml",
         .is_real = true,
         .iterations = 1,
@@ -2650,11 +2650,11 @@ test "headline benchmark profiles exclude diagnostic scan-heavy fixtures" {
     }
 }
 
-test "doctype entity pathology is strict-only and outside headline profiles" {
-    try std.testing.expectEqual(@as(usize, 1), strict_regression_fixtures.len);
-    try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", strict_regression_fixtures[0].name);
-    try std.testing.expectEqualSlices([]const u8, &.{ "ours-strict", "stream-strict" }, &strict_regression_parsers);
-    for (strict_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "strict") != null);
+test "doctype entity pathology is validated-only and outside headline profiles" {
+    try std.testing.expectEqual(@as(usize, 1), validated_regression_fixtures.len);
+    try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", validated_regression_fixtures[0].name);
+    try std.testing.expectEqualSlices([]const u8, &.{ "ours-validated", "stream-validated" }, &validated_regression_parsers);
+    for (validated_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "validated") != null);
 }
 
 test "unicode text throughput fixture stays out while unicode names remain" {

@@ -2,35 +2,33 @@ const std = @import("std");
 const zxml = @import("zxml");
 
 pub const DomBenchMode = enum {
-    strict,
-    strict_trusted,
-    turbo,
+    validated,
+    validated_trusted,
+    permissive,
 };
 
 pub const StreamBenchMode = enum {
-    strict,
-    strict_trusted,
-    turbo,
+    validated,
+    validated_trusted,
+    permissive,
 };
 
-const dom_strict_options: zxml.ParseOptions = .{
+const dom_validated_options: zxml.ParseOptions = .{
     .validate_well_formedness = true,
-    .include_misc_nodes = true,
 };
-const dom_strict_trusted_options: zxml.ParseOptions = .{
+const dom_validated_trusted_options: zxml.ParseOptions = .{
     .validate_well_formedness = true,
     .validate_xml_characters = false,
-    .include_misc_nodes = true,
 };
-const dom_turbo_options: zxml.ParseOptions = .{};
+const dom_permissive_options: zxml.ParseOptions = .{};
 
 fn elapsedNs(start: std.Io.Clock.Timestamp, finish: std.Io.Clock.Timestamp) u64 {
     const elapsed = start.durationTo(finish);
     return @intCast(@max(elapsed.raw.nanoseconds, 0));
 }
 
-fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_strict_options).Document;
+fn runDomValidated(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_validated_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
@@ -45,8 +43,8 @@ fn runDomStrict(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: u
     return elapsedNs(start, finish);
 }
 
-fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_strict_trusted_options).Document;
+fn runDomValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_validated_trusted_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
@@ -61,8 +59,8 @@ fn runDomStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterat
     return elapsedNs(start, finish);
 }
 
-fn runDomTurbo(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_turbo_options).Document;
+fn runDomPermissive(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
+    const Document = zxml.Types(dom_permissive_options).Document;
     var doc = Document.init(alloc);
     defer doc.deinit();
 
@@ -85,9 +83,9 @@ pub fn runDomParseFile(io: std.Io, path: []const u8, iterations: usize, mode: Do
     defer alloc.free(input);
 
     return switch (mode) {
-        .strict => @call(.never_inline, runDomStrict, .{ io, alloc, input, iterations }),
-        .strict_trusted => @call(.never_inline, runDomStrictTrusted, .{ io, alloc, input, iterations }),
-        .turbo => @call(.never_inline, runDomTurbo, .{ io, alloc, input, iterations }),
+        .validated => @call(.never_inline, runDomValidated, .{ io, alloc, input, iterations }),
+        .validated_trusted => @call(.never_inline, runDomValidatedTrusted, .{ io, alloc, input, iterations }),
+        .permissive => @call(.never_inline, runDomPermissive, .{ io, alloc, input, iterations }),
     };
 }
 
@@ -99,18 +97,17 @@ pub fn runStreamParseFile(io: std.Io, path: []const u8, iterations: usize, mode:
     defer alloc.free(input);
 
     return switch (mode) {
-        .strict => @call(.never_inline, runStreamStrict, .{ io, alloc, input, iterations }),
-        .strict_trusted => @call(.never_inline, runStreamStrictTrusted, .{ io, alloc, input, iterations }),
-        .turbo => @call(.never_inline, runStreamTurbo, .{ io, alloc, input, iterations }),
+        .validated => @call(.never_inline, runStreamValidated, .{ io, alloc, input, iterations }),
+        .validated_trusted => @call(.never_inline, runStreamValidatedTrusted, .{ io, alloc, input, iterations }),
+        .permissive => @call(.never_inline, runStreamPermissive, .{ io, alloc, input, iterations }),
     };
 }
 
-fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
-    const StreamStrict = zxml.Types(.{
+fn runStreamValidated(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+    const StreamValidated = zxml.Types(.{
         .validate_well_formedness = true,
-        .include_misc_nodes = true,
     });
-    const StreamingEventType = StreamStrict.StreamingEvent;
+    const StreamingEventType = StreamValidated.StreamingEvent;
     const Context = struct {
         checksum: u64 = 0,
         count: u64 = 0,
@@ -129,7 +126,7 @@ fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iter
         }
     };
 
-    var parser = StreamStrict.StreamingParser.init(alloc);
+    var parser = StreamValidated.StreamingParser.init(alloc);
     defer parser.deinit();
     var ctx: Context = .{};
     const start = std.Io.Clock.Timestamp.now(io, .awake);
@@ -140,13 +137,12 @@ fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iter
     return elapsedNs(start, finish);
 }
 
-fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
-    const StreamStrict = zxml.Types(.{
+fn runStreamValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+    const StreamValidated = zxml.Types(.{
         .validate_well_formedness = true,
         .validate_xml_characters = false,
-        .include_misc_nodes = true,
     });
-    const StreamingEventType = StreamStrict.StreamingEvent;
+    const StreamingEventType = StreamValidated.StreamingEvent;
     const Context = struct {
         checksum: u64 = 0,
         count: u64 = 0,
@@ -165,7 +161,7 @@ fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u
         }
     };
 
-    var parser = StreamStrict.StreamingParser.init(alloc);
+    var parser = StreamValidated.StreamingParser.init(alloc);
     defer parser.deinit();
     var ctx: Context = .{};
     const start = std.Io.Clock.Timestamp.now(io, .awake);
@@ -176,11 +172,9 @@ fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u
     return elapsedNs(start, finish);
 }
 
-fn runStreamTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
-    const StreamTurbo = zxml.Types(.{
-        .include_misc_nodes = true,
-    });
-    const StreamingEventType = StreamTurbo.StreamingEvent;
+fn runStreamPermissive(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
+    const StreamPermissive = zxml.Types(.{});
+    const StreamingEventType = StreamPermissive.StreamingEvent;
     const Context = struct {
         checksum: u64 = 0,
         count: u64 = 0,
@@ -199,7 +193,7 @@ fn runStreamTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, itera
         }
     };
 
-    var parser = StreamTurbo.StreamingParser.init(alloc);
+    var parser = StreamPermissive.StreamingParser.init(alloc);
     defer parser.deinit();
     var ctx: Context = .{};
     const start = std.Io.Clock.Timestamp.now(io, .awake);
@@ -211,8 +205,8 @@ fn runStreamTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, itera
 }
 
 test "benchmark runners reject zero iterations before file access" {
-    try std.testing.expectError(error.InvalidIterations, runDomParseFile(std.testing.io, "does-not-exist.xml", 0, .turbo));
-    try std.testing.expectError(error.InvalidIterations, runStreamParseFile(std.testing.io, "does-not-exist.xml", 0, .turbo));
+    try std.testing.expectError(error.InvalidIterations, runDomParseFile(std.testing.io, "does-not-exist.xml", 0, .permissive));
+    try std.testing.expectError(error.InvalidIterations, runStreamParseFile(std.testing.io, "does-not-exist.xml", 0, .permissive));
 }
 
 test "all benchmark modes parse the smoke fixture" {
