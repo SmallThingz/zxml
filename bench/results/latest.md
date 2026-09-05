@@ -1,6 +1,6 @@
 # ZXML Benchmark Results
 
-Generated (unix): 1788492990
+Generated (unix): 1788628222
 
 Profile: `stable`
 
@@ -11,374 +11,318 @@ Profile: `stable`
 | OS / kernel | Linux 7.2.2-zen1-1-zen |
 | Architecture | x86_64 |
 | CPU | 12th Gen Intel(R) Core(TM) i5-12450H |
-| CPU frequency scaling | 50% |
+| CPU frequency scaling | 71% |
 | CPU MHz range | 400.0000–4400.0000 |
 | Zig | 0.16.0 (`ReleaseFast -Dcpu=native`) |
-| C++ driver | zig c++ (`-O3 -DNDEBUG -march=native`) |
+| C++ driver | c++ (`-O3 -DNDEBUG -march=native`) |
 
 ## Parse Throughput
 
 | Fixture | Parser | Throughput (MB/s) | Median Time (ms) | Iterations |
 |---|---|---:|---:|---:|
-| note.xml | ours-strict | 1463.64 | 16.65 | 148617 |
-| note.xml | ours-turbo | 2976.49 | 15.29 | 277451 |
-| note.xml | stream-strict | 1339.16 | 20.01 | 163410 |
-| note.xml | stream-turbo | 2946.79 | 36.57 | 657103 |
-| note.xml | pugixml | 922.59 | 22.67 | 127533 |
-| note.xml | rapidxml | 1418.02 | 25.07 | 216807 |
-| sitemaps.xml | ours-strict | 1864.88 | 35.09 | 7590 |
-| sitemaps.xml | ours-turbo | 3683.65 | 20.95 | 8949 |
-| sitemaps.xml | stream-strict | 1700.21 | 33.15 | 6537 |
-| sitemaps.xml | stream-turbo | 3699.31 | 21.37 | 9170 |
-| sitemaps.xml | pugixml | 2054.27 | 21.58 | 5142 |
-| sitemaps.xml | rapidxml | 1779.22 | 21.77 | 4492 |
-| plant_catalog.xml | ours-strict | 1400.10 | 25.50 | 4620 |
-| plant_catalog.xml | ours-turbo | 3038.54 | 22.26 | 8750 |
-| plant_catalog.xml | stream-strict | 1443.57 | 19.40 | 3624 |
-| plant_catalog.xml | stream-turbo | 2619.85 | 24.28 | 8230 |
-| plant_catalog.xml | pugixml | 1309.14 | 27.39 | 4639 |
-| plant_catalog.xml | rapidxml | 1374.32 | 26.03 | 4629 |
-| cd_catalog.xml | ours-strict | 1389.74 | 23.32 | 6660 |
-| cd_catalog.xml | ours-turbo | 2805.45 | 22.56 | 13005 |
-| cd_catalog.xml | stream-strict | 1277.05 | 19.75 | 5184 |
-| cd_catalog.xml | stream-turbo | 2549.84 | 25.26 | 13239 |
-| cd_catalog.xml | pugixml | 1477.88 | 23.63 | 7176 |
-| cd_catalog.xml | rapidxml | 1427.99 | 23.16 | 6797 |
-| hnrss.xml | ours-strict | 3752.66 | 26.40 | 5361 |
-| hnrss.xml | ours-turbo | 8011.36 | 17.95 | 7780 |
-| hnrss.xml | stream-strict | 4109.22 | 40.66 | 9041 |
-| hnrss.xml | stream-turbo | 8096.25 | 21.17 | 9273 |
-| hnrss.xml | pugixml | 2676.20 | 22.10 | 3200 |
-| hnrss.xml | rapidxml | 2473.02 | 40.56 | 5427 |
-| xkcd_rss.xml | ours-strict | 4034.20 | 20.14 | 32957 |
-| xkcd_rss.xml | ours-turbo | 8394.76 | 19.05 | 64866 |
-| xkcd_rss.xml | stream-strict | 3317.30 | 21.67 | 29169 |
-| xkcd_rss.xml | stream-turbo | 8422.88 | 21.45 | 73311 |
-| xkcd_rss.xml | pugixml | 2464.46 | 26.13 | 26125 |
-| xkcd_rss.xml | rapidxml | 2057.80 | 38.90 | 32475 |
-| bbc_world.xml | ours-strict | 3070.13 | 21.28 | 2822 |
-| bbc_world.xml | ours-turbo | 4938.07 | 19.14 | 4083 |
-| bbc_world.xml | stream-strict | 2948.31 | 36.29 | 4622 |
-| bbc_world.xml | stream-turbo | 5422.98 | 19.90 | 4662 |
-| bbc_world.xml | pugixml | 2693.20 | 23.65 | 2751 |
-| bbc_world.xml | rapidxml | 2228.70 | 36.27 | 3492 |
-| arxiv_cs.xml | ours-strict | 4111.78 | 43.15 | 82 |
-| arxiv_cs.xml | ours-turbo | 9727.18 | 40.04 | 180 |
-| arxiv_cs.xml | stream-strict | 4018.66 | 43.07 | 80 |
-| arxiv_cs.xml | stream-turbo | 9682.07 | 40.22 | 180 |
-| arxiv_cs.xml | pugixml | 2312.68 | 47.71 | 51 |
-| arxiv_cs.xml | rapidxml | 1653.52 | 45.80 | 35 |
-| ecb_usd.xml | ours-strict | 2993.33 | 18.44 | 7558 |
-| ecb_usd.xml | ours-turbo | 5016.33 | 38.40 | 26382 |
-| ecb_usd.xml | stream-strict | 2752.48 | 34.18 | 12884 |
-| ecb_usd.xml | stream-turbo | 4699.35 | 22.59 | 14536 |
-| ecb_usd.xml | pugixml | 2616.72 | 33.25 | 11915 |
-| ecb_usd.xml | rapidxml | 2111.76 | 39.67 | 11473 |
-| tree.xml | ours-strict | 1209.70 | 16.89 | 83051 |
-| tree.xml | ours-turbo | 2326.47 | 17.34 | 163985 |
-| tree.xml | stream-strict | 1317.84 | 35.51 | 190254 |
-| tree.xml | stream-turbo | 2892.09 | 18.90 | 222182 |
-| tree.xml | pugixml | 1136.33 | 23.10 | 106719 |
-| tree.xml | rapidxml | 1564.97 | 25.39 | 161500 |
-| character.xml | ours-strict | 1321.06 | 16.46 | 120172 |
-| character.xml | ours-turbo | 2605.15 | 14.59 | 209978 |
-| character.xml | stream-strict | 1311.06 | 39.76 | 288033 |
-| character.xml | stream-turbo | 2558.39 | 18.75 | 264982 |
-| character.xml | pugixml | 1120.71 | 36.83 | 228041 |
-| character.xml | rapidxml | 1700.49 | 24.23 | 227661 |
-| transitions.xml | ours-turbo | 2151.95 | 17.99 | 185268 |
-| transitions.xml | stream-turbo | 2819.54 | 19.48 | 262746 |
-| transitions.xml | pugixml | 1471.84 | 21.13 | 148806 |
-| transitions.xml | rapidxml | 1833.42 | 22.99 | 201668 |
-| xgconsole.xml | ours-strict | 1649.65 | 18.77 | 42883 |
-| xgconsole.xml | ours-turbo | 3035.83 | 18.77 | 78907 |
-| xgconsole.xml | stream-strict | 1281.15 | 19.86 | 35232 |
-| xgconsole.xml | stream-turbo | 3741.27 | 18.81 | 97491 |
-| xgconsole.xml | pugixml | 1723.78 | 25.03 | 59749 |
-| xgconsole.xml | rapidxml | 2011.21 | 25.02 | 69707 |
-| weekly_utf8.xml | ours-strict | 522.71 | 20.11 | 4010 |
-| weekly_utf8.xml | ours-turbo | 3078.29 | 22.62 | 26572 |
-| weekly_utf8.xml | stream-strict | 570.60 | 17.40 | 3789 |
-| weekly_utf8.xml | stream-turbo | 3635.69 | 20.19 | 28010 |
-| weekly_utf8.xml | pugixml | 2129.02 | 23.18 | 18829 |
-| weekly_utf8.xml | rapidxml | 2210.43 | 32.63 | 27515 |
-| pugixml_large.xml | ours-strict | 1666.46 | 21.01 | 500 |
-| pugixml_large.xml | ours-turbo | 2308.05 | 15.44 | 509 |
-| pugixml_large.xml | stream-strict | 1695.42 | 38.20 | 925 |
-| pugixml_large.xml | stream-turbo | 2453.68 | 21.89 | 767 |
-| pugixml_large.xml | pugixml | 489.89 | 32.44 | 227 |
-| pugixml_large.xml | rapidxml | 314.74 | 28.70 | 129 |
-| synthetic_flat_attrs.xml | ours-strict | 889.50 | 71.42 | 280 |
-| synthetic_flat_attrs.xml | ours-turbo | 1479.37 | 42.95 | 280 |
-| synthetic_flat_attrs.xml | stream-strict | 939.38 | 67.63 | 280 |
-| synthetic_flat_attrs.xml | stream-turbo | 2484.98 | 25.57 | 280 |
-| synthetic_flat_attrs.xml | pugixml | 426.65 | 43.08 | 81 |
-| synthetic_flat_attrs.xml | rapidxml | 377.10 | 40.92 | 68 |
-| synthetic_deep_tree.xml | ours-strict | 946.44 | 21.37 | 11150 |
-| synthetic_deep_tree.xml | ours-turbo | 1415.72 | 19.70 | 15376 |
-| synthetic_deep_tree.xml | stream-strict | 908.02 | 27.92 | 13978 |
-| synthetic_deep_tree.xml | stream-turbo | 1767.55 | 21.70 | 21144 |
-| synthetic_deep_tree.xml | pugixml | 1283.53 | 36.91 | 26119 |
-| synthetic_deep_tree.xml | rapidxml | 531.37 | 34.42 | 10083 |
-| synthetic_entities.xml | ours-strict | 985.40 | 40.67 | 61 |
-| synthetic_entities.xml | ours-turbo | 4649.04 | 33.92 | 240 |
-| synthetic_entities.xml | stream-strict | 922.18 | 41.32 | 58 |
-| synthetic_entities.xml | stream-turbo | 5293.71 | 29.79 | 240 |
-| synthetic_entities.xml | pugixml | 918.55 | 39.34 | 55 |
-| synthetic_entities.xml | rapidxml | 811.71 | 42.09 | 52 |
-| synthetic_cdata_mix.xml | ours-strict | 2072.32 | 30.31 | 508 |
-| synthetic_cdata_mix.xml | ours-turbo | 2606.41 | 35.86 | 756 |
-| synthetic_cdata_mix.xml | stream-strict | 1720.52 | 39.23 | 546 |
-| synthetic_cdata_mix.xml | stream-turbo | 2478.22 | 41.90 | 840 |
-| synthetic_cdata_mix.xml | pugixml | 633.04 | 46.87 | 240 |
-| synthetic_cdata_mix.xml | rapidxml | 521.01 | 56.95 | 240 |
-| synthetic_wide_siblings.xml | ours-strict | 1181.64 | 79.61 | 260 |
-| synthetic_wide_siblings.xml | ours-turbo | 2014.12 | 46.70 | 260 |
-| synthetic_wide_siblings.xml | stream-strict | 1038.19 | 40.42 | 116 |
-| synthetic_wide_siblings.xml | stream-turbo | 2207.37 | 42.61 | 260 |
-| synthetic_wide_siblings.xml | pugixml | 420.47 | 41.30 | 48 |
-| synthetic_wide_siblings.xml | rapidxml | 318.61 | 40.88 | 36 |
-| synthetic_namespace_mix.xml | ours-strict | 1449.29 | 41.65 | 102 |
-| synthetic_namespace_mix.xml | ours-turbo | 2911.27 | 44.72 | 220 |
-| synthetic_namespace_mix.xml | stream-strict | 1412.58 | 41.89 | 100 |
-| synthetic_namespace_mix.xml | stream-turbo | 3428.15 | 37.98 | 220 |
-| synthetic_namespace_mix.xml | pugixml | 676.03 | 40.26 | 46 |
-| synthetic_namespace_mix.xml | rapidxml | 584.55 | 40.49 | 40 |
-| synthetic_long_names.xml | ours-strict | 3332.31 | 62.11 | 220 |
-| synthetic_long_names.xml | ours-turbo | 4555.74 | 45.43 | 220 |
-| synthetic_long_names.xml | stream-strict | 2773.99 | 74.61 | 220 |
-| synthetic_long_names.xml | stream-turbo | 3960.44 | 52.26 | 220 |
-| synthetic_long_names.xml | pugixml | 1276.09 | 41.28 | 56 |
-| synthetic_long_names.xml | rapidxml | 1654.48 | 41.51 | 73 |
-| synthetic_self_closing_swarm.xml | ours-strict | 1197.71 | 44.32 | 38 |
-| synthetic_self_closing_swarm.xml | ours-turbo | 2589.90 | 40.45 | 75 |
-| synthetic_self_closing_swarm.xml | stream-strict | 1268.99 | 41.83 | 38 |
-| synthetic_self_closing_swarm.xml | stream-turbo | 3259.90 | 38.14 | 89 |
-| synthetic_self_closing_swarm.xml | pugixml | 523.72 | 37.34 | 14 |
-| synthetic_self_closing_swarm.xml | rapidxml | 482.21 | 37.66 | 13 |
-| synthetic_mixed_content.xml | ours-strict | 1456.22 | 41.92 | 97 |
-| synthetic_mixed_content.xml | ours-turbo | 2445.50 | 56.62 | 220 |
-| synthetic_mixed_content.xml | stream-strict | 1344.05 | 39.80 | 85 |
-| synthetic_mixed_content.xml | stream-turbo | 2782.06 | 49.77 | 220 |
-| synthetic_mixed_content.xml | pugixml | 503.14 | 42.53 | 34 |
-| synthetic_mixed_content.xml | rapidxml | 380.64 | 42.99 | 26 |
-| synthetic_small_records.xml | ours-strict | 1567.24 | 41.03 | 54 |
-| synthetic_small_records.xml | ours-turbo | 2177.09 | 44.85 | 82 |
-| synthetic_small_records.xml | stream-strict | 1217.49 | 41.08 | 42 |
-| synthetic_small_records.xml | stream-turbo | 2148.54 | 45.44 | 82 |
-| synthetic_small_records.xml | pugixml | 426.26 | 39.11 | 14 |
-| synthetic_small_records.xml | rapidxml | 297.11 | 44.08 | 11 |
-| synthetic_tiny_empty.xml | ours-strict | 836.62 | 42.07 | 40 |
-| synthetic_tiny_empty.xml | ours-turbo | 1155.70 | 46.45 | 61 |
-| synthetic_tiny_empty.xml | stream-strict | 1281.36 | 40.52 | 59 |
-| synthetic_tiny_empty.xml | stream-turbo | 1476.90 | 43.50 | 73 |
-| synthetic_tiny_empty.xml | pugixml | 195.88 | 44.93 | 10 |
-| synthetic_tiny_empty.xml | rapidxml | 119.54 | 44.17 | 6 |
-| synthetic_tiny_text.xml | ours-strict | 815.20 | 43.57 | 37 |
-| synthetic_tiny_text.xml | ours-turbo | 926.43 | 42.49 | 41 |
-| synthetic_tiny_text.xml | stream-strict | 672.53 | 41.40 | 29 |
-| synthetic_tiny_text.xml | stream-turbo | 966.85 | 39.72 | 40 |
-| synthetic_tiny_text.xml | pugixml | 184.62 | 41.60 | 8 |
-| synthetic_tiny_text.xml | rapidxml | 119.53 | 48.19 | 6 |
-| synthetic_one_attr.xml | ours-strict | 1000.16 | 42.29 | 47 |
-| synthetic_one_attr.xml | ours-turbo | 1338.76 | 37.65 | 56 |
-| synthetic_one_attr.xml | stream-strict | 877.97 | 43.05 | 42 |
-| synthetic_one_attr.xml | stream-turbo | 1806.50 | 39.86 | 80 |
-| synthetic_one_attr.xml | pugixml | 290.18 | 43.42 | 14 |
-| synthetic_one_attr.xml | rapidxml | 197.70 | 45.52 | 10 |
-| synthetic_two_attr.xml | ours-strict | 941.82 | 43.07 | 39 |
-| synthetic_two_attr.xml | ours-turbo | 1474.26 | 40.21 | 57 |
-| synthetic_two_attr.xml | stream-strict | 950.47 | 40.49 | 37 |
-| synthetic_two_attr.xml | stream-turbo | 1769.43 | 41.14 | 70 |
-| synthetic_two_attr.xml | pugixml | 318.19 | 39.22 | 12 |
-| synthetic_two_attr.xml | rapidxml | 213.92 | 48.62 | 10 |
-| synthetic_attrs4.xml | ours-strict | 896.23 | 41.55 | 35 |
-| synthetic_attrs4.xml | ours-turbo | 1497.73 | 42.62 | 60 |
-| synthetic_attrs4.xml | stream-strict | 916.08 | 40.65 | 35 |
-| synthetic_attrs4.xml | stream-turbo | 2176.22 | 40.09 | 82 |
-| synthetic_attrs4.xml | pugixml | 319.14 | 43.34 | 13 |
-| synthetic_attrs4.xml | rapidxml | 264.44 | 44.26 | 11 |
-| synthetic_attrs8.xml | ours-strict | 900.78 | 40.01 | 33 |
-| synthetic_attrs8.xml | ours-turbo | 1636.02 | 40.72 | 61 |
-| synthetic_attrs8.xml | stream-strict | 899.99 | 40.04 | 33 |
-| synthetic_attrs8.xml | stream-turbo | 2368.59 | 38.73 | 84 |
-| synthetic_attrs8.xml | pugixml | 359.87 | 42.48 | 14 |
-| synthetic_attrs8.xml | rapidxml | 272.64 | 44.06 | 11 |
-| synthetic_attrs16.xml | ours-strict | 904.66 | 45.84 | 36 |
-| synthetic_attrs16.xml | ours-turbo | 1757.30 | 41.96 | 64 |
-| synthetic_attrs16.xml | stream-strict | 1043.17 | 44.17 | 40 |
-| synthetic_attrs16.xml | stream-turbo | 2925.72 | 59.06 | 150 |
-| synthetic_attrs16.xml | pugixml | 441.83 | 41.72 | 16 |
-| synthetic_attrs16.xml | rapidxml | 375.13 | 39.92 | 13 |
-| synthetic_attrs32.xml | ours-strict | 997.69 | 41.88 | 32 |
-| synthetic_attrs32.xml | ours-turbo | 1836.42 | 78.20 | 110 |
-| synthetic_attrs32.xml | stream-strict | 628.88 | 41.52 | 20 |
-| synthetic_attrs32.xml | stream-turbo | 3023.84 | 47.50 | 110 |
-| synthetic_attrs32.xml | pugixml | 450.58 | 43.46 | 15 |
-| synthetic_attrs32.xml | rapidxml | 399.51 | 42.48 | 13 |
-| synthetic_attrs48.xml | ours-strict | 1035.45 | 39.77 | 30 |
-| synthetic_attrs48.xml | ours-turbo | 1901.56 | 64.97 | 90 |
-| synthetic_attrs48.xml | stream-strict | 691.67 | 37.71 | 19 |
-| synthetic_attrs48.xml | stream-turbo | 3118.34 | 39.62 | 90 |
-| synthetic_attrs48.xml | pugixml | 472.64 | 43.57 | 15 |
-| synthetic_attrs48.xml | rapidxml | 414.51 | 29.81 | 9 |
-| synthetic_attrs64.xml | ours-strict | 1110.67 | 41.60 | 33 |
-| synthetic_attrs64.xml | ours-turbo | 2022.83 | 48.45 | 70 |
-| synthetic_attrs64.xml | stream-strict | 697.61 | 40.14 | 20 |
-| synthetic_attrs64.xml | stream-turbo | 3146.95 | 31.14 | 70 |
-| synthetic_attrs64.xml | pugixml | 533.20 | 39.39 | 15 |
-| synthetic_attrs64.xml | rapidxml | 454.10 | 40.08 | 13 |
-| synthetic_attrs96.xml | ours-strict | 1142.19 | 67.38 | 55 |
-| synthetic_attrs96.xml | ours-turbo | 2108.82 | 36.49 | 55 |
-| synthetic_attrs96.xml | stream-strict | 528.91 | 42.33 | 16 |
-| synthetic_attrs96.xml | stream-turbo | 3261.21 | 23.60 | 55 |
-| synthetic_attrs96.xml | pugixml | 546.26 | 40.98 | 16 |
-| synthetic_attrs96.xml | rapidxml | 468.23 | 38.85 | 13 |
-| synthetic_attrs128.xml | ours-strict | 1123.86 | 59.66 | 45 |
-| synthetic_attrs128.xml | ours-turbo | 2176.24 | 30.81 | 45 |
-| synthetic_attrs128.xml | stream-strict | 558.02 | 40.05 | 15 |
-| synthetic_attrs128.xml | stream-turbo | 3283.83 | 20.42 | 45 |
-| synthetic_attrs128.xml | pugixml | 556.15 | 40.19 | 15 |
-| synthetic_attrs128.xml | rapidxml | 482.82 | 40.12 | 13 |
-| synthetic_long_attr_values.xml | ours-strict | 3515.36 | 61.04 | 180 |
-| synthetic_long_attr_values.xml | ours-turbo | 5246.61 | 40.90 | 180 |
-| synthetic_long_attr_values.xml | stream-strict | 3357.94 | 63.90 | 180 |
-| synthetic_long_attr_values.xml | stream-turbo | 5604.79 | 38.28 | 180 |
-| synthetic_long_attr_values.xml | pugixml | 1407.37 | 41.50 | 49 |
-| synthetic_long_attr_values.xml | rapidxml | 1393.98 | 41.90 | 49 |
-| synthetic_single_quotes.xml | ours-strict | 1132.71 | 38.27 | 43 |
-| synthetic_single_quotes.xml | ours-turbo | 2000.94 | 42.32 | 84 |
-| synthetic_single_quotes.xml | stream-strict | 1072.67 | 44.17 | 47 |
-| synthetic_single_quotes.xml | stream-turbo | 2709.92 | 40.92 | 110 |
-| synthetic_single_quotes.xml | pugixml | 493.71 | 42.88 | 21 |
-| synthetic_single_quotes.xml | rapidxml | 405.23 | 42.29 | 17 |
-| synthetic_unicode_names.xml | ours-strict | 450.28 | 38.31 | 14 |
-| synthetic_unicode_names.xml | ours-turbo | 2844.57 | 38.11 | 88 |
-| synthetic_unicode_names.xml | stream-strict | 436.53 | 42.33 | 15 |
-| synthetic_unicode_names.xml | stream-turbo | 3438.47 | 64.49 | 180 |
-| synthetic_unicode_names.xml | pugixml | 625.66 | 39.38 | 20 |
-| synthetic_unicode_names.xml | rapidxml | 490.49 | 42.70 | 17 |
-| synthetic_pretty_indented.xml | ours-strict | 1367.28 | 40.91 | 59 |
-| synthetic_pretty_indented.xml | ours-turbo | 2341.92 | 39.27 | 97 |
-| synthetic_pretty_indented.xml | stream-strict | 1132.57 | 42.69 | 51 |
-| synthetic_pretty_indented.xml | stream-turbo | 2352.76 | 80.59 | 200 |
-| synthetic_pretty_indented.xml | pugixml | 492.00 | 42.39 | 22 |
-| synthetic_pretty_indented.xml | rapidxml | 386.29 | 44.17 | 18 |
-| synthetic_crlf_pretty.xml | ours-strict | 1220.50 | 40.12 | 60 |
-| synthetic_crlf_pretty.xml | ours-turbo | 2124.37 | 38.03 | 99 |
-| synthetic_crlf_pretty.xml | stream-strict | 1237.14 | 38.92 | 59 |
-| synthetic_crlf_pretty.xml | stream-turbo | 2750.07 | 59.34 | 200 |
-| synthetic_crlf_pretty.xml | pugixml | 515.37 | 30.08 | 19 |
-| synthetic_crlf_pretty.xml | rapidxml | 391.01 | 41.74 | 20 |
-| synthetic_token_whitespace_mix.xml | ours-strict | 889.25 | 39.53 | 42 |
-| synthetic_token_whitespace_mix.xml | ours-turbo | 1437.48 | 41.34 | 71 |
-| synthetic_token_whitespace_mix.xml | stream-strict | 903.83 | 40.75 | 44 |
-| synthetic_token_whitespace_mix.xml | stream-turbo | 1523.55 | 40.65 | 74 |
-| synthetic_token_whitespace_mix.xml | pugixml | 441.50 | 43.60 | 23 |
-| synthetic_token_whitespace_mix.xml | rapidxml | 367.15 | 43.31 | 19 |
-| synthetic_attr_count_mix.xml | ours-strict | 940.04 | 40.67 | 9 |
-| synthetic_attr_count_mix.xml | ours-turbo | 1790.51 | 40.33 | 17 |
-| synthetic_attr_count_mix.xml | stream-strict | 914.74 | 46.44 | 10 |
-| synthetic_attr_count_mix.xml | stream-turbo | 2605.58 | 40.76 | 25 |
-| synthetic_attr_count_mix.xml | pugixml | 371.13 | 45.78 | 4 |
-| synthetic_attr_count_mix.xml | rapidxml | 313.85 | 40.61 | 3 |
+| note.xml | ours-strict | 1243.73 | 23.41 | 177523 |
+| note.xml | ours-turbo | 1686.11 | 26.91 | 276626 |
+| note.xml | stream-strict | 555.53 | 36.78 | 124601 |
+| note.xml | stream-turbo | 1311.73 | 32.01 | 256055 |
+| note.xml | pugixml | 494.33 | 40.69 | 122645 |
+| note.xml | rapidxml | 1047.10 | 34.23 | 218536 |
+| sitemaps.xml | ours-strict | 1200.96 | 41.81 | 5824 |
+| sitemaps.xml | ours-turbo | 1838.85 | 42.09 | 8977 |
+| sitemaps.xml | stream-strict | 703.19 | 60.08 | 4900 |
+| sitemaps.xml | stream-turbo | 1466.80 | 29.69 | 5051 |
+| sitemaps.xml | pugixml | 1051.67 | 21.70 | 2647 |
+| sitemaps.xml | rapidxml | 934.81 | 66.08 | 7165 |
+| plant_catalog.xml | ours-strict | 1102.87 | 41.80 | 5964 |
+| plant_catalog.xml | ours-turbo | 1470.19 | 43.14 | 8205 |
+| plant_catalog.xml | stream-strict | 693.02 | 40.45 | 3627 |
+| plant_catalog.xml | stream-turbo | 1294.66 | 39.36 | 6593 |
+| plant_catalog.xml | pugixml | 849.08 | 38.81 | 4264 |
+| plant_catalog.xml | rapidxml | 887.11 | 42.49 | 4877 |
+| cd_catalog.xml | ours-strict | 1291.05 | 31.47 | 8350 |
+| cd_catalog.xml | ours-turbo | 2437.88 | 22.69 | 11370 |
+| cd_catalog.xml | stream-strict | 994.94 | 47.21 | 9652 |
+| cd_catalog.xml | stream-turbo | 2049.67 | 18.17 | 7652 |
+| cd_catalog.xml | pugixml | 1146.65 | 42.14 | 9930 |
+| cd_catalog.xml | rapidxml | 1049.53 | 28.75 | 6200 |
+| hnrss.xml | ours-strict | 5674.19 | 20.61 | 6327 |
+| hnrss.xml | ours-turbo | 6289.14 | 24.43 | 8313 |
+| hnrss.xml | stream-strict | 1870.51 | 74.83 | 7574 |
+| hnrss.xml | stream-turbo | 5960.54 | 47.57 | 15341 |
+| hnrss.xml | pugixml | 2070.08 | 27.22 | 3049 |
+| hnrss.xml | rapidxml | 1921.18 | 26.67 | 2772 |
+| xkcd_rss.xml | ours-strict | 3561.08 | 30.81 | 44504 |
+| xkcd_rss.xml | ours-turbo | 4240.64 | 69.69 | 119898 |
+| xkcd_rss.xml | stream-strict | 2541.37 | 41.23 | 42508 |
+| xkcd_rss.xml | stream-turbo | 5433.81 | 21.30 | 46943 |
+| xkcd_rss.xml | pugixml | 1656.36 | 30.43 | 20445 |
+| xkcd_rss.xml | rapidxml | 1822.67 | 46.46 | 34357 |
+| bbc_world.xml | ours-strict | 2219.58 | 37.85 | 3629 |
+| bbc_world.xml | ours-turbo | 2938.79 | 36.91 | 4685 |
+| bbc_world.xml | stream-strict | 1906.21 | 16.40 | 1350 |
+| bbc_world.xml | stream-turbo | 2140.71 | 44.79 | 4142 |
+| bbc_world.xml | pugixml | 1334.61 | 36.78 | 2120 |
+| bbc_world.xml | rapidxml | 1436.93 | 30.77 | 1910 |
+| arxiv_cs.xml | ours-strict | 7170.69 | 54.31 | 180 |
+| arxiv_cs.xml | ours-turbo | 8732.06 | 44.60 | 180 |
+| arxiv_cs.xml | stream-strict | 2801.15 | 53.30 | 69 |
+| arxiv_cs.xml | stream-turbo | 8118.85 | 47.97 | 180 |
+| arxiv_cs.xml | pugixml | 2350.92 | 36.81 | 40 |
+| arxiv_cs.xml | rapidxml | 1473.89 | 46.98 | 32 |
+| ecb_usd.xml | ours-strict | 4007.11 | 25.93 | 14227 |
+| ecb_usd.xml | ours-turbo | 6121.18 | 23.73 | 19893 |
+| ecb_usd.xml | stream-strict | 2588.37 | 18.88 | 6693 |
+| ecb_usd.xml | stream-turbo | 4155.32 | 23.25 | 13228 |
+| ecb_usd.xml | pugixml | 2610.04 | 23.61 | 8440 |
+| ecb_usd.xml | rapidxml | 2589.26 | 25.69 | 9110 |
+| tree.xml | ours-strict | 2356.14 | 18.39 | 176144 |
+| tree.xml | ours-turbo | 2919.67 | 15.30 | 181633 |
+| tree.xml | stream-strict | 1285.06 | 20.42 | 106659 |
+| tree.xml | stream-turbo | 2546.84 | 37.28 | 385915 |
+| tree.xml | pugixml | 1253.41 | 22.60 | 115154 |
+| tree.xml | rapidxml | 1828.42 | 23.65 | 175812 |
+| character.xml | ours-strict | 2775.16 | 16.34 | 250543 |
+| character.xml | ours-turbo | 3631.57 | 17.25 | 346079 |
+| character.xml | stream-strict | 1172.10 | 22.11 | 143188 |
+| character.xml | stream-turbo | 2630.01 | 19.55 | 284076 |
+| character.xml | pugixml | 1092.17 | 20.23 | 122091 |
+| character.xml | rapidxml | 2035.39 | 21.66 | 243537 |
+| transitions.xml | ours-turbo | 3484.99 | 17.88 | 298140 |
+| transitions.xml | stream-turbo | 2848.85 | 17.77 | 242154 |
+| transitions.xml | pugixml | 1242.86 | 23.65 | 140611 |
+| transitions.xml | rapidxml | 2144.24 | 37.53 | 385086 |
+| xgconsole.xml | ours-strict | 4262.09 | 38.76 | 228813 |
+| xgconsole.xml | ours-turbo | 5409.40 | 21.69 | 162499 |
+| xgconsole.xml | stream-strict | 1166.76 | 21.35 | 34496 |
+| xgconsole.xml | stream-turbo | 3001.26 | 21.90 | 91016 |
+| xgconsole.xml | pugixml | 1871.76 | 22.25 | 57683 |
+| xgconsole.xml | rapidxml | 2313.24 | 25.57 | 81930 |
+| weekly_utf8.xml | ours-strict | 3021.09 | 21.24 | 24478 |
+| weekly_utf8.xml | ours-turbo | 4193.75 | 21.40 | 34236 |
+| weekly_utf8.xml | stream-strict | 551.90 | 19.14 | 4030 |
+| weekly_utf8.xml | stream-turbo | 3067.86 | 39.78 | 46557 |
+| weekly_utf8.xml | pugixml | 2051.42 | 38.38 | 30040 |
+| weekly_utf8.xml | rapidxml | 2381.51 | 25.33 | 23019 |
+| pugixml_large.xml | ours-strict | 1752.98 | 41.14 | 1030 |
+| pugixml_large.xml | ours-turbo | 3210.80 | 22.20 | 1018 |
+| pugixml_large.xml | stream-strict | 1617.14 | 42.08 | 972 |
+| pugixml_large.xml | stream-turbo | 2476.28 | 21.69 | 767 |
+| pugixml_large.xml | pugixml | 426.96 | 29.52 | 180 |
+| pugixml_large.xml | rapidxml | 313.76 | 31.46 | 141 |
+| synthetic_flat_attrs.xml | ours-strict | 4926.59 | 43.62 | 947 |
+| synthetic_flat_attrs.xml | ours-turbo | 5643.61 | 29.11 | 724 |
+| synthetic_flat_attrs.xml | stream-strict | 993.77 | 63.93 | 280 |
+| synthetic_flat_attrs.xml | stream-turbo | 2606.42 | 24.38 | 280 |
+| synthetic_flat_attrs.xml | pugixml | 486.24 | 40.60 | 87 |
+| synthetic_flat_attrs.xml | rapidxml | 373.81 | 40.06 | 66 |
+| synthetic_deep_tree.xml | ours-strict | 1436.70 | 21.81 | 17274 |
+| synthetic_deep_tree.xml | ours-turbo | 2078.30 | 24.37 | 27919 |
+| synthetic_deep_tree.xml | stream-strict | 927.95 | 20.69 | 10583 |
+| synthetic_deep_tree.xml | stream-turbo | 1757.40 | 21.98 | 21290 |
+| synthetic_deep_tree.xml | pugixml | 1242.41 | 40.43 | 27694 |
+| synthetic_deep_tree.xml | rapidxml | 777.01 | 36.47 | 15620 |
+| synthetic_entities.xml | ours-strict | 4494.52 | 35.08 | 240 |
+| synthetic_entities.xml | ours-turbo | 4468.79 | 35.29 | 240 |
+| synthetic_entities.xml | stream-strict | 781.11 | 40.37 | 48 |
+| synthetic_entities.xml | stream-turbo | 4648.55 | 33.92 | 240 |
+| synthetic_entities.xml | pugixml | 907.44 | 39.10 | 54 |
+| synthetic_entities.xml | rapidxml | 870.97 | 40.73 | 54 |
+| synthetic_cdata_mix.xml | ours-strict | 2550.98 | 30.39 | 627 |
+| synthetic_cdata_mix.xml | ours-turbo | 2717.29 | 41.81 | 919 |
+| synthetic_cdata_mix.xml | stream-strict | 1538.11 | 19.29 | 240 |
+| synthetic_cdata_mix.xml | stream-turbo | 2199.95 | 37.76 | 672 |
+| synthetic_cdata_mix.xml | pugixml | 677.45 | 43.80 | 240 |
+| synthetic_cdata_mix.xml | rapidxml | 513.87 | 57.74 | 240 |
+| synthetic_wide_siblings.xml | ours-strict | 2103.69 | 44.71 | 260 |
+| synthetic_wide_siblings.xml | ours-turbo | 2739.32 | 34.34 | 260 |
+| synthetic_wide_siblings.xml | stream-strict | 983.16 | 41.22 | 112 |
+| synthetic_wide_siblings.xml | stream-turbo | 2062.52 | 45.61 | 260 |
+| synthetic_wide_siblings.xml | pugixml | 442.36 | 40.08 | 49 |
+| synthetic_wide_siblings.xml | rapidxml | 341.92 | 35.98 | 34 |
+| synthetic_namespace_mix.xml | ours-strict | 3193.36 | 40.77 | 220 |
+| synthetic_namespace_mix.xml | ours-turbo | 3890.10 | 33.47 | 220 |
+| synthetic_namespace_mix.xml | stream-strict | 1460.91 | 42.53 | 105 |
+| synthetic_namespace_mix.xml | stream-turbo | 3037.16 | 42.86 | 220 |
+| synthetic_namespace_mix.xml | pugixml | 649.88 | 28.23 | 31 |
+| synthetic_namespace_mix.xml | rapidxml | 573.16 | 29.94 | 29 |
+| synthetic_long_names.xml | ours-strict | 5577.67 | 37.11 | 220 |
+| synthetic_long_names.xml | ours-turbo | 5679.88 | 36.44 | 220 |
+| synthetic_long_names.xml | stream-strict | 2399.59 | 86.25 | 220 |
+| synthetic_long_names.xml | stream-turbo | 3631.39 | 56.99 | 220 |
+| synthetic_long_names.xml | pugixml | 1271.73 | 45.12 | 61 |
+| synthetic_long_names.xml | rapidxml | 1545.93 | 44.42 | 73 |
+| synthetic_self_closing_swarm.xml | ours-strict | 2831.61 | 39.96 | 81 |
+| synthetic_self_closing_swarm.xml | ours-turbo | 3253.94 | 39.92 | 93 |
+| synthetic_self_closing_swarm.xml | stream-strict | 1207.28 | 40.50 | 35 |
+| synthetic_self_closing_swarm.xml | stream-turbo | 3001.55 | 42.82 | 92 |
+| synthetic_self_closing_swarm.xml | pugixml | 516.23 | 40.59 | 15 |
+| synthetic_self_closing_swarm.xml | rapidxml | 404.11 | 48.39 | 14 |
+| synthetic_mixed_content.xml | ours-strict | 1627.00 | 85.10 | 220 |
+| synthetic_mixed_content.xml | ours-turbo | 1938.63 | 71.42 | 220 |
+| synthetic_mixed_content.xml | stream-strict | 1040.67 | 48.38 | 80 |
+| synthetic_mixed_content.xml | stream-turbo | 2064.47 | 67.07 | 220 |
+| synthetic_mixed_content.xml | pugixml | 301.20 | 68.96 | 33 |
+| synthetic_mixed_content.xml | rapidxml | 258.64 | 60.84 | 25 |
+| synthetic_small_records.xml | ours-strict | 2101.89 | 34.56 | 61 |
+| synthetic_small_records.xml | ours-turbo | 2964.85 | 80.32 | 200 |
+| synthetic_small_records.xml | stream-strict | 1000.36 | 46.42 | 39 |
+| synthetic_small_records.xml | stream-turbo | 1894.94 | 50.90 | 81 |
+| synthetic_small_records.xml | pugixml | 347.92 | 44.49 | 13 |
+| synthetic_small_records.xml | rapidxml | 292.87 | 40.66 | 10 |
+| synthetic_tiny_empty.xml | ours-strict | 1667.15 | 39.06 | 74 |
+| synthetic_tiny_empty.xml | ours-turbo | 1991.25 | 40.66 | 92 |
+| synthetic_tiny_empty.xml | stream-strict | 1178.29 | 39.58 | 53 |
+| synthetic_tiny_empty.xml | stream-turbo | 1550.31 | 39.73 | 70 |
+| synthetic_tiny_empty.xml | pugixml | 197.62 | 40.08 | 9 |
+| synthetic_tiny_empty.xml | rapidxml | 120.05 | 43.98 | 6 |
+| synthetic_tiny_text.xml | ours-strict | 1144.24 | 45.31 | 54 |
+| synthetic_tiny_text.xml | ours-turbo | 1330.79 | 52.66 | 73 |
+| synthetic_tiny_text.xml | stream-strict | 531.98 | 50.53 | 28 |
+| synthetic_tiny_text.xml | stream-turbo | 1128.06 | 48.51 | 57 |
+| synthetic_tiny_text.xml | pugixml | 133.14 | 43.26 | 6 |
+| synthetic_tiny_text.xml | rapidxml | 105.95 | 36.24 | 4 |
+| synthetic_one_attr.xml | ours-strict | 1925.48 | 33.19 | 71 |
+| synthetic_one_attr.xml | ours-turbo | 1971.52 | 52.50 | 115 |
+| synthetic_one_attr.xml | stream-strict | 814.04 | 42.01 | 38 |
+| synthetic_one_attr.xml | stream-turbo | 1614.90 | 25.64 | 46 |
+| synthetic_one_attr.xml | pugixml | 173.23 | 57.15 | 11 |
+| synthetic_one_attr.xml | rapidxml | 144.26 | 49.91 | 8 |
+| synthetic_two_attr.xml | ours-strict | 1317.61 | 80.51 | 102 |
+| synthetic_two_attr.xml | ours-turbo | 2473.70 | 48.35 | 115 |
+| synthetic_two_attr.xml | stream-strict | 799.80 | 48.11 | 37 |
+| synthetic_two_attr.xml | stream-turbo | 1413.15 | 47.10 | 64 |
+| synthetic_two_attr.xml | pugixml | 246.92 | 46.33 | 11 |
+| synthetic_two_attr.xml | rapidxml | 117.25 | 70.96 | 8 |
+| synthetic_attrs4.xml | ours-strict | 2861.94 | 41.64 | 112 |
+| synthetic_attrs4.xml | ours-turbo | 3048.38 | 83.77 | 240 |
+| synthetic_attrs4.xml | stream-strict | 674.62 | 52.05 | 33 |
+| synthetic_attrs4.xml | stream-turbo | 1773.62 | 41.99 | 70 |
+| synthetic_attrs4.xml | pugixml | 225.65 | 51.87 | 11 |
+| synthetic_attrs4.xml | rapidxml | 182.75 | 34.93 | 6 |
+| synthetic_attrs8.xml | ours-strict | 1868.62 | 116.88 | 200 |
+| synthetic_attrs8.xml | ours-turbo | 1906.76 | 114.54 | 200 |
+| synthetic_attrs8.xml | stream-strict | 448.43 | 70.62 | 29 |
+| synthetic_attrs8.xml | stream-turbo | 1076.50 | 76.08 | 75 |
+| synthetic_attrs8.xml | pugixml | 156.49 | 48.85 | 7 |
+| synthetic_attrs8.xml | rapidxml | 135.58 | 48.33 | 6 |
+| synthetic_single_quotes.xml | ours-strict | 1636.32 | 43.12 | 70 |
+| synthetic_single_quotes.xml | ours-turbo | 2231.88 | 37.94 | 84 |
+| synthetic_single_quotes.xml | stream-strict | 491.94 | 49.18 | 24 |
+| synthetic_single_quotes.xml | stream-turbo | 1295.20 | 44.36 | 57 |
+| synthetic_single_quotes.xml | pugixml | 224.86 | 44.83 | 10 |
+| synthetic_single_quotes.xml | rapidxml | 180.25 | 44.74 | 8 |
+| synthetic_unicode_names.xml | ours-strict | 1250.93 | 46.29 | 47 |
+| synthetic_unicode_names.xml | ours-turbo | 1577.46 | 53.11 | 68 |
+| synthetic_unicode_names.xml | stream-strict | 204.92 | 42.09 | 7 |
+| synthetic_unicode_names.xml | stream-turbo | 1244.94 | 47.50 | 48 |
+| synthetic_unicode_names.xml | pugixml | 258.03 | 47.75 | 10 |
+| synthetic_unicode_names.xml | rapidxml | 232.70 | 47.65 | 9 |
+| synthetic_pretty_indented.xml | ours-strict | 946.82 | 40.05 | 40 |
+| synthetic_pretty_indented.xml | ours-turbo | 1255.82 | 50.58 | 67 |
+| synthetic_pretty_indented.xml | stream-strict | 518.18 | 45.74 | 25 |
+| synthetic_pretty_indented.xml | stream-turbo | 951.78 | 42.83 | 43 |
+| synthetic_pretty_indented.xml | pugixml | 211.66 | 44.79 | 10 |
+| synthetic_pretty_indented.xml | rapidxml | 192.93 | 44.22 | 9 |
+| synthetic_crlf_pretty.xml | ours-strict | 1096.45 | 38.70 | 52 |
+| synthetic_crlf_pretty.xml | ours-turbo | 1071.17 | 44.95 | 59 |
+| synthetic_crlf_pretty.xml | stream-strict | 558.77 | 40.89 | 28 |
+| synthetic_crlf_pretty.xml | stream-turbo | 1218.60 | 35.49 | 53 |
+| synthetic_crlf_pretty.xml | pugixml | 228.09 | 42.93 | 12 |
+| synthetic_crlf_pretty.xml | rapidxml | 194.51 | 41.95 | 10 |
+| synthetic_token_whitespace_mix.xml | ours-strict | 1494.35 | 35.29 | 63 |
+| synthetic_token_whitespace_mix.xml | ours-turbo | 1823.80 | 44.06 | 96 |
+| synthetic_token_whitespace_mix.xml | stream-strict | 488.62 | 42.83 | 25 |
+| synthetic_token_whitespace_mix.xml | stream-turbo | 787.23 | 40.40 | 38 |
+| synthetic_token_whitespace_mix.xml | pugixml | 204.52 | 36.83 | 9 |
+| synthetic_token_whitespace_mix.xml | rapidxml | 179.51 | 37.30 | 8 |
+| synthetic_attr_count_mix.xml | ours-strict | 2715.20 | 29.73 | 19 |
+| synthetic_attr_count_mix.xml | ours-turbo | 2963.30 | 38.71 | 27 |
+| synthetic_attr_count_mix.xml | stream-strict | 461.32 | 46.04 | 5 |
+| synthetic_attr_count_mix.xml | stream-turbo | 1227.28 | 34.61 | 10 |
+| synthetic_attr_count_mix.xml | pugixml | 170.13 | 49.94 | 2 |
+| synthetic_attr_count_mix.xml | rapidxml | 155.03 | 54.80 | 2 |
 
 ## Stable Gates
 
 | Fixture | ours-turbo | pugixml | rapidxml | best external | ours/best-ext | Result |
 |---|---:|---:|---:|---|---:|---|
-| note.xml | 2976.49 | 922.59 | 1418.02 | rapidxml 1418.02 | 2.099 | PASS |
-| sitemaps.xml | 3683.65 | 2054.27 | 1779.22 | pugixml 2054.27 | 1.793 | PASS |
-| plant_catalog.xml | 3038.54 | 1309.14 | 1374.32 | rapidxml 1374.32 | 2.211 | PASS |
-| cd_catalog.xml | 2805.45 | 1477.88 | 1427.99 | pugixml 1477.88 | 1.898 | PASS |
-| hnrss.xml | 8011.36 | 2676.20 | 2473.02 | pugixml 2676.20 | 2.994 | PASS |
-| xkcd_rss.xml | 8394.76 | 2464.46 | 2057.80 | pugixml 2464.46 | 3.406 | PASS |
-| bbc_world.xml | 4938.07 | 2693.20 | 2228.70 | pugixml 2693.20 | 1.834 | PASS |
-| arxiv_cs.xml | 9727.18 | 2312.68 | 1653.52 | pugixml 2312.68 | 4.206 | PASS |
-| ecb_usd.xml | 5016.33 | 2616.72 | 2111.76 | pugixml 2616.72 | 1.917 | PASS |
-| tree.xml | 2326.47 | 1136.33 | 1564.97 | rapidxml 1564.97 | 1.487 | PASS |
-| character.xml | 2605.15 | 1120.71 | 1700.49 | rapidxml 1700.49 | 1.532 | PASS |
-| transitions.xml | 2151.95 | 1471.84 | 1833.42 | rapidxml 1833.42 | 1.174 | PASS |
-| xgconsole.xml | 3035.83 | 1723.78 | 2011.21 | rapidxml 2011.21 | 1.509 | PASS |
-| weekly_utf8.xml | 3078.29 | 2129.02 | 2210.43 | rapidxml 2210.43 | 1.393 | PASS |
-| pugixml_large.xml | 2308.05 | 489.89 | 314.74 | pugixml 489.89 | 4.711 | PASS |
-| synthetic_flat_attrs.xml | 1479.37 | 426.65 | 377.10 | pugixml 426.65 | 3.467 | PASS |
-| synthetic_deep_tree.xml | 1415.72 | 1283.53 | 531.37 | pugixml 1283.53 | 1.103 | PASS |
-| synthetic_entities.xml | 4649.04 | 918.55 | 811.71 | pugixml 918.55 | 5.061 | PASS |
-| synthetic_cdata_mix.xml | 2606.41 | 633.04 | 521.01 | pugixml 633.04 | 4.117 | PASS |
-| synthetic_wide_siblings.xml | 2014.12 | 420.47 | 318.61 | pugixml 420.47 | 4.790 | PASS |
-| synthetic_namespace_mix.xml | 2911.27 | 676.03 | 584.55 | pugixml 676.03 | 4.306 | PASS |
-| synthetic_long_names.xml | 4555.74 | 1276.09 | 1654.48 | rapidxml 1654.48 | 2.754 | PASS |
-| synthetic_self_closing_swarm.xml | 2589.90 | 523.72 | 482.21 | pugixml 523.72 | 4.945 | PASS |
-| synthetic_mixed_content.xml | 2445.50 | 503.14 | 380.64 | pugixml 503.14 | 4.860 | PASS |
-| synthetic_small_records.xml | 2177.09 | 426.26 | 297.11 | pugixml 426.26 | 5.107 | PASS |
-| synthetic_tiny_empty.xml | 1155.70 | 195.88 | 119.54 | pugixml 195.88 | 5.900 | PASS |
-| synthetic_tiny_text.xml | 926.43 | 184.62 | 119.53 | pugixml 184.62 | 5.018 | PASS |
-| synthetic_one_attr.xml | 1338.76 | 290.18 | 197.70 | pugixml 290.18 | 4.613 | PASS |
-| synthetic_two_attr.xml | 1474.26 | 318.19 | 213.92 | pugixml 318.19 | 4.633 | PASS |
-| synthetic_attrs4.xml | 1497.73 | 319.14 | 264.44 | pugixml 319.14 | 4.693 | PASS |
-| synthetic_attrs8.xml | 1636.02 | 359.87 | 272.64 | pugixml 359.87 | 4.546 | PASS |
-| synthetic_attrs16.xml | 1757.30 | 441.83 | 375.13 | pugixml 441.83 | 3.977 | PASS |
-| synthetic_attrs32.xml | 1836.42 | 450.58 | 399.51 | pugixml 450.58 | 4.076 | PASS |
-| synthetic_attrs48.xml | 1901.56 | 472.64 | 414.51 | pugixml 472.64 | 4.023 | PASS |
-| synthetic_attrs64.xml | 2022.83 | 533.20 | 454.10 | pugixml 533.20 | 3.794 | PASS |
-| synthetic_attrs96.xml | 2108.82 | 546.26 | 468.23 | pugixml 546.26 | 3.860 | PASS |
-| synthetic_attrs128.xml | 2176.24 | 556.15 | 482.82 | pugixml 556.15 | 3.913 | PASS |
-| synthetic_long_attr_values.xml | 5246.61 | 1407.37 | 1393.98 | pugixml 1407.37 | 3.728 | PASS |
-| synthetic_single_quotes.xml | 2000.94 | 493.71 | 405.23 | pugixml 493.71 | 4.053 | PASS |
-| synthetic_unicode_names.xml | 2844.57 | 625.66 | 490.49 | pugixml 625.66 | 4.547 | PASS |
-| synthetic_pretty_indented.xml | 2341.92 | 492.00 | 386.29 | pugixml 492.00 | 4.760 | PASS |
-| synthetic_crlf_pretty.xml | 2124.37 | 515.37 | 391.01 | pugixml 515.37 | 4.122 | PASS |
-| synthetic_token_whitespace_mix.xml | 1437.48 | 441.50 | 367.15 | pugixml 441.50 | 3.256 | PASS |
-| synthetic_attr_count_mix.xml | 1790.51 | 371.13 | 313.85 | pugixml 371.13 | 4.824 | PASS |
+| note.xml | 1686.11 | 494.33 | 1047.10 | rapidxml 1047.10 | 1.610 | PASS |
+| sitemaps.xml | 1838.85 | 1051.67 | 934.81 | pugixml 1051.67 | 1.748 | PASS |
+| plant_catalog.xml | 1470.19 | 849.08 | 887.11 | rapidxml 887.11 | 1.657 | PASS |
+| cd_catalog.xml | 2437.88 | 1146.65 | 1049.53 | pugixml 1146.65 | 2.126 | PASS |
+| hnrss.xml | 6289.14 | 2070.08 | 1921.18 | pugixml 2070.08 | 3.038 | PASS |
+| xkcd_rss.xml | 4240.64 | 1656.36 | 1822.67 | rapidxml 1822.67 | 2.327 | PASS |
+| bbc_world.xml | 2938.79 | 1334.61 | 1436.93 | rapidxml 1436.93 | 2.045 | PASS |
+| arxiv_cs.xml | 8732.06 | 2350.92 | 1473.89 | pugixml 2350.92 | 3.714 | PASS |
+| ecb_usd.xml | 6121.18 | 2610.04 | 2589.26 | pugixml 2610.04 | 2.345 | PASS |
+| tree.xml | 2919.67 | 1253.41 | 1828.42 | rapidxml 1828.42 | 1.597 | PASS |
+| character.xml | 3631.57 | 1092.17 | 2035.39 | rapidxml 2035.39 | 1.784 | PASS |
+| transitions.xml | 3484.99 | 1242.86 | 2144.24 | rapidxml 2144.24 | 1.625 | PASS |
+| xgconsole.xml | 5409.40 | 1871.76 | 2313.24 | rapidxml 2313.24 | 2.338 | PASS |
+| weekly_utf8.xml | 4193.75 | 2051.42 | 2381.51 | rapidxml 2381.51 | 1.761 | PASS |
+| pugixml_large.xml | 3210.80 | 426.96 | 313.76 | pugixml 426.96 | 7.520 | PASS |
+| synthetic_flat_attrs.xml | 5643.61 | 486.24 | 373.81 | pugixml 486.24 | 11.607 | PASS |
+| synthetic_deep_tree.xml | 2078.30 | 1242.41 | 777.01 | pugixml 1242.41 | 1.673 | PASS |
+| synthetic_entities.xml | 4468.79 | 907.44 | 870.97 | pugixml 907.44 | 4.925 | PASS |
+| synthetic_cdata_mix.xml | 2717.29 | 677.45 | 513.87 | pugixml 677.45 | 4.011 | PASS |
+| synthetic_wide_siblings.xml | 2739.32 | 442.36 | 341.92 | pugixml 442.36 | 6.193 | PASS |
+| synthetic_namespace_mix.xml | 3890.10 | 649.88 | 573.16 | pugixml 649.88 | 5.986 | PASS |
+| synthetic_long_names.xml | 5679.88 | 1271.73 | 1545.93 | rapidxml 1545.93 | 3.674 | PASS |
+| synthetic_self_closing_swarm.xml | 3253.94 | 516.23 | 404.11 | pugixml 516.23 | 6.303 | PASS |
+| synthetic_mixed_content.xml | 1938.63 | 301.20 | 258.64 | pugixml 301.20 | 6.436 | PASS |
+| synthetic_small_records.xml | 2964.85 | 347.92 | 292.87 | pugixml 347.92 | 8.522 | PASS |
+| synthetic_tiny_empty.xml | 1991.25 | 197.62 | 120.05 | pugixml 197.62 | 10.076 | PASS |
+| synthetic_tiny_text.xml | 1330.79 | 133.14 | 105.95 | pugixml 133.14 | 9.995 | PASS |
+| synthetic_one_attr.xml | 1971.52 | 173.23 | 144.26 | pugixml 173.23 | 11.381 | PASS |
+| synthetic_two_attr.xml | 2473.70 | 246.92 | 117.25 | pugixml 246.92 | 10.018 | PASS |
+| synthetic_attrs4.xml | 3048.38 | 225.65 | 182.75 | pugixml 225.65 | 13.510 | PASS |
+| synthetic_attrs8.xml | 1906.76 | 156.49 | 135.58 | pugixml 156.49 | 12.184 | PASS |
+| synthetic_single_quotes.xml | 2231.88 | 224.86 | 180.25 | pugixml 224.86 | 9.926 | PASS |
+| synthetic_unicode_names.xml | 1577.46 | 258.03 | 232.70 | pugixml 258.03 | 6.114 | PASS |
+| synthetic_pretty_indented.xml | 1255.82 | 211.66 | 192.93 | pugixml 211.66 | 5.933 | PASS |
+| synthetic_crlf_pretty.xml | 1071.17 | 228.09 | 194.51 | pugixml 228.09 | 4.696 | PASS |
+| synthetic_token_whitespace_mix.xml | 1823.80 | 204.52 | 179.51 | pugixml 204.52 | 8.917 | PASS |
+| synthetic_attr_count_mix.xml | 2963.30 | 170.13 | 155.03 | pugixml 170.13 | 17.418 | PASS |
 
 ## Streaming Comparison (Advisory)
 
 | Fixture | stream-turbo | ours-turbo | stream/ours | stream-strict | ours-strict | stream/ours |
 |---|---:|---:|---:|---:|---:|---:|
-| note.xml | 2946.79 | 2976.49 | 0.990 | 1339.16 | 1463.64 | 0.915 |
-| sitemaps.xml | 3699.31 | 3683.65 | 1.004 | 1700.21 | 1864.88 | 0.912 |
-| plant_catalog.xml | 2619.85 | 3038.54 | 0.862 | 1443.57 | 1400.10 | 1.031 |
-| cd_catalog.xml | 2549.84 | 2805.45 | 0.909 | 1277.05 | 1389.74 | 0.919 |
-| hnrss.xml | 8096.25 | 8011.36 | 1.011 | 4109.22 | 3752.66 | 1.095 |
-| xkcd_rss.xml | 8422.88 | 8394.76 | 1.003 | 3317.30 | 4034.20 | 0.822 |
-| bbc_world.xml | 5422.98 | 4938.07 | 1.098 | 2948.31 | 3070.13 | 0.960 |
-| arxiv_cs.xml | 9682.07 | 9727.18 | 0.995 | 4018.66 | 4111.78 | 0.977 |
-| ecb_usd.xml | 4699.35 | 5016.33 | 0.937 | 2752.48 | 2993.33 | 0.920 |
-| tree.xml | 2892.09 | 2326.47 | 1.243 | 1317.84 | 1209.70 | 1.089 |
-| character.xml | 2558.39 | 2605.15 | 0.982 | 1311.06 | 1321.06 | 0.992 |
-| xgconsole.xml | 3741.27 | 3035.83 | 1.232 | 1281.15 | 1649.65 | 0.777 |
-| weekly_utf8.xml | 3635.69 | 3078.29 | 1.181 | 570.60 | 522.71 | 1.092 |
-| pugixml_large.xml | 2453.68 | 2308.05 | 1.063 | 1695.42 | 1666.46 | 1.017 |
-| synthetic_flat_attrs.xml | 2484.98 | 1479.37 | 1.680 | 939.38 | 889.50 | 1.056 |
-| synthetic_deep_tree.xml | 1767.55 | 1415.72 | 1.249 | 908.02 | 946.44 | 0.959 |
-| synthetic_entities.xml | 5293.71 | 4649.04 | 1.139 | 922.18 | 985.40 | 0.936 |
-| synthetic_cdata_mix.xml | 2478.22 | 2606.41 | 0.951 | 1720.52 | 2072.32 | 0.830 |
-| synthetic_wide_siblings.xml | 2207.37 | 2014.12 | 1.096 | 1038.19 | 1181.64 | 0.879 |
-| synthetic_namespace_mix.xml | 3428.15 | 2911.27 | 1.178 | 1412.58 | 1449.29 | 0.975 |
-| synthetic_long_names.xml | 3960.44 | 4555.74 | 0.869 | 2773.99 | 3332.31 | 0.832 |
-| synthetic_self_closing_swarm.xml | 3259.90 | 2589.90 | 1.259 | 1268.99 | 1197.71 | 1.060 |
-| synthetic_mixed_content.xml | 2782.06 | 2445.50 | 1.138 | 1344.05 | 1456.22 | 0.923 |
-| synthetic_small_records.xml | 2148.54 | 2177.09 | 0.987 | 1217.49 | 1567.24 | 0.777 |
-| synthetic_tiny_empty.xml | 1476.90 | 1155.70 | 1.278 | 1281.36 | 836.62 | 1.532 |
-| synthetic_tiny_text.xml | 966.85 | 926.43 | 1.044 | 672.53 | 815.20 | 0.825 |
-| synthetic_one_attr.xml | 1806.50 | 1338.76 | 1.349 | 877.97 | 1000.16 | 0.878 |
-| synthetic_two_attr.xml | 1769.43 | 1474.26 | 1.200 | 950.47 | 941.82 | 1.009 |
-| synthetic_attrs4.xml | 2176.22 | 1497.73 | 1.453 | 916.08 | 896.23 | 1.022 |
-| synthetic_attrs8.xml | 2368.59 | 1636.02 | 1.448 | 899.99 | 900.78 | 0.999 |
-| synthetic_attrs16.xml | 2925.72 | 1757.30 | 1.665 | 1043.17 | 904.66 | 1.153 |
-| synthetic_attrs32.xml | 3023.84 | 1836.42 | 1.647 | 628.88 | 997.69 | 0.630 |
-| synthetic_attrs48.xml | 3118.34 | 1901.56 | 1.640 | 691.67 | 1035.45 | 0.668 |
-| synthetic_attrs64.xml | 3146.95 | 2022.83 | 1.556 | 697.61 | 1110.67 | 0.628 |
-| synthetic_attrs96.xml | 3261.21 | 2108.82 | 1.546 | 528.91 | 1142.19 | 0.463 |
-| synthetic_attrs128.xml | 3283.83 | 2176.24 | 1.509 | 558.02 | 1123.86 | 0.497 |
-| synthetic_long_attr_values.xml | 5604.79 | 5246.61 | 1.068 | 3357.94 | 3515.36 | 0.955 |
-| synthetic_single_quotes.xml | 2709.92 | 2000.94 | 1.354 | 1072.67 | 1132.71 | 0.947 |
-| synthetic_unicode_names.xml | 3438.47 | 2844.57 | 1.209 | 436.53 | 450.28 | 0.969 |
-| synthetic_pretty_indented.xml | 2352.76 | 2341.92 | 1.005 | 1132.57 | 1367.28 | 0.828 |
-| synthetic_crlf_pretty.xml | 2750.07 | 2124.37 | 1.295 | 1237.14 | 1220.50 | 1.014 |
-| synthetic_token_whitespace_mix.xml | 1523.55 | 1437.48 | 1.060 | 903.83 | 889.25 | 1.016 |
-| synthetic_attr_count_mix.xml | 2605.58 | 1790.51 | 1.455 | 914.74 | 940.04 | 0.973 |
+| note.xml | 1311.73 | 1686.11 | 0.778 | 555.53 | 1243.73 | 0.447 |
+| sitemaps.xml | 1466.80 | 1838.85 | 0.798 | 703.19 | 1200.96 | 0.586 |
+| plant_catalog.xml | 1294.66 | 1470.19 | 0.881 | 693.02 | 1102.87 | 0.628 |
+| cd_catalog.xml | 2049.67 | 2437.88 | 0.841 | 994.94 | 1291.05 | 0.771 |
+| hnrss.xml | 5960.54 | 6289.14 | 0.948 | 1870.51 | 5674.19 | 0.330 |
+| xkcd_rss.xml | 5433.81 | 4240.64 | 1.281 | 2541.37 | 3561.08 | 0.714 |
+| bbc_world.xml | 2140.71 | 2938.79 | 0.728 | 1906.21 | 2219.58 | 0.859 |
+| arxiv_cs.xml | 8118.85 | 8732.06 | 0.930 | 2801.15 | 7170.69 | 0.391 |
+| ecb_usd.xml | 4155.32 | 6121.18 | 0.679 | 2588.37 | 4007.11 | 0.646 |
+| tree.xml | 2546.84 | 2919.67 | 0.872 | 1285.06 | 2356.14 | 0.545 |
+| character.xml | 2630.01 | 3631.57 | 0.724 | 1172.10 | 2775.16 | 0.422 |
+| xgconsole.xml | 3001.26 | 5409.40 | 0.555 | 1166.76 | 4262.09 | 0.274 |
+| weekly_utf8.xml | 3067.86 | 4193.75 | 0.732 | 551.90 | 3021.09 | 0.183 |
+| pugixml_large.xml | 2476.28 | 3210.80 | 0.771 | 1617.14 | 1752.98 | 0.923 |
+| synthetic_flat_attrs.xml | 2606.42 | 5643.61 | 0.462 | 993.77 | 4926.59 | 0.202 |
+| synthetic_deep_tree.xml | 1757.40 | 2078.30 | 0.846 | 927.95 | 1436.70 | 0.646 |
+| synthetic_entities.xml | 4648.55 | 4468.79 | 1.040 | 781.11 | 4494.52 | 0.174 |
+| synthetic_cdata_mix.xml | 2199.95 | 2717.29 | 0.810 | 1538.11 | 2550.98 | 0.603 |
+| synthetic_wide_siblings.xml | 2062.52 | 2739.32 | 0.753 | 983.16 | 2103.69 | 0.467 |
+| synthetic_namespace_mix.xml | 3037.16 | 3890.10 | 0.781 | 1460.91 | 3193.36 | 0.457 |
+| synthetic_long_names.xml | 3631.39 | 5679.88 | 0.639 | 2399.59 | 5577.67 | 0.430 |
+| synthetic_self_closing_swarm.xml | 3001.55 | 3253.94 | 0.922 | 1207.28 | 2831.61 | 0.426 |
+| synthetic_mixed_content.xml | 2064.47 | 1938.63 | 1.065 | 1040.67 | 1627.00 | 0.640 |
+| synthetic_small_records.xml | 1894.94 | 2964.85 | 0.639 | 1000.36 | 2101.89 | 0.476 |
+| synthetic_tiny_empty.xml | 1550.31 | 1991.25 | 0.779 | 1178.29 | 1667.15 | 0.707 |
+| synthetic_tiny_text.xml | 1128.06 | 1330.79 | 0.848 | 531.98 | 1144.24 | 0.465 |
+| synthetic_one_attr.xml | 1614.90 | 1971.52 | 0.819 | 814.04 | 1925.48 | 0.423 |
+| synthetic_two_attr.xml | 1413.15 | 2473.70 | 0.571 | 799.80 | 1317.61 | 0.607 |
+| synthetic_attrs4.xml | 1773.62 | 3048.38 | 0.582 | 674.62 | 2861.94 | 0.236 |
+| synthetic_attrs8.xml | 1076.50 | 1906.76 | 0.565 | 448.43 | 1868.62 | 0.240 |
+| synthetic_single_quotes.xml | 1295.20 | 2231.88 | 0.580 | 491.94 | 1636.32 | 0.301 |
+| synthetic_unicode_names.xml | 1244.94 | 1577.46 | 0.789 | 204.92 | 1250.93 | 0.164 |
+| synthetic_pretty_indented.xml | 951.78 | 1255.82 | 0.758 | 518.18 | 946.82 | 0.547 |
+| synthetic_crlf_pretty.xml | 1218.60 | 1071.17 | 1.138 | 558.77 | 1096.45 | 0.510 |
+| synthetic_token_whitespace_mix.xml | 787.23 | 1823.80 | 0.432 | 488.62 | 1494.35 | 0.327 |
+| synthetic_attr_count_mix.xml | 1227.28 | 2963.30 | 0.414 | 461.32 | 2715.20 | 0.170 |
 
 ## Strict Pathology Regression Checks
 
