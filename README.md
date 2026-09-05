@@ -1,43 +1,34 @@
 # zxml
 
-Low-latency XML DOM parsing for Zig with comptime-specialized parse modes and an in-tree benchmark/conformance harness.
+Low-latency XML parsing for Zig with comptime-generated DOM/streaming types, source-backed lazy materialization, and an in-tree benchmark/conformance harness.
 
 ![zig](https://img.shields.io/badge/zig-0.16.0-f7a41d?logo=zig&logoColor=111)
 ![format](https://img.shields.io/badge/format-xml-0f766e)
 
 ## Features
 
-- Single-pass XML parsing over `[]const u8` input.
-- DOM layout backed by a contiguous node array, with element attributes recovered lazily from source-byte spans.
-- Comptime parse configuration via `Document.parse(input, .{ ... })`.
-- Two parser profiles: `strict` and `turbo`.
-- Raw borrowed accessors plus allocator-backed decoded helpers for text and attribute values.
+- Comptime-generated `Document`, `RawNode`, `Node`, attribute, and streaming parser types.
+- Destructive `[]u8` parsing by default; immutable `[]const u8` parsing with `non_destructive = true`.
+- Compact default DOM nodes: `parent + subtree_end + name_or_text` (16 bytes with the default `u32` index width).
+- Optional last-child / previous-sibling / misc-node metadata physically disappears when disabled.
+- Attributes are discovered lazily from source and compacted once in destructive documents.
+- Text entity decoding is materialized lazily in source when it fits; immutable or expanding cases fall back to owned results.
+- Explicit `validate_well_formedness` policy instead of runtime parser modes.
+- Bounded permissive recovery for malformed structure; validated documents reject XML well-formedness errors.
 - In-tree conformance suites and external parser benchmark harness.
 
 ## Performance
 
 <!-- README_AUTO_SUMMARY:START -->
 
-Source: `bench/results/latest.json` (`stable` profile).
+The checked-in benchmark snapshot predates the generated permissive/validated architecture and is intentionally not presented as current performance. Regenerate it with `zig build bench-compare` after a clean benchmark run.
 
-Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450H` using Zig `0.16.0`.
+Headline zxml modes are now:
 
-### Parse Throughput (Average Across Fixtures)
+- `ours-permissive`: the actual default generated DOM (`ParseOptions{}`).
+- `ours-validated`: `validate_well_formedness = true`.
+- `stream-permissive` / `stream-validated`: matching generated streaming policies.
 
-```text
-ours-turbo    │████████████████████│ 3179.07 MB/s (100.00%)
-ours-strict   │████████████████░░░░│ 2566.88 MB/s (80.74%)
-stream-turbo  │███████████████░░░░░│ 2451.06 MB/s (77.10%)
-stream-strict │███████░░░░░░░░░░░░░│ 1109.75 MB/s (34.91%)
-rapidxml      │█████░░░░░░░░░░░░░░░│ 866.81 MB/s (27.27%)
-pugixml       │█████░░░░░░░░░░░░░░░│ 831.77 MB/s (26.16%)
-```
-
-### Stable Gate Snapshot
-
-| Profile | Passed | Rule |
-|---|---:|---|
-| `stable` | 37/37 | `ours-turbo >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 ## Quick Start
@@ -51,16 +42,16 @@ zig build ship-check
 zig build bench-compare
 ```
 
-Minimal parse:
+Fastest/default parse (source may be lazily materialized by later queries):
 
 ```zig
 const std = @import("std");
 const zxml = @import("zxml");
 
 pub fn main() !void {
-    const src = "<root id='r'><child>text</child></root>";
-    const options: zxml.ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
-    var doc = try options.parse(std.heap.page_allocator, src);
+    var src = "<root id='r'><child>text</child></root>".*;
+    const options: zxml.ParseOptions = .{};
+    var doc = try options.parse(std.heap.page_allocator, &src);
     defer doc.deinit();
 
     const root = doc.nodeAt(1).?;
@@ -68,48 +59,93 @@ pub fn main() !void {
 }
 ```
 
-## Library API
-
-- `zxml.ParseOptions`
-- `zxml.ParseMode`
-- `zxml.ParseError`
-- `zxml.IndexInt`
-- `zxml.MaxInputLen`
-- `options.parse(allocator, input)`
-- `options.Document()`
-- `zxml.Types(options).Document` / `.Node` / `.Attribute` / `.StreamingParser`
+Immutable input is a different generated document type:
 
 ```zig
-const options: zxml.ParseOptions = .{};
-const Document = options.Document();
-const StreamingParser = zxml.Types(options).StreamingParser;
+const options: zxml.ParseOptions = .{
+    .non_destructive = true,
+    .validate_well_formedness = true,
+};
+var doc = try options.parse(allocator, "<root/>");
+defer doc.deinit();
 ```
 
-Index width is configurable at build time, following the same config-module pattern as `htmlparser`:
+## Generated API
+
+The public configuration surface is `zxml.ParseOptions`. Options are compile-time inputs to the generated types, not arguments passed to each `Document.parse` call.
+
+```zig
+const options: zxml.ParseOptions = .{
+    .non_destructive = false,
+    .validate_well_formedness = false,
+    .store_last_child = false,
+    .store_prev_sibling = false,
+    .validate_xml_characters = true,
+    .expand_dtd_entities = false,
+    .max_entity_value_len = 4096,
+    .drop_whitespace_text_nodes = true,
+    .include_misc_nodes = false,
+};
+
+const Types = zxml.Types(options);
+const Document = Types.Document;
+const StreamingParser = Types.StreamingParser;
+```
+
+Useful root declarations include:
+
+- `zxml.ParseOptions`
+- `zxml.ParseError`
+- `zxml.ParseDiagnostic`
+- `zxml.NodeType`
+- `zxml.MaxInputLen`
+- `zxml.InvalidIndex`
+- `zxml.Types(options)`
+- `options.Document()`
+- `options.parse(allocator, input)`
+
+`Document.parse(input)` reuses an existing generated document. There is no per-call option object:
+
+```zig
+var src1 = "<a/>".*;
+var src2 = "<b/>".*;
+
+const options: zxml.ParseOptions = .{};
+var doc = options.Document().init(allocator);
+defer doc.deinit();
+try doc.parse(&src1);
+try doc.parse(&src2);
+```
+
+Index width is configurable at build time:
 
 ```bash
 zig build test -Dintlen=u64
 ```
 
-Supported widths are `u16`, `u32`, `u64`, and `usize`. The default is `u32`.
+Supported widths are `u16`, `u32`, `u64`, and `usize`; the default is `u32`.
 
-`ParseOptions.parse` returns an initialized document; `Document.parse` remains available for document reuse:
+## DOM Layout And Navigation
 
-```zig
-const options: zxml.ParseOptions = .{
-    .mode = .turbo,
-    .validate_closing_tags = false,
-    .expand_dtd_entities = false,
-    .max_entity_value_len = 4096,
-    .drop_whitespace_text_nodes = true,
-    .include_misc_nodes = true,
-};
-var doc = try options.parse(allocator, input);
+The default raw node stores only:
+
+```text
+parent | subtree_end | name_or_text.start | name_or_text.end
 ```
 
-Parsing is always non-destructive and the original input is always `[]const u8`.
+With `u32` indexes this is 16 bytes. Element nodes store their tag-name span. Text nodes store their source span. Direct `subtree_end` makes subtree skipping and next-sibling traversal cheap without a parallel navigation sidecar.
 
-Serialize without reparsing:
+`store_last_child` and `store_prev_sibling` add those indexes to the generated node layout only when requested. `include_misc_nodes` similarly adds the rich node-kind / misc-value fields only to document types that need comments, CDATA, declarations, processing instructions, or doctypes as DOM nodes.
+
+## Destructive And Immutable Source Modes
+
+Destructive mode is the default throughput path. Parsing itself records source spans; expensive value work remains lazy.
+
+On first attribute traversal, zxml compacts the element's attribute syntax in place. Repeated traversal then consumes the compact representation instead of reparsing quoted XML syntax. Text entity decoding similarly caches a shrinking decoded value in source when possible.
+
+`non_destructive = true` changes the generated input type to `[]const u8`. It never writes into the source and uses bounded raw traversal / owned decoding fallbacks instead.
+
+Serialization understands materialized source state and emits XML syntax rather than the internal compact markers:
 
 ```zig
 var out: std.Io.Writer.Allocating = .init(allocator);
@@ -117,7 +153,42 @@ defer out.deinit();
 try doc.write(&out.writer);
 ```
 
-Incremental streaming keeps parser state and resumes from saved offsets:
+## Value Ownership
+
+Raw accessors return borrowed source slices:
+
+```zig
+const attr_raw = root.getAttributeValueRaw("id").?;
+const text_raw = root.firstChild().?.valueRawSlice();
+```
+
+Decoded helpers return `SliceResult { value, owned }`. The result may borrow materialized source or own an allocation:
+
+```zig
+const attr = try root.getAttributeValue(allocator, "id") orelse return;
+defer attr.free(allocator);
+use(attr.value);
+
+const inner = try root.innerText(allocator);
+defer inner.free(allocator);
+use(inner.value);
+```
+
+Call `free()` on the result rather than assuming decoding always allocates.
+
+DTD/entity expansion is disabled by default. With `expand_dtd_entities = true`, internal parsed entity declarations are retained in a document-owned map for value materialization. `max_entity_value_len` bounds stored expanded values.
+
+## Invalid XML Policy
+
+The default generated parser is permissive but bounded. Ordinary close tags match the top of a 32-entry inline open-element stack. On a mismatch it searches backward for a matching ancestor, implicitly closes intervening elements, ignores unmatched closing tags, and implicitly closes remaining elements at EOF. Deep nesting spills the parser-owned stack to heap without changing the persistent DOM layout.
+
+`validate_well_formedness = true` generates the validating path: malformed tag structure, invalid attribute grammar, duplicate attributes, document-level grammar violations, and invalid entity/reference forms are reported as parse errors. `validate_xml_characters = false` may be used with validation when the caller has already established whole-buffer XML character validity.
+
+Rare malformed input is allowed to fail in permissive mode; it must remain bounded and must not crash, hang, read out of bounds, or grow memory without limit.
+
+## Streaming
+
+Streaming uses the same generated validation policy and keeps its own ephemeral named open-element stack. `parseAvailable` expects a cumulative buffer: each call retains the same prefix and appends newly received bytes. Complete callbacks are not replayed when a later token is incomplete.
 
 ```zig
 var stream = zxml.Types(options).StreamingParser.init(allocator);
@@ -126,36 +197,7 @@ _ = try stream.parseAvailable(buffer_so_far, &ctx, onNode);
 try stream.finish();
 ```
 
-`parseAvailable` expects a cumulative buffer: each call keeps the same prefix and
-adds newly received bytes. It commits only complete tokens, so callbacks for
-already-completed markup are not replayed when a later token needs more data. A
-`false` return means the final token is incomplete; pass a longer cumulative
-buffer and call again. `finish` reports a still-incomplete token and also applies
-`require_closed_elements_on_eof`. Callback-based subtree skipping is resumable
-across the same chunk boundaries.
-
-Use raw accessors when you want borrowed source slices:
-
-```zig
-const attr_raw = root.getAttributeValueRaw("id").?;
-const text_raw = root.firstChild().?.valueRawSlice();
-```
-
-Elements store their raw attribute region as a half-open byte span into `doc.source`; attributes are iterated lazily and are not kept in a persistent document-wide attribute array. Low-level `RawNode.attributeSpan()` values are source-byte offsets, not attribute indices.
-
-Use allocator-backed helpers when you want decoded values without mutating the source:
-
-```zig
-const attr = try root.getAttributeValue(std.heap.page_allocator, "id") orelse return;
-defer std.heap.page_allocator.free(attr);
-
-const inner = try root.innerText(std.heap.page_allocator);
-defer std.heap.page_allocator.free(inner);
-```
-
-DTD/entity expansion is disabled by default. When `expand_dtd_entities = true`, zxml parses internal `<!ENTITY ...>` declarations from the document doctype into a document-owned hash map and uses that map during decoded value access. `max_entity_value_len` caps each stored expanded entity value.
-
-`turbo` keeps DOM construction but drops expensive validation work by default. `strict` enforces stronger well-formedness checks and is the correctness-first profile.
+Validated streaming rejects malformed/unclosed structure. Permissive streaming applies the same named-close recovery policy as the DOM and tolerates unfinished structure at final EOF where safe.
 
 ## Build And Validation
 
