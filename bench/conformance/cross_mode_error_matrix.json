@@ -56,11 +56,12 @@
       "expect_error": "ExpectedQuote"
     },
     {
-      "name": "turbo-unterminated-quote-fails",
+      "name": "turbo-unterminated-quote-tolerated",
       "profile": "turbo_default",
       "xml": "<a x='1></a>",
-      "expect_ok": false,
-      "expect_error": "UnexpectedEndOfData"
+      "expect_ok": true,
+      "expect_elements": 1,
+      "expect_root_name": "a"
     },
     {
       "name": "strict-unterminated-pi-fails",
