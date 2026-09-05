@@ -1,15 +1,27 @@
 const std = @import("std");
 const common = @import("common.zig");
+const entities = @import("entities.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
 
 pub const IndexInt = common.IndexInt;
 pub const Span = common.Span;
 
+pub const ValueState = enum(u8) {
+    none = 0,
+    decoded = 1,
+    decode_failed = 2,
+    raw = '=',
+};
+
 pub const RawAttribute = struct {
     name: Span,
     value: Span,
-    has_value: bool = false,
+    value_state: ValueState = .none,
+
+    pub inline fn hasValue(self: @This()) bool {
+        return self.value_state != .none;
+    }
 };
 
 /// Raw XML attribute tokenizer. Full-validation callers instantiate `validated=true`;
@@ -47,9 +59,9 @@ pub fn RawIterator(comptime validated: bool) type {
 
             var value_start = i;
             var value_end = i;
-            var has_value = false;
+            var value_state: ValueState = .none;
             if (i < self.end and self.source[i] == '=') {
-                has_value = true;
+                value_state = .raw;
                 i += 1;
                 while (i < self.end and tables.isWhitespace(self.source[i])) : (i += 1) {}
                 if (i < self.end) {
@@ -69,7 +81,7 @@ pub fn RawIterator(comptime validated: bool) type {
             return .{
                 .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
                 .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-                .has_value = has_value,
+                .value_state = value_state,
             };
         }
     };
@@ -81,26 +93,35 @@ inline fn looksCompact(source: []const u8, name_end: usize) bool {
     return c != '>' and c != '/' and !tables.isWhitespace(c);
 }
 
-/// Compact attribute list iterator for destructive documents.
+/// Compact attribute list iterator for destructive documents. The byte between
+/// a name and value is also the value-materialization state.
 const CompactIterator = struct {
     source: []const u8,
     cursor: usize,
+
+    inline fn stateFromOperator(c: u8) ?ValueState {
+        return switch (c) {
+            '=' => .raw,
+            1 => .decoded,
+            2 => .decode_failed,
+            else => null,
+        };
+    }
 
     fn next(self: *@This()) ?RawAttribute {
         if (self.cursor >= self.source.len or self.source[self.cursor] == '>') return null;
         const name_start = self.cursor;
         while (self.cursor < self.source.len) : (self.cursor += 1) {
             const c = self.source[self.cursor];
-            if (c == '=' or c == 0 or c == '>') break;
+            if (stateFromOperator(c) != null or c == 0 or c == '>') break;
         }
         const name_end = self.cursor;
         if (name_end == name_start or self.cursor >= self.source.len or self.source[self.cursor] == '>') return null;
 
-        var has_value = false;
+        const value_state = stateFromOperator(self.source[self.cursor]) orelse .none;
         var value_start = self.cursor;
         var value_end = self.cursor;
-        if (self.source[self.cursor] == '=') {
-            has_value = true;
+        if (value_state != .none) {
             self.cursor += 1;
             value_start = self.cursor;
             while (self.cursor < self.source.len and self.source[self.cursor] != 0) : (self.cursor += 1) {}
@@ -110,7 +131,7 @@ const CompactIterator = struct {
         return .{
             .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
             .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-            .has_value = has_value,
+            .value_state = value_state,
         };
     }
 };
@@ -125,7 +146,9 @@ pub fn materialize(comptime validated: bool, source: []u8, name_end: usize) bool
 
     const tail = scanner.scanStartTagEnd(source, name_end) orelse return false;
     const attr_end = if (tail.self_closing and tail.end > name_end) tail.end - 1 else tail.end;
-    if (std.mem.indexOfScalar(u8, source[name_end..attr_end], 0) != null) return false;
+    for (source[name_end..attr_end]) |c| {
+        if (c == 0 or c == 1 or c == 2) return false;
+    }
 
     var raw = RawIterator(validated).init(source, .{ .start = @intCast(name_end), .end = @intCast(attr_end) });
     var write = name_end;
@@ -133,13 +156,73 @@ pub fn materialize(comptime validated: bool, source: []u8, name_end: usize) bool
         const name = item.name.slice(source);
         std.mem.copyForwards(u8, source[write .. write + name.len], name);
         write += name.len;
-        if (item.has_value) {
+        if (item.hasValue()) {
             source[write] = '=';
             write += 1;
             const value = item.value.slice(source);
             std.mem.copyForwards(u8, source[write .. write + value.len], value);
             write += value.len;
         }
+        source[write] = 0;
+        write += 1;
+    }
+    if (write >= source.len) return false;
+    source[write] = '>';
+    return true;
+}
+
+/// Decode every still-raw value in an already compact attribute list and
+/// rebuild the list leftward in place. Values that would expand remain raw and
+/// carry `decode_failed`, so later access can jump directly to owned fallback.
+/// Returns false only when source cannot safely use compact value caching.
+pub fn materializeDecodedValues(
+    comptime validated: bool,
+    source: []u8,
+    name_end: usize,
+    entity_map: ?*const std.StringHashMap([]u8),
+) entities.DecodeError!bool {
+    if (!materialize(validated, source, name_end)) return false;
+    if (!looksCompact(source, name_end)) return true;
+
+    // NUL terminates compact values. A permissive DTD containing literal NUL
+    // can therefore be decoded only through the owned fallback path.
+    if (entity_map) |map| {
+        var values = map.valueIterator();
+        while (values.next()) |value| {
+            if (std.mem.indexOfScalar(u8, value.*, 0) != null) return false;
+        }
+    }
+
+    var read = CompactIterator{ .source = source, .cursor = name_end };
+    var write = name_end;
+    while (read.next()) |item| {
+        const name = item.name.slice(source);
+        std.mem.copyForwards(u8, source[write .. write + name.len], name);
+        write += name.len;
+
+        if (!item.hasValue()) {
+            source[write] = 0;
+            write += 1;
+            continue;
+        }
+
+        var state = item.value_state;
+        var value_len: usize = item.value.len();
+        if (state == .raw) {
+            const result = try entities.decodeInPlaceWithEntityMap(item.value.sliceMut(source), validated, entity_map);
+            if (result.complete) {
+                state = .decoded;
+                value_len = result.len;
+            } else {
+                state = .decode_failed;
+            }
+        }
+
+        source[write] = @intFromEnum(state);
+        write += 1;
+        const value_start: usize = @intCast(item.value.start);
+        std.mem.copyForwards(u8, source[write .. write + value_len], source[value_start .. value_start + value_len]);
+        write += value_len;
         source[write] = 0;
         write += 1;
     }
