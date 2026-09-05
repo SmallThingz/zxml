@@ -33,7 +33,7 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn next(self: *@This()) ?Attribute {
                 var i = scanner.skipWhitespace(self.input, self.i);
                 while (i < self.input.len and !tables.isNameStart(self.input[i])) {
-                    if (comptime options.mode == .strict) {
+                    if (comptime options.validate_well_formedness) {
                         self.i = self.input.len;
                         return null;
                     }
@@ -62,7 +62,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             value_start = i;
                             value_end = scanner.findByte(self.input, i, quote) orelse self.input.len;
                             i = if (value_end < self.input.len) value_end + 1 else self.input.len;
-                        } else if (options.mode == .turbo) {
+                        } else if (!options.validate_well_formedness) {
                             value_start = i;
                             value_end = scanner.findAttrUnquotedEnd(self.input, i);
                             i = value_end;
@@ -133,8 +133,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     self.name,
                     self.token_end,
                     self.self_closing,
-                    options.mode == .strict,
-                    options.validate_closing_tags,
+                    options.validate_well_formedness,
                 );
                 if (end >= self.source.len or self.source[end] == '<') return "";
                 const lt = scanner.findByte(self.source, end, '<') orelse self.source.len;
@@ -146,13 +145,13 @@ pub fn Types(comptime options: ParseOptions) type {
             name: Span,
             key: u64,
         };
-        const Stack = if (options.validate_closing_tags) std.ArrayList(StackEntry) else usize;
-        const Allocator = if (options.validate_closing_tags or options.mode == .strict) std.mem.Allocator else void;
+        const Stack = std.ArrayList(StackEntry);
+        const Allocator = std.mem.Allocator;
 
         pub const Parser = struct {
             allocator: Allocator,
-            stack: Stack = if (options.validate_closing_tags) .empty else 0,
-            skip_stack: Stack = if (options.validate_closing_tags) .empty else 0,
+            stack: Stack = .empty,
+            skip_stack: Stack = .empty,
             offset: usize = 0,
             needs_more: bool = false,
             state_tracking: bool = false,
@@ -171,9 +170,7 @@ pub fn Types(comptime options: ParseOptions) type {
             attribute_name_filter: u64 = 0,
 
             const Self = @This();
-            const strict_mode = options.mode == .strict;
-            const validate_closing_tags = options.validate_closing_tags;
-            const require_closed_elements_on_eof = options.require_closed_elements_on_eof;
+            const validated = options.validate_well_formedness;
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
             const include_misc_nodes = options.include_misc_nodes;
 
@@ -205,11 +202,11 @@ pub fn Types(comptime options: ParseOptions) type {
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
-                return .{ .allocator = if (comptime validate_closing_tags or strict_mode) allocator else {} };
+                return .{ .allocator = allocator };
             }
 
             pub inline fn deinit(self: *Self) void {
-                if (comptime validate_closing_tags) self.coldOperation(.deinit, "", "") catch unreachable;
+                self.coldOperation(.deinit, "", "") catch unreachable;
             }
 
             pub fn parse(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!void {
@@ -224,7 +221,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.doctype_value_end = 0;
                 self.require_declared_entities = true;
                 self.xml_validated_offset = 0;
-                if (comptime strict_mode and options.validate_xml_characters) {
+                if (comptime validated and options.validate_xml_characters) {
                     try document.validateXmlCharactersStreaming(input);
                     self.xml_validated_offset = input.len;
                 }
@@ -244,7 +241,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 continue;
                             }
                         }
-                        if (comptime strict_mode) {
+                        if (comptime validated) {
                             const run = scanner.scanTextSpecials(input, i);
                             const has_non_whitespace = !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
                             try self.validateCharacterDataSpecials(input, i, run.lt_index, run.has_close_bracket, run.has_ampersand, false);
@@ -276,7 +273,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
 
                     if (i + 1 >= input.len) {
-                        if (strict_mode) return error.UnexpectedEndOfData;
+                        if (validated) return error.UnexpectedEndOfData;
                         break;
                     }
 
@@ -288,8 +285,8 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
 
-                if (require_closed_elements_on_eof and self.stackLen() != 0) return error.UnexpectedEndOfData;
-                if (comptime strict_mode) {
+                if (validated and self.stackLen() != 0) return error.UnexpectedEndOfData;
+                if (comptime validated) {
                     if (!self.root_seen) return error.ExpectedDocumentElement;
                 }
                 self.offset = i;
@@ -345,28 +342,23 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.xml_validated_offset = state.offset;
                 self.state_tracking = true;
 
-                if (comptime validate_closing_tags) {
-                    if (!self.restore_pending and state.stack_generation == self.stack_generation) {
-                        // No stack mutation happened since this state was saved.
-                        std.debug.assert(state.stack_len == self.stack.items.len);
-                        std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
-                        return;
-                    }
-                    if (self.restore_pending and
-                        state.stack_generation == self.restore_generation and
-                        state.stack_len == self.restore_stack_len and
-                        state.skip_stack_len == self.restore_skip_stack_len)
-                    {
-                        return;
-                    }
-                    self.restore_pending = true;
-                    self.restore_stack_len = state.stack_len;
-                    self.restore_skip_stack_len = state.skip_stack_len;
-                    self.restore_generation = state.stack_generation;
-                } else {
-                    self.stack = state.stack_len;
-                    self.skip_stack = state.skip_stack_len;
+                if (!self.restore_pending and state.stack_generation == self.stack_generation) {
+                    // No stack mutation happened since this state was saved.
+                    std.debug.assert(state.stack_len == self.stack.items.len);
+                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                    return;
                 }
+                if (self.restore_pending and
+                    state.stack_generation == self.restore_generation and
+                    state.stack_len == self.restore_stack_len and
+                    state.skip_stack_len == self.restore_skip_stack_len)
+                {
+                    return;
+                }
+                self.restore_pending = true;
+                self.restore_stack_len = state.stack_len;
+                self.restore_skip_stack_len = state.skip_stack_len;
+                self.restore_generation = state.stack_generation;
             }
 
             inline fn checkpoint(self: *const Self) Checkpoint {
@@ -393,14 +385,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.doctype_value_start = state.doctype_value_start;
                 self.doctype_value_end = state.doctype_value_end;
                 self.require_declared_entities = state.require_declared_entities;
-                if (comptime validate_closing_tags) {
-                    std.debug.assert(!self.restore_pending);
-                    std.debug.assert(state.stack_len == self.stack.items.len);
-                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
-                } else {
-                    self.stack = state.stack_len;
-                    self.skip_stack = state.skip_stack_len;
-                }
+                std.debug.assert(!self.restore_pending);
+                std.debug.assert(state.stack_len == self.stack.items.len);
+                std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
@@ -409,7 +396,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 var parse_input = input;
                 var trailing_partial_utf8 = false;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (self.xml_validated_offset > input.len) return error.UnexpectedEndOfData;
                     const suffix = input[self.xml_validated_offset..];
                     const valid_suffix_len = try document.xmlValidPrefixLenStreaming(suffix);
@@ -472,8 +459,8 @@ pub fn Types(comptime options: ParseOptions) type {
 
             pub fn finish(self: *Self) ParseError!void {
                 if (self.needs_more) return error.UnexpectedEndOfData;
-                if (require_closed_elements_on_eof and (self.stackLen() != 0 or self.skipStackLen() != 0)) return error.UnexpectedEndOfData;
-                if (comptime strict_mode) {
+                if (validated and (self.stackLen() != 0 or self.skipStackLen() != 0)) return error.UnexpectedEndOfData;
+                if (comptime validated) {
                     if (!self.root_seen) return error.ExpectedDocumentElement;
                 }
             }
@@ -486,7 +473,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         if (next >= input.len) return next;
                         if (input[next] == '<') return next;
                     }
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         const run = scanner.scanTextSpecials(input, i);
                         const has_non_whitespace = !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
                         try self.validateCharacterDataSpecials(input, i, run.lt_index, run.has_close_bracket, run.has_ampersand, incremental);
@@ -515,7 +502,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return lt_index;
                 }
                 if (i + 1 >= input.len) {
-                    if (!incremental and !strict_mode) return input.len;
+                    if (!incremental and !validated) return input.len;
                     return error.UnexpectedEndOfData;
                 }
                 return switch (input[i + 1]) {
@@ -538,129 +525,128 @@ pub fn Types(comptime options: ParseOptions) type {
 
             noinline fn coldOperation(self: *const Self, operation: ColdOperation, input: []const u8, value: []const u8) linksection(".zxml_cold") ParseError!void {
                 if (operation == .deinit) {
-                    if (comptime validate_closing_tags) {
-                        const mutable = @constCast(self);
-                        mutable.stack.deinit(mutable.allocator);
-                        mutable.skip_stack.deinit(mutable.allocator);
-                    }
+                    const mutable = @constCast(self);
+                    mutable.stack.deinit(mutable.allocator);
+                    mutable.skip_stack.deinit(mutable.allocator);
+
                     return;
                 }
                 const doctype = self.doctypeValue(input);
-                if (comptime validate_closing_tags) {
-                    if (doctype) |dtd| fast: {
-                        // The scratch table is prepared only by the non-incremental
-                        // DOCTYPE path. Incremental/save-restore parsing therefore
-                        // stays on the established validator without owning cache state.
-                        if (self.offset != 0 or self.stack.items.len != 0 or value.len < 4 or value[0] != '&' or value[value.len - 1] != ';' or
-                            std.mem.indexOfScalarPos(u8, value, 1, '&') != null) break :fast;
-                        const target = value[1 .. value.len - 1];
-                        if (target[0] == '#' or
-                            std.mem.eql(u8, target, "lt") or std.mem.eql(u8, target, "gt") or
-                            std.mem.eql(u8, target, "amp") or std.mem.eql(u8, target, "apos") or
-                            std.mem.eql(u8, target, "quot") or !document.isValidXmlName(target)) break :fast;
 
-                        var scratch = self.stack.allocatedSlice()[self.stack.items.len..];
-                        if (scratch.len == 0 or scratch[0].key == dtd_scratch_unsupported_magic) break :fast;
-                        if (scratch[0].key == dtd_scratch_prepared_magic) {
-                            const estimated: usize = scratch[0].name.end;
-                            if (estimated == 0 or estimated + 1 > scratch.len or (estimated & (estimated - 1)) != 0) break :fast;
+                if (doctype) |dtd| fast: {
+                    // The scratch table is prepared only by the non-incremental
+                    // DOCTYPE path. Incremental/save-restore parsing therefore
+                    // stays on the established validator without owning cache state.
+                    if (self.offset != 0 or self.stack.items.len != 0 or value.len < 4 or value[0] != '&' or value[value.len - 1] != ';' or
+                        std.mem.indexOfScalarPos(u8, value, 1, '&') != null) break :fast;
+                    const target = value[1 .. value.len - 1];
+                    if (target[0] == '#' or
+                        std.mem.eql(u8, target, "lt") or std.mem.eql(u8, target, "gt") or
+                        std.mem.eql(u8, target, "amp") or std.mem.eql(u8, target, "apos") or
+                        std.mem.eql(u8, target, "quot") or !document.isValidXmlName(target)) break :fast;
 
-                            const subset = try document.findInternalSubset(dtd) orelse {
-                                scratch[0].key = dtd_scratch_unsupported_magic;
-                                break :fast;
+                    var scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                    if (scratch.len == 0 or scratch[0].key == dtd_scratch_unsupported_magic) break :fast;
+                    if (scratch[0].key == dtd_scratch_prepared_magic) {
+                        const estimated: usize = scratch[0].name.end;
+                        if (estimated == 0 or estimated + 1 > scratch.len or (estimated & (estimated - 1)) != 0) break :fast;
+
+                        const subset = try document.findInternalSubset(dtd) orelse {
+                            scratch[0].key = dtd_scratch_unsupported_magic;
+                            break :fast;
+                        };
+                        const subset_start = subset.start;
+                        const subset_end = subset.end;
+                        const table = scratch[1 .. estimated + 1];
+                        @memset(table, .{ .name = .{ .start = 0, .end = 0 }, .key = 0 });
+
+                        var p_: usize = subset_start;
+                        var supported = true;
+                        while (p_ < subset_end) {
+                            while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                            if (p_ == subset_end) break;
+                            if (!std.mem.startsWith(u8, dtd[p_..subset_end], "<!ENTITY")) {
+                                supported = false;
+                                break;
+                            }
+                            p_ += "<!ENTITY".len;
+                            if (p_ >= subset_end or !tables.isWhitespace(dtd[p_])) {
+                                supported = false;
+                                break;
+                            }
+                            while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                            if (p_ >= subset_end or dtd[p_] == '%') {
+                                supported = false;
+                                break;
+                            }
+                            const name_start = p_;
+                            while (p_ < subset_end and !tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                            if (p_ == name_start or p_ >= subset_end) {
+                                supported = false;
+                                break;
+                            }
+                            const name_end = p_;
+                            while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                            if (p_ >= subset_end or (dtd[p_] != '\'' and dtd[p_] != '"')) {
+                                supported = false;
+                                break;
+                            }
+                            const quote = dtd[p_];
+                            const replacement_start = p_ + 1;
+                            const replacement_end = std.mem.indexOfScalarPos(u8, dtd[0..subset_end], replacement_start, quote) orelse {
+                                supported = false;
+                                break;
                             };
-                            const subset_start = subset.start;
-                            const subset_end = subset.end;
-                            const table = scratch[1 .. estimated + 1];
-                            @memset(table, .{ .name = .{ .start = 0, .end = 0 }, .key = 0 });
-
-                            var p_: usize = subset_start;
-                            var supported = true;
-                            while (p_ < subset_end) {
-                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
-                                if (p_ == subset_end) break;
-                                if (!std.mem.startsWith(u8, dtd[p_..subset_end], "<!ENTITY")) {
-                                    supported = false;
-                                    break;
-                                }
-                                p_ += "<!ENTITY".len;
-                                if (p_ >= subset_end or !tables.isWhitespace(dtd[p_])) {
-                                    supported = false;
-                                    break;
-                                }
-                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
-                                if (p_ >= subset_end or dtd[p_] == '%') {
-                                    supported = false;
-                                    break;
-                                }
-                                const name_start = p_;
-                                while (p_ < subset_end and !tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
-                                if (p_ == name_start or p_ >= subset_end) {
-                                    supported = false;
-                                    break;
-                                }
-                                const name_end = p_;
-                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
-                                if (p_ >= subset_end or (dtd[p_] != '\'' and dtd[p_] != '"')) {
-                                    supported = false;
-                                    break;
-                                }
-                                const quote = dtd[p_];
-                                const replacement_start = p_ + 1;
-                                const replacement_end = std.mem.indexOfScalarPos(u8, dtd[0..subset_end], replacement_start, quote) orelse {
-                                    supported = false;
-                                    break;
-                                };
-                                if (std.mem.indexOfAny(u8, dtd[replacement_start..replacement_end], "&%<") != null) {
-                                    supported = false;
-                                    break;
-                                }
-                                p_ = replacement_end + 1;
-                                while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
-                                if (p_ >= subset_end or dtd[p_] != '>') {
-                                    supported = false;
-                                    break;
-                                }
-                                p_ += 1;
-
-                                const name = dtd[name_start..name_end];
-                                var hash: u64 = 0xcbf2_9ce4_8422_2325;
-                                for (name) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
-                                hash |= 1;
-                                var slot: usize = @intCast(hash & (estimated - 1));
-                                while (table[slot].key != 0) : (slot = (slot + 1) & (estimated - 1)) {
-                                    if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], name)) break;
-                                }
-                                if (table[slot].key == 0) table[slot] = .{
-                                    .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
-                                    .key = hash,
-                                };
+                            if (std.mem.indexOfAny(u8, dtd[replacement_start..replacement_end], "&%<") != null) {
+                                supported = false;
+                                break;
                             }
-
-                            if (!supported) {
-                                scratch[0] = .{ .name = .{ .start = 0, .end = 0 }, .key = dtd_scratch_unsupported_magic };
-                                break :fast;
+                            p_ = replacement_end + 1;
+                            while (p_ < subset_end and tables.isWhitespace(dtd[p_])) : (p_ += 1) {}
+                            if (p_ >= subset_end or dtd[p_] != '>') {
+                                supported = false;
+                                break;
                             }
-                            scratch[0].key = dtd_scratch_built_magic;
+                            p_ += 1;
+
+                            const name = dtd[name_start..name_end];
+                            var hash: u64 = 0xcbf2_9ce4_8422_2325;
+                            for (name) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
+                            hash |= 1;
+                            var slot: usize = @intCast(hash & (estimated - 1));
+                            while (table[slot].key != 0) : (slot = (slot + 1) & (estimated - 1)) {
+                                if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], name)) break;
+                            }
+                            if (table[slot].key == 0) table[slot] = .{
+                                .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                                .key = hash,
+                            };
                         }
 
-                        if (scratch[0].key != dtd_scratch_built_magic) break :fast;
-                        scratch = self.stack.allocatedSlice()[self.stack.items.len..];
-                        const table_len: usize = scratch[0].name.end;
-                        if (table_len == 0 or table_len + 1 > scratch.len) break :fast;
-                        const table = scratch[1 .. table_len + 1];
-                        var hash: u64 = 0xcbf2_9ce4_8422_2325;
-                        for (target) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
-                        hash |= 1;
-                        var slot: usize = @intCast(hash & (table_len - 1));
-                        const first_slot = slot;
-                        while (table[slot].key != 0) {
-                            if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], target)) return;
-                            slot = (slot + 1) & (table_len - 1);
-                            if (slot == first_slot) break;
+                        if (!supported) {
+                            scratch[0] = .{ .name = .{ .start = 0, .end = 0 }, .key = dtd_scratch_unsupported_magic };
+                            break :fast;
                         }
+                        scratch[0].key = dtd_scratch_built_magic;
+                    }
+
+                    if (scratch[0].key != dtd_scratch_built_magic) break :fast;
+                    scratch = self.stack.allocatedSlice()[self.stack.items.len..];
+                    const table_len: usize = scratch[0].name.end;
+                    if (table_len == 0 or table_len + 1 > scratch.len) break :fast;
+                    const table = scratch[1 .. table_len + 1];
+                    var hash: u64 = 0xcbf2_9ce4_8422_2325;
+                    for (target) |c| hash = (hash ^ c) *% 0x100_0000_01b3;
+                    hash |= 1;
+                    var slot: usize = @intCast(hash & (table_len - 1));
+                    const first_slot = slot;
+                    while (table[slot].key != 0) {
+                        if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], target)) return;
+                        slot = (slot + 1) & (table_len - 1);
+                        if (slot == first_slot) break;
                     }
                 }
+
                 try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.require_declared_entities, null);
             }
 
@@ -697,17 +683,15 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
-                if (comptime validate_closing_tags) {
-                    const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
-                    if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
-                }
+                const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
+                if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
             }
 
             fn parseOpeningTag(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 var i = start + 1;
                 if (i >= input.len) return error.UnexpectedEndOfData;
                 if (!tables.isNameStart(input[i])) {
-                    if (strict_mode) return error.ExpectedElementName;
+                    if (validated) return error.ExpectedElementName;
                     const gt = scanner.findByte(input, i, '>') orelse {
                         if (incremental) return error.UnexpectedEndOfData;
                         return input.len;
@@ -716,18 +700,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const name_start = i;
-                const name_scan = if (comptime validate_closing_tags)
-                    scanner.scanNameAndKey(input, i)
-                else if (comptime strict_mode) blk: {
-                    const scan = scanner.scanNameEnd(input, i);
-                    break :blk scanner.NameScan{
-                        .end = scan.end,
-                        .key = 0,
-                        .needs_unicode_validation = scan.needs_unicode_validation,
-                    };
-                } else scanner.NameScan{ .end = scanner.findNameEnd(input, i), .key = 0 };
+                const name_scan = scanner.scanNameAndKey(input, i);
                 const name_end = name_scan.end;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.ExpectedElementName;
                 }
                 i = name_end;
@@ -751,7 +726,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     closed = true;
                 }
 
-                if (comptime !strict_mode) {
+                if (comptime !validated) {
                     while (!closed) {
                         const fast = scanner.scanSimpleQuotedAttribute(input, i) orelse break;
                         i = fast.next;
@@ -760,7 +735,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 while (!closed and i < input.len) {
                     const boundary = i;
-                    i = skipWsMode(input, i, strict_mode);
+                    i = skipWsMode(input, i, validated);
                     if (i >= input.len) return error.UnexpectedEndOfData;
                     const c = input[i];
                     if (c == '>') {
@@ -777,19 +752,19 @@ pub fn Types(comptime options: ParseOptions) type {
                         break;
                     }
                     if (incremental and c == '/' and i + 1 >= input.len) return error.UnexpectedEndOfData;
-                    if (strict_mode and i == boundary) {
+                    if (validated and i == boundary) {
                         @branchHint(.unlikely);
                         return error.ExpectedAttributeName;
                     }
                     if (!tables.isNameStart(c)) {
-                        if (strict_mode) return error.ExpectedAttributeName;
+                        if (validated) return error.ExpectedAttributeName;
                         i += 1;
                         continue;
                     }
 
                     const attr_name_start = i;
                     var attr_i: usize = undefined;
-                    const attr_name_needs_unicode_validation = if (comptime strict_mode) blk: {
+                    const attr_name_needs_unicode_validation = if (comptime validated) blk: {
                         const scan = scanner.scanNameEnd(input, i);
                         attr_i = scan.end;
                         break :blk scan.needs_unicode_validation;
@@ -797,7 +772,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         attr_i = scanner.findNameEnd(input, i);
                         break :blk false;
                     };
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (attr_name_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
                         if (attr_count == 0) {
                             first_attr_start = attr_name_start;
@@ -832,7 +807,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (attr_i + 1 < input.len and input[attr_i] == '=') {
                         const quote = input[attr_i + 1];
                         if (quote == '\'' or quote == '"') {
-                            if (comptime strict_mode) {
+                            if (comptime validated) {
                                 const value_start = attr_i + 2;
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input.len) {
@@ -852,10 +827,10 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                     }
 
-                    attr_i = skipWsMode(input, attr_i, strict_mode);
+                    attr_i = skipWsMode(input, attr_i, validated);
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     if (input[attr_i] != '=') {
-                        if (strict_mode) {
+                        if (validated) {
                             @branchHint(.unlikely);
                             return error.ExpectedEq;
                         }
@@ -863,11 +838,11 @@ pub fn Types(comptime options: ParseOptions) type {
                         continue;
                     }
                     attr_i += 1;
-                    attr_i = skipWsMode(input, attr_i, strict_mode);
+                    attr_i = skipWsMode(input, attr_i, validated);
                     if (attr_i >= input.len) return error.UnexpectedEndOfData;
                     const quote = input[attr_i];
                     if (quote == '\'' or quote == '"') {
-                        if (comptime strict_mode) {
+                        if (comptime validated) {
                             const value_start = attr_i + 1;
                             const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                             if (scan.end == input.len) {
@@ -885,7 +860,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                         continue;
                     }
-                    if (strict_mode) return error.ExpectedQuote;
+                    if (validated) return error.ExpectedQuote;
                     const raw_end = scanner.findAttrUnquotedEnd(input, attr_i);
                     if (raw_end > attr_i and raw_end < input.len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
                         i = raw_end - 1;
@@ -894,13 +869,13 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
                 if (!closed) return error.UnexpectedEndOfData;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (attr_count > 2 and self.attribute_name_filter & attribute_filter_collision != 0) {
                         try validateUniqueAttributesRaw(input, attr_start, attr_end);
                     }
                 }
 
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (self.stackLen() == 0) {
                         if (self.root_seen) return error.MultipleDocumentElements;
                         self.root_seen = true;
@@ -927,9 +902,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return try self.skipSubtree(input, i, name, name_scan.key);
                 }
                 if (!incremental) {
-                    if (comptime validate_closing_tags or !strict_mode) {
-                        if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
-                    }
+                    if (try self.tryFinishSimpleTextElement(input, i, name, name_scan.key, ctx, callback)) |next| return next;
                 }
 
                 try self.pushStack(name, name_scan.key);
@@ -937,94 +910,94 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             fn parseClosingTag(noalias self: *Self, input: []const u8, start: usize, comptime incremental: bool) ParseError!usize {
-                if (!validate_closing_tags) {
-                    if (comptime strict_mode) {
-                        var i = start + 2;
-                        if (i >= input.len) return error.UnexpectedEndOfData;
-                        if (!tables.isNameStart(input[i])) return error.InvalidClosingTagName;
-                        const close_name_start = i;
-                        const close_scan = scanner.scanNameEndAfterStart(input, i);
-                        i = close_scan.end;
-                        if (close_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[close_name_start..i])) return error.InvalidClosingTagName;
-                        if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, true);
-                        if (i >= input.len) return error.UnexpectedEndOfData;
-                        if (input[i] != '>') return error.InvalidClosingTagName;
-                        if (self.stackLen() != 0) self.popStack();
-                        return i + 1;
-                    }
-                    const gt = scanner.findByte(input, start + 2, '>') orelse {
+                var i = start + 2;
+                if (i < input.len and tables.isWhitespace(input[i])) {
+                    if (validated) return error.InvalidClosingTagName;
+                    i = skipWsMode(input, i, false);
+                }
+                if (i >= input.len) {
+                    if (validated or incremental) return error.UnexpectedEndOfData;
+                    return input.len;
+                }
+                if (!tables.isNameStart(input[i])) {
+                    if (validated) return error.InvalidClosingTagName;
+                    const gt = scanner.findByte(input, i, '>') orelse {
                         if (incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (self.stackLen() != 0) self.popStack();
                     return gt + 1;
                 }
 
-                var i = start + 2;
-                if (i < input.len and tables.isWhitespace(input[i])) {
-                    @branchHint(.unlikely);
-                    if (strict_mode) return error.InvalidClosingTagName;
-                    i = skipWsMode(input, i, strict_mode);
-                }
-                if (i >= input.len) {
-                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
-                    return input.len;
-                }
-                if (self.stackLen() == 0) {
-                    @branchHint(.unlikely);
-                    return error.InvalidClosingTagName;
-                }
-                if (!tables.isNameStart(input[i])) {
-                    @branchHint(.unlikely);
-                    if (validate_closing_tags) return error.InvalidClosingTagName;
-                    const gt = scanner.findByte(input, i, '>') orelse input.len;
-                    return if (gt < input.len) gt + 1 else gt;
-                }
                 const name_start = i;
                 const name_scan = scanner.scanNameAndKeyAfterStart(input, i);
                 const name_end = name_scan.end;
-                // With closing-tag validation enabled, an exact match against the
-                // already validated opening name proves XML Name validity too.
+                if (comptime validated) {
+                    if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) {
+                        return error.InvalidClosingTagName;
+                    }
+                }
                 i = name_end;
-                if (i < input.len and tables.isWhitespace(input[i])) {
-                    @branchHint(.unlikely);
-                    i = skipWsMode(input, i, strict_mode);
-                }
+                if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, validated);
                 if (i >= input.len) {
-                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
-                    return error.InvalidClosingTagName;
+                    if (validated or incremental) return error.UnexpectedEndOfData;
+                    return input.len;
                 }
-                if (input[i] != '>') {
-                    @branchHint(.unlikely);
-                    return error.InvalidClosingTagName;
+                if (input[i] == '>') {
+                    i += 1;
+                } else {
+                    if (validated) return error.InvalidClosingTagName;
+                    const gt = scanner.findByte(input, i, '>') orelse {
+                        if (incremental) return error.UnexpectedEndOfData;
+                        return input.len;
+                    };
+                    i = gt + 1;
                 }
-                i += 1;
 
-                if (validate_closing_tags) {
-                    const top = self.topStack();
-                    const close_len = name_end - name_start;
-                    if (top.name.len() != close_len or top.key != name_scan.key) {
-                        @branchHint(.unlikely);
-                        return error.InvalidClosingTagName;
-                    }
-                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], input[name_start + 8 .. name_end])) {
-                        @branchHint(.unlikely);
-                        return error.InvalidClosingTagName;
+                if (self.stack.items.len == 0) {
+                    if (validated) return error.InvalidClosingTagName;
+                    return i;
+                }
+
+                const close_name = input[name_start..name_end];
+                const top = self.stack.items[self.stack.items.len - 1];
+                if (stackEntryMatches(top, close_name, name_scan.key, input)) {
+                    @branchHint(.likely);
+                    self.popStack();
+                    return i;
+                }
+                if (validated) return error.InvalidClosingTagName;
+
+                // Permissive recovery: search only after the top mismatch, pop
+                // through the matching opener if present, otherwise ignore close.
+                var pos = self.stack.items.len;
+                var found: ?usize = null;
+                while (pos != 0) {
+                    pos -= 1;
+                    if (stackEntryMatches(self.stack.items[pos], close_name, name_scan.key, input)) {
+                        found = pos;
+                        break;
                     }
                 }
-                self.popStack();
+                const found_pos = found orelse return i;
+                while (self.stack.items.len > found_pos) self.popStack();
                 return i;
+            }
+
+            inline fn stackEntryMatches(entry: StackEntry, close_name: []const u8, close_key: u64, input: []const u8) bool {
+                if (entry.name.len() != close_name.len or entry.key != close_key) return false;
+                if (close_name.len <= 8) return true;
+                return std.mem.eql(u8, entry.name.slice(input)[8..], close_name[8..]);
             }
 
             fn parsePiOrDeclaration(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 var i = start + 2;
                 if (i >= input.len) {
                     if (incremental) return error.UnexpectedEndOfData;
-                    if (strict_mode) return error.ExpectedPiTarget;
+                    if (validated) return error.ExpectedPiTarget;
                     return input.len;
                 }
                 if (!tables.isNameStart(input[i])) {
-                    if (strict_mode) return error.ExpectedPiTarget;
+                    if (validated) return error.ExpectedPiTarget;
                     const end0 = scanner.findSequence(input, i, "?>") orelse {
                         if (incremental) return error.UnexpectedEndOfData;
                         return input.len;
@@ -1033,7 +1006,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
 
                 const target_start = i;
-                const target_needs_unicode_validation = if (comptime strict_mode) blk: {
+                const target_needs_unicode_validation = if (comptime validated) blk: {
                     const scan = scanner.scanNameEnd(input, i);
                     i = scan.end;
                     break :blk scan.needs_unicode_validation;
@@ -1042,11 +1015,11 @@ pub fn Types(comptime options: ParseOptions) type {
                     break :blk false;
                 };
                 const target_end = i;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (target_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[target_start..target_end])) return error.ExpectedPiTarget;
                 }
                 const xml_target = target_end - target_start == 3 and std.ascii.eqlIgnoreCase(input[target_start..target_end], "xml");
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                     if (xml_target and start != 0) return error.InvalidDeclaration;
                     if (xml_target and target_end >= input.len) {
@@ -1063,13 +1036,13 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                     }
                 }
-                i = skipWsMode(input, i, strict_mode);
+                i = skipWsMode(input, i, validated);
                 const value_start = i;
                 const end = scanner.findSequence(input, i, "?>") orelse {
-                    if (strict_mode or incremental) return error.UnexpectedEndOfData;
+                    if (validated or incremental) return error.UnexpectedEndOfData;
                     return input.len;
                 };
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (xml_target) {
                         const declaration = try document.validateXmlDeclaration(input[value_start..end]);
                         self.standalone_yes = declaration.standalone_yes;
@@ -1094,10 +1067,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (start + 3 < input.len and input[start + 2] == '-' and input[start + 3] == '-') {
                     const value_start = start + 4;
                     const end = scanner.findSequence(input, value_start, "-->") orelse {
-                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
+                        if (validated or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (comptime strict_mode) try validateComment(input[value_start..end]);
+                    if (comptime validated) try validateComment(input[value_start..end]);
                     if (include_misc_nodes) {
                         const node: Node = .{
                             .source = input,
@@ -1113,10 +1086,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (start + 8 < input.len and input[start + 2] == '[' and input[start + 3] == 'C' and input[start + 4] == 'D' and input[start + 5] == 'A' and input[start + 6] == 'T' and input[start + 7] == 'A' and input[start + 8] == '[') {
                     const value_start = start + 9;
                     const end = scanner.findSequence(input, value_start, "]]>") orelse {
-                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
+                        if (validated or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (self.stackLen() == 0) return error.InvalidDocumentContent;
                     }
                     if (include_misc_nodes) {
@@ -1132,15 +1105,15 @@ pub fn Types(comptime options: ParseOptions) type {
                     return end + 3;
                 }
                 if (scanner.isDoctype(input, start)) {
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (!scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
                         if (self.stackLen() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
                     }
                     const end = scanner.findDoctypeEnd(input, start + 9) orelse {
-                        if (strict_mode or incremental) return error.UnexpectedEndOfData;
+                        if (validated or incremental) return error.UnexpectedEndOfData;
                         return input.len;
                     };
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         const value_start = start + 9;
                         const info = try document.validateDoctypeAlloc(self.allocator, input[value_start..end]);
                         self.doctype_value_start = value_start;
@@ -1152,7 +1125,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             self.require_declared_entities,
                             null,
                         );
-                        if (comptime !incremental and validate_closing_tags) {
+                        if (comptime !incremental) {
                             // Full-stream parsing may borrow unused element-stack
                             // capacity for a root-attribute DTD index. Reserve here,
                             // before the hot opening-tag loop; the table itself is
@@ -1189,7 +1162,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return end + 1;
                 }
                 if (incremental and bangPrefixNeedsMore(input, start)) return error.UnexpectedEndOfData;
-                if (strict_mode) return error.ExpectedGt;
+                if (validated) return error.ExpectedGt;
                 const gt = scanner.findByte(input, start, '>') orelse {
                     if (incremental) return error.UnexpectedEndOfData;
                     return input.len;
@@ -1214,58 +1187,74 @@ pub fn Types(comptime options: ParseOptions) type {
                 var i = start;
                 while (i < input.len) {
                     var text_scan: scanner.TextSpecialRun = undefined;
-                    const lt = if (comptime strict_mode) blk: {
+                    const lt = if (comptime validated) blk: {
                         text_scan = scanner.scanTextSpecials(input, i);
                         break :blk text_scan.lt_index;
                     } else scanner.findByte(input, i, '<') orelse input.len;
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         self.validateCharacterDataSpecials(input, i, lt, text_scan.has_close_bracket, text_scan.has_ampersand, incremental) catch |err| switch (err) {
                             error.UnexpectedEndOfData => if (incremental) return .{ .next = i, .needs_more = true } else return err,
                             else => return err,
                         };
                     }
                     if (lt == input.len) {
-                        if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                        if (!incremental and validated) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     }
                     if (lt + 1 >= input.len) {
                         if (incremental) return .{ .next = lt, .needs_more = true };
-                        if (strict_mode or require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                        if (validated) return error.UnexpectedEndOfData;
                         return .{ .next = input.len };
                     }
 
                     switch (input[lt + 1]) {
                         '/' => {
-                            if (comptime strict_mode or validate_closing_tags) {
-                                const close = scanClosingTag(input, lt, strict_mode, incremental) catch |err| switch (err) {
-                                    error.UnexpectedEndOfData => {
-                                        if (incremental) return .{ .next = lt, .needs_more = true };
-                                        if (strict_mode or require_closed_elements_on_eof) return err;
-                                        return .{ .next = input.len };
-                                    },
-                                    else => return err,
-                                };
-                                if (comptime validate_closing_tags) {
-                                    const top = self.topSkip();
-                                    const close_len = close.name.len();
-                                    if (top.name.len() != close_len or top.key != close.key) return error.InvalidClosingTagName;
-                                    if (close_len > 8 and !std.mem.eql(u8, top.name.slice(input)[8..], close.name.slice(input)[8..])) return error.InvalidClosingTagName;
-                                }
-                                i = close.next;
-                            } else {
-                                const gt = scanner.findByte(input, lt + 2, '>') orelse {
+                            const close = scanClosingTag(input, lt, validated, incremental) catch |err| switch (err) {
+                                error.UnexpectedEndOfData => {
                                     if (incremental) return .{ .next = lt, .needs_more = true };
-                                    if (require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                                    if (validated) return err;
                                     return .{ .next = input.len };
-                                };
-                                i = gt + 1;
-                            }
+                                },
+                                error.InvalidClosingTagName => {
+                                    if (validated) return err;
+                                    const gt = scanner.findByte(input, lt + 2, '>') orelse {
+                                        if (incremental) return .{ .next = lt, .needs_more = true };
+                                        return .{ .next = input.len };
+                                    };
+                                    i = gt + 1;
+                                    continue;
+                                },
+                                else => return err,
+                            };
+                            i = close.next;
 
-                            self.popSkip();
+                            if (self.skip_stack.items.len == 0) {
+                                if (validated) return error.InvalidClosingTagName;
+                                continue;
+                            }
+                            const close_name = close.name.slice(input);
+                            const top = self.topSkip();
+                            if (stackEntryMatches(top, close_name, close.key, input)) {
+                                self.popSkip();
+                            } else if (validated) {
+                                return error.InvalidClosingTagName;
+                            } else {
+                                var pos = self.skip_stack.items.len;
+                                var found: ?usize = null;
+                                while (pos != 0) {
+                                    pos -= 1;
+                                    if (stackEntryMatches(self.skip_stack.items[pos], close_name, close.key, input)) {
+                                        found = pos;
+                                        break;
+                                    }
+                                }
+                                const found_pos = found orelse continue;
+                                while (self.skip_stack.items.len > found_pos) self.popSkip();
+                            }
                             if (self.skipStackLen() == 0) return .{ .next = i };
                         },
                         '?' => {
-                            i = skipPi(input, lt, strict_mode, incremental) catch |err| switch (err) {
+                            i = skipPi(input, lt, validated, incremental) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -1274,10 +1263,10 @@ pub fn Types(comptime options: ParseOptions) type {
                             };
                         },
                         '!' => {
-                            if (comptime strict_mode) {
+                            if (comptime validated) {
                                 if (scanner.isDoctype(input, lt)) return error.InvalidDoctype;
                             }
-                            i = skipBang(input, lt, strict_mode, incremental) catch |err| switch (err) {
+                            i = skipBang(input, lt, validated, incremental) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -1287,17 +1276,17 @@ pub fn Types(comptime options: ParseOptions) type {
                         },
                         else => {
                             if (!tables.isNameStart(input[lt + 1])) {
-                                if (strict_mode) return error.ExpectedElementName;
+                                if (validated) return error.ExpectedElementName;
                                 const gt = scanner.findByte(input, lt + 1, '>') orelse {
                                     if (incremental) return .{ .next = lt, .needs_more = true };
-                                    if (require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                                    if (validated) return error.UnexpectedEndOfData;
                                     return .{ .next = input.len };
                                 };
                                 i = gt + 1;
                                 continue;
                             }
 
-                            const open = scanOpeningTagToken(input, lt, strict_mode, if (comptime strict_mode) self.allocator else null, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
+                            const open = scanOpeningTagToken(input, lt, validated, if (comptime validated) self.allocator else null, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -1310,7 +1299,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
 
-                if (!incremental and require_closed_elements_on_eof) return error.UnexpectedEndOfData;
+                if (!incremental and validated) return error.UnexpectedEndOfData;
                 return .{ .next = input.len };
             }
 
@@ -1333,50 +1322,39 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (content_start >= input.len or input[content_start] == '<') return null;
 
                 var text_scan: scanner.TextSpecialRun = undefined;
-                const lt = if (comptime strict_mode) blk: {
+                const lt = if (comptime validated) blk: {
                     text_scan = scanner.scanTextSpecials(input, content_start);
                     break :blk text_scan.lt_index;
                 } else scanner.findTextEnd(input, content_start) orelse return null;
                 if (lt >= input.len) return null;
                 if (lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
-                var j: usize = undefined;
-                if (comptime validate_closing_tags) {
-                    const open_len: usize = name.len();
-                    const close_start = lt + 2;
-                    const close_end = close_start + open_len;
-                    if (close_end > input.len) return null;
-                    if (scanner.prefixKey(input[close_start..close_end]) != name_key) return null;
-                    if (open_len > 8 and !std.mem.eql(u8, name.slice(input)[8..], input[close_start + 8 .. close_end])) return null;
+                const open_len: usize = name.len();
+                const close_start = lt + 2;
+                const close_end = close_start + open_len;
+                if (close_end > input.len) return null;
+                if (scanner.prefixKey(input[close_start..close_end]) != name_key) return null;
+                if (open_len > 8 and !std.mem.eql(u8, name.slice(input)[8..], input[close_start + 8 .. close_end])) return null;
 
-                    j = close_end;
-                    if (j >= input.len) {
-                        if (strict_mode) return error.UnexpectedEndOfData;
-                        return null;
-                    }
-                    if (input[j] == '>') {
-                        j += 1;
-                    } else if (tables.isWhitespace(input[j])) {
-                        j = skipWsMode(input, j, strict_mode);
-                        if (j >= input.len) {
-                            if (strict_mode) return error.UnexpectedEndOfData;
-                            return null;
-                        }
-                        if (input[j] != '>') return null;
-                        j += 1;
-                    } else {
-                        return null;
-                    }
-                } else {
-                    // Turbo without closing-tag validation already accepts any
-                    // syntactically closing token here. Collapse the common
-                    // text+close sequence without materializing a stack entry.
-                    const gt = scanner.findByte(input, lt + 2, '>') orelse return null;
-                    j = gt + 1;
+                var j = close_end;
+                if (j >= input.len) {
+                    if (validated) return error.UnexpectedEndOfData;
+                    return null;
                 }
+                if (input[j] == '>') {
+                    j += 1;
+                } else if (tables.isWhitespace(input[j])) {
+                    j = skipWsMode(input, j, validated);
+                    if (j >= input.len) {
+                        if (validated) return error.UnexpectedEndOfData;
+                        return null;
+                    }
+                    if (input[j] != '>') return null;
+                    j += 1;
+                } else return null;
 
                 const raw = input[content_start..lt];
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     try self.validateCharacterDataSpecials(input, content_start, lt, text_scan.has_close_bracket, text_scan.has_ampersand, false);
                 }
                 if (drop_whitespace_text_nodes and scanner.skipWhitespace(raw, 0) == raw.len) return j;
@@ -1393,7 +1371,6 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             fn materializeRestoredStacks(self: *Self, input: []const u8) ParseError!void {
-                if (comptime !validate_closing_tags) return;
                 if (!self.restore_pending) return;
 
                 const expected_main = self.restore_stack_len;
@@ -1426,85 +1403,56 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn stackLen(self: *const Self) usize {
-                if (comptime validate_closing_tags) {
-                    return if (self.restore_pending) self.restore_stack_len else self.stack.items.len;
-                }
-                return self.stack;
+                return if (self.restore_pending) self.restore_stack_len else self.stack.items.len;
             }
 
             inline fn skipStackLen(self: *const Self) usize {
-                if (comptime validate_closing_tags) {
-                    return if (self.restore_pending) self.restore_skip_stack_len else self.skip_stack.items.len;
-                }
-                return self.skip_stack;
+                return if (self.restore_pending) self.restore_skip_stack_len else self.skip_stack.items.len;
             }
 
             inline fn noteStackMutation(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    if (self.state_tracking) self.stack_generation +%= 1;
-                }
+                if (self.state_tracking) self.stack_generation +%= 1;
             }
 
             inline fn clearStacks(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    if (self.stack.items.len != 0 or self.skip_stack.items.len != 0 or self.restore_pending) self.noteStackMutation();
-                    self.stack.items.len = 0;
-                    self.skip_stack.items.len = 0;
-                    self.restore_pending = false;
-                } else {
-                    self.stack = 0;
-                    self.skip_stack = 0;
-                }
+                if (self.stack.items.len != 0 or self.skip_stack.items.len != 0 or self.restore_pending) self.noteStackMutation();
+                self.stack.items.len = 0;
+                self.skip_stack.items.len = 0;
+                self.restore_pending = false;
             }
 
             inline fn clearSkipStack(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    if (self.skip_stack.items.len != 0) self.noteStackMutation();
-                    self.skip_stack.items.len = 0;
-                } else self.skip_stack = 0;
+                if (self.skip_stack.items.len != 0) self.noteStackMutation();
+                self.skip_stack.items.len = 0;
             }
 
             inline fn pushStack(noalias self: *Self, name: Span, key: u64) ParseError!void {
-                if (comptime validate_closing_tags) {
-                    const len = self.stack.items.len;
-                    if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
-                    self.stack.appendAssumeCapacity(.{ .name = name, .key = key });
-                    self.noteStackMutation();
-                } else {
-                    self.stack += 1;
-                }
+                const len = self.stack.items.len;
+                if (len == self.stack.capacity) self.stack.ensureTotalCapacityPrecise(self.allocator, len +| len / 2 +| 8) catch return error.OutOfMemory;
+                self.stack.appendAssumeCapacity(.{ .name = name, .key = key });
+                self.noteStackMutation();
             }
 
             inline fn popStack(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    self.stack.items.len -= 1;
-                    self.noteStackMutation();
-                } else self.stack -= 1;
+                self.stack.items.len -= 1;
+                self.noteStackMutation();
             }
 
             inline fn topStack(self: *const Self) StackEntry {
-                if (comptime !validate_closing_tags) unreachable;
                 return self.stack.items[self.stack.items.len - 1];
             }
 
             inline fn pushSkip(noalias self: *Self, name: Span, key: u64) ParseError!void {
-                if (comptime validate_closing_tags) {
-                    try self.skip_stack.append(self.allocator, .{ .name = name, .key = key });
-                    self.noteStackMutation();
-                } else {
-                    self.skip_stack += 1;
-                }
+                try self.skip_stack.append(self.allocator, .{ .name = name, .key = key });
+                self.noteStackMutation();
             }
 
             inline fn popSkip(self: *Self) void {
-                if (comptime validate_closing_tags) {
-                    self.skip_stack.items.len -= 1;
-                    self.noteStackMutation();
-                } else self.skip_stack -= 1;
+                self.skip_stack.items.len -= 1;
+                self.noteStackMutation();
             }
 
             inline fn topSkip(self: *const Self) StackEntry {
-                if (comptime !validate_closing_tags) unreachable;
                 return self.skip_stack.items[self.skip_stack.items.len - 1];
             }
         };
@@ -1583,8 +1531,7 @@ fn subtreeEndOffset(
     name: Span,
     token_end: IndexInt,
     self_closing: bool,
-    comptime strict: bool,
-    comptime validate_closing_tags: bool,
+    comptime validated: bool,
 ) ParseError!usize {
     const end: usize = token_end;
     return switch (kind) {
@@ -1592,70 +1539,100 @@ fn subtreeEndOffset(
         .element => if (self_closing)
             end
         else
-            skipSubtreeStateless(input, end, name, strict, validate_closing_tags),
+            skipSubtreeStateless(input, end, name, validated),
     };
+}
+
+fn spanMatchesClose(open: Span, close: CloseToken, input: []const u8) bool {
+    const close_name = close.name.slice(input);
+    if (open.len() != close_name.len or scanner.prefixKey(open.slice(input)) != close.key) return false;
+    if (close_name.len <= 8) return true;
+    return std.mem.eql(u8, open.slice(input)[8..], close_name[8..]);
 }
 
 fn skipSubtreeStateless(
     input: []const u8,
     start: usize,
     root_name: Span,
-    comptime strict: bool,
-    comptime validate_closing_tags: bool,
+    comptime validated: bool,
 ) ParseError!usize {
     var depth: usize = 1;
     var i = start;
     while (i < input.len) {
         var text_scan: scanner.TextSpecialRun = undefined;
-        const lt = if (comptime strict) blk: {
+        const lt = if (comptime validated) blk: {
             text_scan = scanner.scanTextSpecials(input, i);
             break :blk text_scan.lt_index;
         } else scanner.findByte(input, i, '<') orelse input.len;
-        if (comptime strict) {
+        if (comptime validated) {
             try validateCharacterDataSpecials(input, i, lt, text_scan.has_close_bracket, text_scan.has_ampersand, false);
         }
-        if (lt == input.len) return error.UnexpectedEndOfData;
+        if (lt == input.len) {
+            if (validated) return error.UnexpectedEndOfData;
+            return input.len;
+        }
         i = lt;
-        if (i + 1 >= input.len) return error.UnexpectedEndOfData;
+        if (i + 1 >= input.len) {
+            if (validated) return error.UnexpectedEndOfData;
+            return input.len;
+        }
         switch (input[i + 1]) {
             '/' => {
-                if (comptime strict or validate_closing_tags) {
-                    const close = try scanClosingTag(input, i, strict, false);
-                    if (comptime validate_closing_tags) {
-                        const expected = try expectedOpenNameAtDepth(input, start, root_name, i, depth, strict);
-                        const close_len = close.name.len();
-                        if (expected.len() != close_len or scanner.prefixKey(expected.slice(input)) != close.key) {
-                            return error.InvalidClosingTagName;
-                        }
-                        if (close_len > 8 and !std.mem.eql(u8, expected.slice(input)[8..], close.name.slice(input)[8..])) {
-                            return error.InvalidClosingTagName;
-                        }
-                    }
-                    i = close.next;
-                } else {
-                    const gt = scanner.findByte(input, i + 2, '>') orelse return error.UnexpectedEndOfData;
-                    i = gt + 1;
+                const close = scanClosingTag(input, i, validated, false) catch |err| switch (err) {
+                    error.InvalidClosingTagName, error.UnexpectedEndOfData => {
+                        if (validated) return err;
+                        const gt = scanner.findByte(input, i + 2, '>') orelse return input.len;
+                        i = gt + 1;
+                        continue;
+                    },
+                    else => return err,
+                };
+                i = close.next;
+
+                const expected = expectedOpenNameAtDepth(input, start, root_name, i - close.name.len() - 3, depth, validated) catch |err| {
+                    if (validated) return err;
+                    continue;
+                };
+                if (spanMatchesClose(expected, close, input)) {
+                    depth -= 1;
+                    if (depth == 0) return i;
+                    continue;
                 }
-                if (depth == 0) return error.InvalidClosingTagName;
-                depth -= 1;
-                if (depth == 0) return i;
+                if (validated) return error.InvalidClosingTagName;
+
+                // Cold permissive recovery: find the nearest matching ancestor.
+                var ancestor_depth = depth;
+                var matched: ?usize = null;
+                while (ancestor_depth > 1) {
+                    ancestor_depth -= 1;
+                    const ancestor = expectedOpenNameAtDepth(input, start, root_name, i - close.name.len() - 3, ancestor_depth, false) catch continue;
+                    if (spanMatchesClose(ancestor, close, input)) {
+                        matched = ancestor_depth;
+                        break;
+                    }
+                }
+                if (matched) |d| {
+                    depth = d - 1;
+                    if (depth == 0) return i;
+                }
             },
-            '?' => i = try skipPi(input, i, strict, true),
-            '!' => i = try skipBang(input, i, strict, true),
+            '?' => i = try skipPi(input, i, validated, true),
+            '!' => i = try skipBang(input, i, validated, true),
             else => {
                 if (!tables.isNameStart(input[i + 1])) {
-                    if (comptime strict) return error.ExpectedElementName;
-                    const gt = scanner.findByte(input, i + 1, '>') orelse return error.UnexpectedEndOfData;
+                    if (validated) return error.ExpectedElementName;
+                    const gt = scanner.findByte(input, i + 1, '>') orelse return input.len;
                     i = gt + 1;
                     continue;
                 }
-                const open = try scanOpeningTagToken(input, i, strict, null, null, false);
+                const open = try scanOpeningTagToken(input, i, validated, null, null, false);
                 i = open.next;
                 if (!open.self_closing) depth += 1;
             },
         }
     }
-    return error.UnexpectedEndOfData;
+    if (validated) return error.UnexpectedEndOfData;
+    return input.len;
 }
 
 fn expectedOpenNameAtDepth(
