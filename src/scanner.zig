@@ -6,6 +6,23 @@ const byte_scan_vector_len: comptime_int = switch (builtin.cpu.arch) {
     .x86, .x86_64 => if (std.Target.x86.featureSetHas(builtin.cpu.features, .avx2)) 32 else 16,
     else => 16,
 };
+/// Counts `value` in `source` using vector compare masks. Kept out of the
+/// token loop because it is used only for initial node-density sampling.
+pub noinline fn countByte(source: []const u8, value: u8) usize {
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const needle: Vec = @splat(value);
+    var i: usize = 0;
+    var count: usize = 0;
+    while (i + @sizeOf(Vec) <= source.len) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = source[i..][0..@sizeOf(Vec)].*;
+        const bits: Bits = @select(u1, bytes == needle, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
+        count += @popCount(@as(Mask, @bitCast(bits)));
+    }
+    while (i < source.len) : (i += 1) count += @intFromBool(source[i] == value);
+    return count;
+}
 
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
     if (start >= haystack.len) {

@@ -67,7 +67,6 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "Options",                 "RawNode", "Node",   "Attribute", "AttributeIterator",
         "init",                    "deinit",  "clear",  "parse",     "parseDiagnostic",
         "registerDoctypeEntities", "root",    "kindAt", "nodeAt",    "write",
-        "reserveForInput",
     });
     assertDeclCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertDeclCoverage(T.StreamingAttributeIterator, &.{"next"});
@@ -87,7 +86,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "querySelectorAll",  "write",
     });
     assertFnCoverage(T.Document, &.{
-        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write", "reserveForInput",
+        "init", "deinit", "clear", "parse", "parseDiagnostic", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write",
     });
     assertFnCoverage(T.StreamingAttribute, &.{ "nameSlice", "valueRawSlice" });
     assertFnCoverage(T.StreamingAttributeIterator, &.{"next"});
@@ -99,7 +98,6 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     defer std.testing.allocator.free(source);
     var doc = T.Document.init(std.testing.allocator);
     defer doc.deinit();
-    try doc.reserveForInput(source.len);
     try doc.parse(source);
 
     const raw_document = T.RawNode.initDocument();

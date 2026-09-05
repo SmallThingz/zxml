@@ -11,6 +11,10 @@ const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
 const InitialParseStackCapacity: usize = 32;
+const SmallInitialNodeCapacity: usize = 64;
+const LargeInitialNodeCapacity: usize = 512;
+const SmallInputThreshold: usize = 4 * 1024;
+const NodeDensitySampleBytes: usize = 64 * 1024;
 
 const duplicate_helper_section = switch (builtin.os.tag) {
     .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
@@ -239,6 +243,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
         parse_stack_heap_owned: bool = false,
+        parse_attrs: std.ArrayListUnmanaged(document.RawAttribute) = .empty,
         root_seen: bool = false,
         doctype_seen: bool = false,
         standalone_yes: bool = false,
@@ -308,9 +313,25 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return .{ .end = i, .key = key, .needs_unicode_validation = (high_bits & 0x80) != 0 };
         }
 
+        inline fn initContainers(noalias self: *Self) ParseError!void {
+            const initial_nodes = if (self.input.len <= SmallInputThreshold)
+                SmallInitialNodeCapacity
+            else blk: {
+                const sample_len = @min(self.input.len, NodeDensitySampleBytes);
+                const lt_count = scanner.countByte(self.input[0..sample_len], '<');
+                const projected = std.math.mul(usize, lt_count, self.input.len) catch self.input.len;
+                const density_estimate = projected / sample_len;
+                break :blk @max(LargeInitialNodeCapacity, density_estimate + density_estimate / 8 + 1);
+            };
+            self.doc.nodes.ensureTotalCapacity(self.doc.allocator, initial_nodes) catch return error.OutOfMemory;
+        }
+
         fn parse(noalias self: *Self) align(128) ParseError!void {
             defer self.deinitParseStack();
-            try self.doc.reserveForInput(self.input.len);
+            defer {
+                if (comptime validated) self.parse_attrs.deinit(self.doc.allocator);
+            }
+            try self.initContainers();
             std.debug.assert(self.doc.nodes.items.len == 0);
             _ = self.doc.nodes.addOneAssumeCapacity();
             self.doc.nodes.items[0] = RawNode.initDocument();
@@ -501,7 +522,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 try self.pushStack(element_idx, name_scan.key, name_end - name_start);
                 return;
             }
-            self.doc.parse_attrs.items.len = 0;
+            self.parse_attrs.items.len = 0;
             while (self.i < self.input.len) {
                 const boundary = self.i;
                 self.skipWhitespace();
@@ -513,7 +534,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
-                        const attrs = self.doc.parse_attrs.items;
+                        const attrs = self.parse_attrs.items;
                         const duplicate_start = if (attrs.len == 2)
                             findDuplicateAttributePair(input, attrs)
                         else if (attrs.len > 2)
@@ -543,7 +564,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
-                        const attrs = self.doc.parse_attrs.items;
+                        const attrs = self.parse_attrs.items;
                         const duplicate_start = if (attrs.len == 2)
                             findDuplicateAttributePair(input, attrs)
                         else if (attrs.len > 2)
@@ -660,15 +681,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 if (comptime validated) {
-                    const attr_len = self.doc.parse_attrs.items.len;
-                    if (attr_len == self.doc.parse_attrs.capacity) {
+                    const attr_len = self.parse_attrs.items.len;
+                    if (attr_len == self.parse_attrs.capacity) {
                         @branchHint(.unlikely);
-                        self.doc.parse_attrs.ensureTotalCapacityPrecise(
+                        self.parse_attrs.ensureTotalCapacityPrecise(
                             self.doc.allocator,
                             attr_len +| attr_len / 2 +| @as(usize, 8),
                         ) catch return error.OutOfMemory;
                     }
-                    self.doc.parse_attrs.addOneAssumeCapacity().* = .{
+                    self.parse_attrs.addOneAssumeCapacity().* = .{
                         .name = .{ .start = @intCast(attr_name_start), .end = @intCast(attr_name_end) },
                         .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
                     };
