@@ -1352,27 +1352,32 @@ test "one-byte parser tails preserve strict and permissive behavior" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
 
-    doc.source = "<";
-    try parseInto(&doc, doc.source, .{});
+    var lone_lt = "<".*;
+    doc.source = &lone_lt;
+    try parseInto(&doc, &lone_lt, .{});
     try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 
     doc.clear();
-    doc.source = "<";
-    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
+    lone_lt = "<".*;
+    doc.source = &lone_lt;
+    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, &lone_lt, .{ .validate_well_formedness = true }));
 
     doc.clear();
-    doc.source = "x";
-    try parseInto(&doc, doc.source, .{});
+    var lone_text = "x".*;
+    doc.source = &lone_text;
+    try parseInto(&doc, &lone_text, .{});
     try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
     try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.valueRawSlice());
 
     doc.clear();
-    doc.source = "x";
-    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
+    lone_text = "x".*;
+    doc.source = &lone_text;
+    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, &lone_text, .{ .validate_well_formedness = true }));
 
     doc.clear();
-    doc.source = " ";
-    try parseInto(&doc, doc.source, .{});
+    var lone_space = " ".*;
+    doc.source = &lone_space;
+    try parseInto(&doc, &lone_space, .{});
     try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 }
 
@@ -1395,20 +1400,24 @@ test "strict start-tag grammar rejects malformed attributes" {
     };
 
     for (cases) |case| {
+        const input = try std.testing.allocator.dupe(u8, case.input);
+        defer std.testing.allocator.free(input);
         doc.clear();
-        doc.source = case.input;
-        try std.testing.expectError(case.err, parseInto(&doc, case.input, .{ .validate_well_formedness = true }));
+        doc.source = input;
+        try std.testing.expectError(case.err, parseInto(&doc, input, .{ .validate_well_formedness = true }));
     }
 
     doc.clear();
-    doc.source = "<r></ r>";
-    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
+    var spaced_close = "<r></ r>".*;
+    doc.source = &spaced_close;
+    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, &spaced_close, .{ .validate_well_formedness = true }));
 
-    inline for (.{ "<r></ r>", "<r></>", "<r></r x>", "<r></r" }) |input| {
+    inline for (.{ "<r></ r>", "<r></>", "<r></r x>", "<r></r" }) |literal| {
+        var input = literal.*;
         doc.clear();
-        doc.source = input;
-        const result = parseInto(&doc, input, .{ .validate_well_formedness = true });
-        if (std.mem.eql(u8, input, "<r></r")) {
+        doc.source = &input;
+        const result = parseInto(&doc, &input, .{ .validate_well_formedness = true });
+        if (std.mem.eql(u8, &input, "<r></r")) {
             try std.testing.expectError(error.UnexpectedEndOfData, result);
         } else {
             try std.testing.expectError(error.InvalidClosingTagName, result);
@@ -1465,9 +1474,11 @@ test "permissive closing fast paths preserve permissive fallback forms" {
         .{ .source = "<r><child>t</x></r>", .child = "child" },
         .{ .source = "<r><x>t</x \n></r>", .child = "x" },
     }) |case| {
+        const source = try std.testing.allocator.dupe(u8, case.source);
+        defer std.testing.allocator.free(source);
         doc.clear();
-        doc.source = case.source;
-        try parseInto(&doc, case.source, .{});
+        doc.source = source;
+        try parseInto(&doc, source, .{});
         try std.testing.expectEqualStrings("r", doc.nodeAt(1).?.nameSlice());
         try std.testing.expectEqualStrings(case.child, doc.nodeAt(2).?.nameSlice());
     }
@@ -1476,11 +1487,11 @@ test "permissive closing fast paths preserve permissive fallback forms" {
 test "permissive mode accepts mixed XML whitespace around attribute equals" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
-    const source = "<r a \n \t=\r '1' b \r\n = \t\"2\"></r \n>";
+    var source = "<r a \n \t=\r '1' b \r\n = \t\"2\"></r \n>".*;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
-    doc.source = source;
-    try parseInto(&doc, source, .{});
+    doc.source = &source;
+    try parseInto(&doc, &source, .{});
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
     try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
@@ -1489,11 +1500,11 @@ test "permissive mode accepts mixed XML whitespace around attribute equals" {
 test "strict start tags accept mixed XML whitespace between attributes" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
-    const source = "<r \n\t a='1' \r\n b=\"2\">x</r>";
+    var source = "<r \n\t a='1' \r\n b=\"2\">x</r>".*;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
-    doc.source = source;
-    try parseInto(&doc, source, .{ .validate_well_formedness = true });
+    doc.source = &source;
+    try parseInto(&doc, &source, .{ .validate_well_formedness = true });
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     var attrs = root.attributes();
     try std.testing.expectEqualStrings("a", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());

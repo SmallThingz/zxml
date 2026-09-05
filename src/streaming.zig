@@ -2693,7 +2693,9 @@ test "streaming parser self-test: order attributes and depths" {
 }
 
 test "streaming parser self-test: skip validation and pointer callback" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -2723,7 +2725,9 @@ test "streaming parser self-test: skip validation and pointer callback" {
 }
 
 test "streaming parser parseAvailable resumes from saved state" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -2754,7 +2758,7 @@ test "streaming parser parseAvailable resumes from saved state" {
 }
 
 test "streaming parseAvailable preserves whitespace when a later chunk extends text" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .drop_whitespace_text_nodes = true };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .drop_whitespace_text_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -2791,7 +2795,9 @@ test "streaming parseAvailable preserves whitespace when a later chunk extends t
 }
 
 test "streaming strict character-data validation crosses cumulative chunk boundaries" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<r>a]]>b</r>";
@@ -2813,7 +2819,9 @@ test "streaming strict character-data validation crosses cumulative chunk bounda
 }
 
 test "streaming skipped-subtree character-data validation crosses cumulative chunk boundaries" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<r><skip>a]]>b</skip></r>";
@@ -2835,7 +2843,7 @@ test "streaming skipped-subtree character-data validation crosses cumulative chu
 }
 
 test "streaming parseAvailable accepts every valid token prefix" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<?pi?><!DOCTYPE r [<!ELEMENT r ANY>]><r a='x'><!--c--><![CDATA[d]]><x/></r>";
@@ -2861,7 +2869,9 @@ test "streaming parseAvailable accepts every valid token prefix" {
 }
 
 test "streaming parseAvailable accepts references split at every byte" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<r a='&amp;&#65;&#x42;'>&lt;&#9;&#xA;&#x10FFFF;&#x00010FFFF;</r>";
@@ -2884,7 +2894,9 @@ test "streaming parseAvailable accepts references split at every byte" {
 }
 
 test "streaming strict enforces declared parsed general entities" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -2937,7 +2949,9 @@ test "streaming strict enforces declared parsed general entities" {
 }
 
 test "streaming strict root attribute DTD scratch matches fallback validation" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3014,7 +3028,9 @@ test "streaming strict root attribute DTD scratch matches fallback validation" {
 }
 
 test "streaming strict validates used entity replacement graphs" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3070,7 +3086,9 @@ test "streaming strict validates used entity replacement graphs" {
 }
 
 test "streaming strict validates internal parameter entity replacement text" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3105,7 +3123,9 @@ test "streaming strict validates internal parameter entity replacement text" {
 }
 
 test "streaming strict applies entity constraints to declarations from parameter entities" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3135,7 +3155,9 @@ test "streaming strict applies entity constraints to declarations from parameter
 }
 
 test "streaming strict validates DTD attribute default entity constraints" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3181,7 +3203,9 @@ test "streaming strict validates DTD attribute default entity constraints" {
 }
 
 test "streaming cumulative declared entities survive every split and restore" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<!DOCTYPE r [<!ENTITY custom 'x'>]><r a='&custom;'>&custom;</r>";
@@ -3204,7 +3228,9 @@ test "streaming cumulative declared entities survive every split and restore" {
 }
 
 test "streaming strict validates XML Unicode and names" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3248,7 +3274,7 @@ test "streaming strict validates XML Unicode and names" {
 }
 
 test "streaming trusted strict skips only full-buffer XML character validation" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_xml_characters = false };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .validate_xml_characters = false };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3267,7 +3293,9 @@ test "streaming trusted strict skips only full-buffer XML character validation" 
 }
 
 test "streaming strict cumulative UTF-8 validation handles split sequences and restore" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3292,7 +3320,9 @@ test "streaming strict cumulative UTF-8 validation handles split sequences and r
 }
 
 test "streaming skipped subtrees accept every valid token prefix" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const source = "<r><skip><?pi?><!----><![CDATA[x]]><a q='v'/></skip><tail/></r>";
@@ -3326,7 +3356,9 @@ test "streaming skipped subtrees accept every valid token prefix" {
 }
 
 test "streaming strict token errors match DOM parsing" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const Document = document.Types(opts).Document;
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
@@ -3364,11 +3396,13 @@ test "streaming strict token errors match DOM parsing" {
         "<!DOCTYPE r",
     };
 
-    for (cases) |input| {
+    for (cases) |input_literal| {
+        const input = try std.testing.allocator.dupe(u8, input_literal);
+        defer std.testing.allocator.free(input);
         var doc = Document.init(std.testing.allocator);
         defer doc.deinit();
         const dom_err: ?ParseError = blk: {
-            doc.parse(input, opts) catch |err| break :blk err;
+            doc.parse(input) catch |err| break :blk err;
             break :blk null;
         };
 
@@ -3386,7 +3420,7 @@ test "streaming strict token errors match DOM parsing" {
 }
 
 test "streaming turbo followingTextRaw uses turbo token grammar" {
-    const opts: ParseOptions = .{ .mode = .turbo };
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3409,7 +3443,7 @@ test "streaming turbo followingTextRaw uses turbo token grammar" {
 }
 
 test "streaming turbo simple-text fast path preserves unchecked close semantics and events" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false };
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3467,7 +3501,9 @@ test "streaming turbo simple-text fast path preserves unchecked close semantics 
 }
 
 test "streaming strict start-tag grammar matches DOM strictness" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3489,7 +3525,7 @@ test "streaming strict start-tag grammar matches DOM strictness" {
 }
 
 test "streaming parseAvailable does not replay callbacks across incomplete close tags" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .drop_whitespace_text_nodes = false };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .drop_whitespace_text_nodes = false };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3520,7 +3556,9 @@ test "streaming parseAvailable does not replay callbacks across incomplete close
 }
 
 test "streaming parseAvailable resumes skipped subtrees without replaying their root" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3557,7 +3595,9 @@ test "streaming parseAvailable resumes skipped subtrees without replaying their 
 }
 
 test "streaming skipped eof behavior matches normal descent" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3571,16 +3611,16 @@ test "streaming skipped eof behavior matches normal descent" {
     var descended = ParserType.init(std.testing.allocator);
     defer descended.deinit();
     var descend_ctx: Ctx = .{ .skip = false };
-    try descended.parse("<skip><x/>", &descend_ctx, Ctx.onNode);
+    try std.testing.expectError(error.UnexpectedEndOfData, descended.parse("<skip><x/>", &descend_ctx, Ctx.onNode));
 
     var skipped = ParserType.init(std.testing.allocator);
     defer skipped.deinit();
     var skip_ctx: Ctx = .{ .skip = true };
-    try skipped.parse("<skip><x/>", &skip_ctx, Ctx.onNode);
+    try std.testing.expectError(error.UnexpectedEndOfData, skipped.parse("<skip><x/>", &skip_ctx, Ctx.onNode));
 }
 
-test "streaming require-closed does not accept a truncated close token" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false, .require_closed_elements_on_eof = true };
+test "streaming permissive parser tolerates a truncated close token at eof" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3593,11 +3633,11 @@ test "streaming require-closed does not accept a truncated close token" {
     var parser = ParserType.init(std.testing.allocator);
     defer parser.deinit();
     var ctx: Ctx = .{};
-    try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<r></", &ctx, Ctx.onNode));
+    try parser.parse("<r></", &ctx, Ctx.onNode);
 }
 
-test "streaming skipped subtrees honor require-closed at eof" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = false, .require_closed_elements_on_eof = true };
+test "streaming permissive skipped subtrees tolerate eof before a matching close" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3611,15 +3651,17 @@ test "streaming skipped subtrees honor require-closed at eof" {
     defer parser.deinit();
     var ctx: Ctx = .{};
 
-    try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<skip><x/>", &ctx, Ctx.onNode));
+    try parser.parse("<skip><x/>", &ctx, Ctx.onNode);
 
     parser.clear();
     try std.testing.expect(try parser.parseAvailable("<skip><x/>", &ctx, Ctx.onNode));
-    try std.testing.expectError(error.UnexpectedEndOfData, parser.finish());
+    try parser.finish();
 }
 
 test "streaming skipped subtrees remain strict-validated" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3640,8 +3682,12 @@ test "streaming skipped subtrees remain strict-validated" {
 }
 
 test "streaming skipped subtrees preserve strict token validation" {
-    const EventValidated = Types(.{ .mode = .strict, .validate_closing_tags = true }).Node;
-    const ValidatedParser = Types(.{ .mode = .strict, .validate_closing_tags = true }).Parser;
+    const EventValidated = Types(.{
+        .validate_well_formedness = true,
+    }).Node;
+    const ValidatedParser = Types(.{
+        .validate_well_formedness = true,
+    }).Parser;
     const ValidatedCtx = struct {
         fn onNode(_: *@This(), node: EventValidated) bool {
             return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
@@ -3655,22 +3701,26 @@ test "streaming skipped subtrees preserve strict token validation" {
     validated.clear();
     try std.testing.expectError(error.ExpectedPiTarget, validated.parse("<skip><?XML x?></skip>", &validated_ctx, ValidatedCtx.onNode));
 
-    const EventSyntaxOnly = Types(.{ .mode = .strict, .validate_closing_tags = false }).Node;
-    const SyntaxOnlyParser = Types(.{ .mode = .strict, .validate_closing_tags = false }).Parser;
+    const EventPermissive = Types(.{
+        .validate_well_formedness = true,
+    }).Node;
+    const PermissiveParser = Types(.{
+        .validate_well_formedness = true,
+    }).Parser;
     const SyntaxOnlyCtx = struct {
-        fn onNode(_: *@This(), node: EventSyntaxOnly) bool {
+        fn onNode(_: *@This(), node: EventPermissive) bool {
             return !(node.kind == .element and std.mem.eql(u8, node.nameSlice(), "skip"));
         }
     };
 
-    var syntax_only = SyntaxOnlyParser.init(std.testing.allocator);
+    var syntax_only = PermissiveParser.init(std.testing.allocator);
     defer syntax_only.deinit();
     var syntax_ctx: SyntaxOnlyCtx = .{};
     try std.testing.expectError(error.InvalidClosingTagName, syntax_only.parse("<skip><x/></ ></skip>", &syntax_ctx, SyntaxOnlyCtx.onNode));
 }
 
 test "streaming turbo parseAvailable waits for an incomplete closing token" {
-    const opts: ParseOptions = .{ .mode = .turbo, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3694,7 +3744,9 @@ test "streaming turbo parseAvailable waits for an incomplete closing token" {
 }
 
 test "streaming strict validation supports tag names longer than u16" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const name_len = 70_000;
@@ -3727,11 +3779,7 @@ test "streaming strict validation supports tag names longer than u16" {
 }
 
 test "streaming turbo accepts mixed XML whitespace around attribute equals" {
-    const opts: ParseOptions = .{
-        .mode = .turbo,
-        .validate_closing_tags = true,
-        .require_closed_elements_on_eof = true,
-    };
+    const opts: ParseOptions = .{};
     const T = Types(opts);
     const input = "<r a \n \t=\r \"x>y\"><b/></r \n>";
 
@@ -3759,7 +3807,9 @@ test "streaming turbo accepts mixed XML whitespace around attribute equals" {
 }
 
 test "streaming strict accepts mixed XML whitespace between attributes" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3777,7 +3827,9 @@ test "streaming strict accepts mixed XML whitespace between attributes" {
 }
 
 test "streaming public save restore preserves closing-tag stack across divergent continuations" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3803,7 +3855,9 @@ test "streaming public save restore preserves closing-tag stack across divergent
 }
 
 test "streaming public save restore preserves skipped-subtree stack across divergent continuations" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3828,7 +3882,7 @@ test "streaming public save restore preserves skipped-subtree stack across diver
 }
 
 test "streaming cumulative strict parsing rejects malformed tokens at every split" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3886,7 +3940,7 @@ test "streaming cumulative strict parsing rejects malformed tokens at every spli
 }
 
 test "streaming turbo attribute iterator skips tolerated separators" {
-    const opts: ParseOptions = .{ .mode = .turbo };
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
 
@@ -3907,27 +3961,32 @@ test "streaming turbo attribute iterator skips tolerated separators" {
     try std.testing.expect(ctx.saw_attr);
 }
 
-test "streaming followingTextRaw honors closing-tag validation" {
+test "streaming followingTextRaw distinguishes validated and permissive close recovery" {
     const source = "<skip><x></skip></x>tail";
 
-    inline for (.{
-        ParseOptions{ .mode = .strict, .validate_closing_tags = true },
-        ParseOptions{ .mode = .turbo, .validate_closing_tags = true },
-    }) |opts| {
-        const Event = Types(opts).Node;
-        const node: Event = .{
-            .source = source,
-            .kind = .element,
-            .depth = 0,
-            .name = .{ .start = 1, .end = 5 },
-            .token_end = 6,
-        };
-        try std.testing.expectError(error.InvalidClosingTagName, node.followingTextRaw());
-    }
+    const ValidatedEvent = Types(.{ .validate_well_formedness = true }).Node;
+    const validated_node: ValidatedEvent = .{
+        .source = source,
+        .kind = .element,
+        .depth = 0,
+        .name = .{ .start = 1, .end = 5 },
+        .token_end = 6,
+    };
+    try std.testing.expectError(error.InvalidClosingTagName, validated_node.followingTextRaw());
+
+    const PermissiveEvent = Types(.{}).Node;
+    const permissive_node: PermissiveEvent = .{
+        .source = source,
+        .kind = .element,
+        .depth = 0,
+        .name = .{ .start = 1, .end = 5 },
+        .token_end = 6,
+    };
+    try std.testing.expectEqualStrings("", try permissive_node.followingTextRaw());
 }
 
 test "streaming turbo rejects unterminated quoted attributes like DOM" {
-    const opts: ParseOptions = .{ .mode = .turbo };
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3941,8 +4000,8 @@ test "streaming turbo rejects unterminated quoted attributes like DOM" {
     try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<a x='1></a>", &ctx, Ctx.onNode));
 }
 
-test "streaming turbo closing validation rejects truncated closing tags" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+test "streaming permissive parser tolerates truncated unmatched closing tags" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3953,11 +4012,11 @@ test "streaming turbo closing validation rejects truncated closing tags" {
     var parser = ParserType.init(std.testing.allocator);
     defer parser.deinit();
     var ctx: Ctx = .{};
-    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("text</X", &ctx, Ctx.onNode));
+    try parser.parse("text</X", &ctx, Ctx.onNode);
 }
 
-test "streaming turbo closing validation rejects a named close missing gt" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+test "streaming permissive parser tolerates named closes missing gt at eof" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3975,12 +4034,12 @@ test "streaming turbo closing validation rejects a named close missing gt" {
         var parser = ParserType.init(std.testing.allocator);
         defer parser.deinit();
         var ctx: Ctx = .{};
-        try std.testing.expectError(error.InvalidClosingTagName, parser.parse(input, &ctx, Ctx.onNode));
+        try parser.parse(input, &ctx, Ctx.onNode);
     }
 }
 
-test "streaming skipped turbo subtree rejects a named close missing gt" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = false };
+test "streaming permissive skipped subtree tolerates a named close missing gt" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -3992,11 +4051,11 @@ test "streaming skipped turbo subtree rejects a named close missing gt" {
     var parser = ParserType.init(std.testing.allocator);
     defer parser.deinit();
     var ctx: Ctx = .{};
-    try std.testing.expectError(error.InvalidClosingTagName, parser.parse("<a></X", &ctx, Ctx.onNode));
+    try parser.parse("<a></X", &ctx, Ctx.onNode);
 }
 
-test "streaming skipped turbo subtree preserves required-closure errors" {
-    const opts: ParseOptions = .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+test "streaming permissive skipped subtree tolerates unfinished content at eof" {
+    const opts: ParseOptions = .{};
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4007,11 +4066,11 @@ test "streaming skipped turbo subtree preserves required-closure errors" {
     var parser = ParserType.init(std.testing.allocator);
     defer parser.deinit();
     var ctx: Ctx = .{};
-    try std.testing.expectError(error.UnexpectedEndOfData, parser.parse("<b>< unfinished", &ctx, Ctx.onNode));
+    try parser.parse("<b>< unfinished", &ctx, Ctx.onNode);
 }
 
 test "streaming strict enforces document-level well-formedness" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true, .include_misc_nodes = true };
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = true };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4040,7 +4099,9 @@ test "streaming strict enforces document-level well-formedness" {
 }
 
 test "streaming strict validates processing instruction separators" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4067,7 +4128,9 @@ test "streaming strict validates processing instruction separators" {
 }
 
 test "streaming strict incremental XML declaration survives every byte boundary" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4088,7 +4151,9 @@ test "streaming strict incremental XML declaration survives every byte boundary"
 }
 
 test "streaming strict save restore preserves document-level state" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4110,7 +4175,9 @@ test "streaming strict save restore preserves document-level state" {
 }
 
 test "streaming strict rejects duplicate attribute names including skipped subtrees" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4293,7 +4360,9 @@ test "streaming strict rejects duplicate attribute names including skipped subtr
 }
 
 test "streaming strict validates XML declaration grammar" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
@@ -4318,7 +4387,9 @@ test "streaming strict validates XML declaration grammar" {
 }
 
 test "streaming strict validates DOCTYPE grammar" {
-    const opts: ParseOptions = .{ .mode = .strict, .validate_closing_tags = true };
+    const opts: ParseOptions = .{
+        .validate_well_formedness = true,
+    };
     const ParserType = Types(opts).Parser;
     const Event = Types(opts).Node;
     const Ctx = struct {
