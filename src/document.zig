@@ -1983,26 +1983,14 @@ fn GetAttribute(comptime options: ParseOptions) type {
         const Self = @This();
         const DocumentType = GetDocument(options);
         doc: *DocumentType,
-        element_name_end: IndexInt,
-        ordinal: usize,
-
-        inline fn resolveRaw(self: Self) ?RawAttribute {
-            var it = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness).initElement(self.doc.source, self.element_name_end);
-            var ordinal: usize = 0;
-            while (it.next()) |raw_attr| : (ordinal += 1) {
-                if (ordinal == self.ordinal) return raw_attr;
-            }
-            return null;
-        }
+        raw_attr: RawAttribute,
 
         pub fn nameSlice(self: Self) []const u8 {
-            const raw_attr = self.resolveRaw() orelse return "";
-            return raw_attr.name.slice(self.doc.source);
+            return self.raw_attr.name.slice(self.doc.source);
         }
 
         pub fn valueRawSlice(self: Self) []const u8 {
-            const raw_attr = self.resolveRaw() orelse return "";
-            return raw_attr.value.slice(self.doc.source);
+            return self.raw_attr.value.slice(self.doc.source);
         }
 
         pub fn namespacePrefix(self: Self) ?[]const u8 {
@@ -2018,32 +2006,17 @@ fn GetAttribute(comptime options: ParseOptions) type {
         }
 
         pub fn value(self: Self, alloc: std.mem.Allocator) ValueError!common.SliceResult {
-            var raw_attr = self.resolveRaw() orelse return .{ .value = "" };
-            if (!raw_attr.hasValue()) return .{ .value = "" };
-            if (comptime options.non_destructive) return self.doc.decodeValueResult(alloc, raw_attr.value.slice(self.doc.source));
-
-            if (raw_attr.value_state == .raw) {
-                if (try attrs_mod.materializeDecodedValues(
-                    options.validate_well_formedness,
-                    self.doc.source,
-                    self.element_name_end,
-                    self.doc.entityMap(),
-                )) raw_attr = self.resolveRaw() orelse return .{ .value = "" };
-            }
-            return switch (raw_attr.value_state) {
-                .decoded => .{ .value = raw_attr.value.slice(self.doc.source) },
-                .raw, .decode_failed => self.doc.decodeValueResult(alloc, raw_attr.value.slice(self.doc.source)),
-                .none => .{ .value = "" },
-            };
+            if (!self.raw_attr.hasValue()) return .{ .value = "" };
+            if (self.raw_attr.value_state.isDecoded()) return .{ .value = self.valueRawSlice() };
+            return self.doc.decodeValueResult(alloc, self.valueRawSlice());
         }
 
         pub fn write(self: Self, writer: anytype) !void {
-            const raw_attr = self.resolveRaw() orelse return;
-            try writer.writeAll(raw_attr.name.slice(self.doc.source));
-            if (!raw_attr.hasValue()) return;
+            try writer.writeAll(self.nameSlice());
+            if (!self.raw_attr.hasValue()) return;
             try writer.writeAll("=\"");
-            const bytes = raw_attr.value.slice(self.doc.source);
-            if (raw_attr.value_state == .decoded) {
+            const bytes = self.valueRawSlice();
+            if (self.raw_attr.value_state.isDecoded()) {
                 try writeEscapedAttributeValue(writer, bytes);
             } else {
                 try writeDoubleQuotedAttributeValue(writer, bytes);
@@ -2061,18 +2034,10 @@ fn GetAttributeIterator(comptime options: ParseOptions) type {
 
         doc: *DocumentType,
         raw: RawIteratorType,
-        element_name_end: IndexInt,
-        ordinal: usize = 0,
 
         pub fn next(self: *@This()) ?AttributeType {
-            _ = self.raw.next() orelse return null;
-            const ordinal = self.ordinal;
-            self.ordinal += 1;
-            return .{
-                .doc = self.doc,
-                .element_name_end = self.element_name_end,
-                .ordinal = ordinal,
-            };
+            const raw_attr = self.raw.next() orelse return null;
+            return .{ .doc = self.doc, .raw_attr = raw_attr };
         }
     };
 }
@@ -2099,6 +2064,17 @@ fn GetNode(comptime options: ParseOptions) type {
             return IteratorType.initElement(self.doc.source, self.raw().name_or_text.end);
         }
 
+        inline fn materializeAttributes(self: Self) void {
+            if (comptime options.non_destructive) return;
+            if (self.kind != .element) return;
+            _ = attrs_mod.materializeAttributes(
+                options.validate_well_formedness,
+                self.doc.source,
+                self.raw().name_or_text.end,
+                self.doc.entityMap(),
+            );
+        }
+
         inline fn findAttributeRaw(self: Self, name: []const u8) ?RawAttribute {
             var it = self.rawAttributes();
             while (it.next()) |attr| {
@@ -2108,8 +2084,8 @@ fn GetNode(comptime options: ParseOptions) type {
         }
 
         pub fn attributes(self: Self) AttributeIteratorType {
-            const name_end = if (self.kind == .element) self.raw().name_or_text.end else @as(IndexInt, @intCast(self.doc.source.len));
-            return .{ .doc = self.doc, .raw = self.rawAttributes(), .element_name_end = name_end };
+            self.materializeAttributes();
+            return .{ .doc = self.doc, .raw = self.rawAttributes() };
         }
 
         pub fn nameSlice(self: Self) []const u8 {
@@ -2218,23 +2194,12 @@ fn GetNode(comptime options: ParseOptions) type {
         }
 
         pub fn getAttributeValue(self: Self, alloc: std.mem.Allocator, name: []const u8) ValueError!?common.SliceResult {
-            var raw_attr = self.findAttributeRaw(name) orelse return null;
+            if (comptime !options.non_destructive) self.materializeAttributes();
+            const raw_attr = self.findAttributeRaw(name) orelse return null;
             if (!raw_attr.hasValue()) return .{ .value = "" };
-            if (comptime options.non_destructive) return try self.doc.decodeValueResult(alloc, raw_attr.value.slice(self.doc.source));
-
-            if (raw_attr.value_state == .raw) {
-                if (try attrs_mod.materializeDecodedValues(
-                    options.validate_well_formedness,
-                    self.doc.source,
-                    self.raw().name_or_text.end,
-                    self.doc.entityMap(),
-                )) raw_attr = self.findAttributeRaw(name) orelse return null;
-            }
-            return switch (raw_attr.value_state) {
-                .decoded => .{ .value = raw_attr.value.slice(self.doc.source) },
-                .raw, .decode_failed => try self.doc.decodeValueResult(alloc, raw_attr.value.slice(self.doc.source)),
-                .none => .{ .value = "" },
-            };
+            const raw_value = raw_attr.value.slice(self.doc.source);
+            if (raw_attr.value_state.isDecoded()) return .{ .value = raw_value };
+            return try self.doc.decodeValueResult(alloc, raw_value);
         }
 
         pub fn firstAttribute(self: Self) ?AttributeType {
@@ -2598,7 +2563,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                 if (raw_attr.hasValue()) {
                     try writer.writeAll("=\"");
                     const value = raw_attr.value.slice(self.source);
-                    if (raw_attr.value_state == .decoded) {
+                    if (raw_attr.value_state.isDecoded()) {
                         try writeEscapedAttributeValue(writer, value);
                     } else {
                         try writeDoubleQuotedAttributeValue(writer, value);
@@ -2971,6 +2936,20 @@ test "destructive text materialization caches decoded bytes in source" {
     defer out.deinit();
     try doc.write(&out.writer);
     try std.testing.expectEqualStrings("<r>a&amp;b</r>", out.written());
+}
+
+test "raw attribute lookup does not trigger destructive materialization" {
+    const opts: ParseOptions = .{};
+    var source = "<r a='&amp;' b='two'/>".*;
+    var doc = opts.Document().init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(&source);
+
+    const before = source;
+    const root = doc.nodeAt(1).?;
+    try std.testing.expectEqualStrings("&amp;", root.getAttributeValueRaw("a").?);
+    try std.testing.expectEqualStrings("two", root.getAttributeValueRaw("b").?);
+    try std.testing.expectEqualSlices(u8, &before, &source);
 }
 
 test "destructive attribute materialization caches decoded bytes and preserves handles" {
