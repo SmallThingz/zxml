@@ -14,13 +14,11 @@ pub const StreamBenchMode = enum {
 };
 
 const dom_strict_options: zxml.ParseOptions = .{
-    .mode = .strict,
-    .validate_closing_tags = true,
+    .validate_well_formedness = true,
     .include_misc_nodes = true,
 };
 const dom_strict_trusted_options: zxml.ParseOptions = .{
-    .mode = .strict,
-    .validate_closing_tags = true,
+    .validate_well_formedness = true,
     .validate_xml_characters = false,
     .include_misc_nodes = true,
 };
@@ -109,8 +107,7 @@ pub fn runStreamParseFile(io: std.Io, path: []const u8, iterations: usize, mode:
 
 fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
     const StreamStrict = zxml.Types(.{
-        .mode = .strict,
-        .validate_closing_tags = true,
+        .validate_well_formedness = true,
         .include_misc_nodes = true,
     });
     const StreamingEventType = StreamStrict.StreamingEvent;
@@ -145,8 +142,7 @@ fn runStreamStrict(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iter
 
 fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
     const StreamStrict = zxml.Types(.{
-        .mode = .strict,
-        .validate_closing_tags = true,
+        .validate_well_formedness = true,
         .validate_xml_characters = false,
         .include_misc_nodes = true,
     });
@@ -182,7 +178,6 @@ fn runStreamStrictTrusted(io: std.Io, alloc: std.mem.Allocator, input: []const u
 
 fn runStreamTurbo(io: std.Io, alloc: std.mem.Allocator, input: []const u8, iterations: usize) !u64 {
     const StreamTurbo = zxml.Types(.{
-        .mode = .turbo,
         .include_misc_nodes = true,
     });
     const StreamingEventType = StreamTurbo.StreamingEvent;

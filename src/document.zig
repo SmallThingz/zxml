@@ -22,13 +22,7 @@ const xml_scan_vector_len: comptime_int = switch (builtin.cpu.arch) {
     else => 16,
 };
 
-pub const ParseMode = enum {
-    turbo,
-    strict,
-};
-
 pub const ParseOptions = struct {
-    mode: ParseMode = .turbo,
     /// Destructive parsing is the throughput-oriented default. It permits lazy
     /// query-time materialization to cache decoded/compacted data in source.
     non_destructive: bool = false,
@@ -39,12 +33,10 @@ pub const ParseOptions = struct {
     store_last_child: bool = false,
     /// Persist previous-sibling indexes. Disabled fields are zero-sized.
     store_prev_sibling: bool = false,
-    validate_closing_tags: bool = false,
     /// With `validate_well_formedness`, validates XML character ranges and UTF-8
     /// before full-buffer strict parsing. Incremental streaming still validates
     /// UTF-8 boundaries required for safe chunking.
     validate_xml_characters: bool = true,
-    require_closed_elements_on_eof: bool = false,
     expand_dtd_entities: bool = false,
     max_entity_value_len: usize = 4096,
     drop_whitespace_text_nodes: bool = true,
@@ -59,7 +51,7 @@ pub const ParseOptions = struct {
     pub fn parse(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) ParseError!options.Document() {
         var doc = options.Document().init(allocator);
         errdefer doc.deinit();
-        try doc.parse(input, options);
+        try doc.parse(input);
         return doc;
     }
 
@@ -2426,7 +2418,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                 self.allocator,
                 &declarations,
                 &self.entity_map,
-                options.mode == .strict,
+                options.validate_well_formedness,
                 options.max_entity_value_len,
             ) catch |err| switch (err) {
                 error.OutputTooLarge => return error.EntityValueTooLarge,

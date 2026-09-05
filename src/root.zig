@@ -9,7 +9,6 @@ const streaming_mod = @import("streaming.zig");
 
 pub const MaxInputLen = common.MaxLen;
 pub const NodeType = document_mod.NodeType;
-pub const ParseMode = document_mod.ParseMode;
 pub const ParseOptions = document_mod.ParseOptions;
 pub const ParseError = document_mod.ParseError;
 pub const ParseDiagnostic = document_mod.ParseDiagnostic;

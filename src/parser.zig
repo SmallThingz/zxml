@@ -223,7 +223,7 @@ pub fn parseInto(noalias doc: anytype, input: []const u8, comptime opts: ParseOp
 pub fn parseIntoTracked(noalias doc: anytype, input: []const u8, comptime opts: ParseOptions, comptime track_error_offset: bool) ParseError!void {
     if (comptime track_error_offset) doc.last_error_offset = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
-    if (comptime opts.mode == .strict and opts.validate_well_formedness and opts.validate_xml_characters) try document.validateXmlCharacters(input);
+    if (comptime opts.validate_well_formedness and opts.validate_xml_characters) try document.validateXmlCharacters(input);
     var p = Parser(opts, @TypeOf(doc.*)){ .doc = doc, .input = input, .i = 0 };
     p.parse() catch |err| {
         if (comptime track_error_offset) doc.last_error_offset = @min(p.i, input.len);
@@ -254,7 +254,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             tag_len: IndexInt = 0,
         };
 
-        const strict_mode = opts.mode == .strict and opts.validate_well_formedness;
+        const validated = opts.validate_well_formedness;
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
@@ -318,7 +318,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.parse_stack.appendAssumeCapacity(.{ .idx = 0 });
             while (self.i + 1 < self.input.len) {
                 if (self.input[self.i] != '<') {
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         const text_start = self.i;
                         const whitespace_end = if (tables.WhitespaceTable[self.input[text_start]]) scanner.skipWhitespace(self.input, text_start) else text_start;
                         const has_non_whitespace = whitespace_end == text_start or (whitespace_end < self.input.len and self.input[whitespace_end] != '<');
@@ -364,16 +364,16 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             // Handle the one-byte tail outside the hot token loop. A trailing '<'
-            // is malformed in strict mode and safely ignored by permissive turbo;
+            // is malformed in validated mode and safely ignored by permissive mode;
             // any other final byte is ordinary text.
             if (self.i < self.input.len) {
                 if (self.input[self.i] == '<') {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (validated) return error.UnexpectedEndOfData;
                     self.i += 1;
                 } else {
                     const text_start = self.i;
                     self.i = self.input.len;
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         try self.validateCharacterDataSpecials(self.input[text_start..], false, self.input[text_start] == '&');
                         if (self.topIndex() == 0 and !tables.WhitespaceTable[self.input[text_start]]) return error.InvalidDocumentContent;
                     }
@@ -383,7 +383,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
             }
 
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (self.stackLen() > 1) return error.UnexpectedEndOfData;
                 if (!self.root_seen) return error.ExpectedDocumentElement;
             }
@@ -401,7 +401,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (self.i >= self.input.len) return error.UnexpectedEndOfData;
             if (!tables.isNameStart(self.input[self.i])) {
-                if (strict_mode) return error.ExpectedElementName;
+                if (validated) return error.ExpectedElementName;
                 self.i = (scanner.findByte(self.input, self.i, '>') orelse self.input.len);
                 if (self.i < self.input.len) self.i += 1;
                 return;
@@ -410,19 +410,19 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const name_start = self.i;
             const name_scan = scanOpeningName(self.input, self.i);
             const name_end = name_scan.end;
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (name_end - name_start > std.math.maxInt(u16)) {
                     @branchHint(.unlikely);
                     return error.InputTooLarge;
                 }
             }
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[name_start..name_end])) return error.ExpectedElementName;
             }
             self.i = name_end;
 
             const parent_idx = self.topIndex();
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (parent_idx == 0) {
                     if (self.root_seen) return error.MultipleDocumentElements;
                     self.root_seen = true;
@@ -431,15 +431,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             // Common path: start tag with no attributes.
             if (self.i >= self.input.len) return error.UnexpectedEndOfData;
             const c0 = self.input[self.i];
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (c0 == '>') {
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
-                    if (comptime !strict_mode) {
+                    if (comptime !validated) {
                         if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
                     const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
@@ -450,11 +450,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     @branchHint(.likely);
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
-                    if (comptime !strict_mode) {
+                    if (comptime !validated) {
                         if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
                     const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
@@ -462,7 +462,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
             }
 
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (c0 == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     self.i += 2;
                     _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
@@ -478,7 +478,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const attr_start = self.i;
-            if (comptime !strict_mode) {
+            if (comptime !validated) {
                 const tail = scanner.scanStartTagEnd(self.input, attr_start) orelse {
                     self.i = self.input.len;
                     return error.UnexpectedEndOfData;
@@ -491,11 +491,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 self.skipDroppedWhitespaceText();
-                if (comptime !strict_mode) {
+                if (comptime !validated) {
                     if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                 }
                 const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                 }
                 try self.pushStack(element_idx, name_scan.key, name_end - name_start);
@@ -510,7 +510,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const c = self.input[self.i];
                 if (c == '>') {
                     const attr_end = self.i;
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
                         const attrs = self.doc.parse_attrs.items;
@@ -527,11 +527,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     }
                     self.i += 1;
                     self.skipDroppedWhitespaceText();
-                    if (comptime !strict_mode) {
+                    if (comptime !validated) {
                         if (try self.tryAppendSimpleTextElement(parent_idx, name_start, name_end)) return;
                     }
                     const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
                     try self.pushStack(element_idx, name_scan.key, name_end - name_start);
@@ -540,7 +540,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (c == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     const attr_end = self.i;
-                    if (comptime strict_mode) {
+                    if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
                         const attrs = self.doc.parse_attrs.items;
@@ -560,12 +560,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     return;
                 }
 
-                if (strict_mode and self.i == boundary) {
+                if (validated and self.i == boundary) {
                     @branchHint(.unlikely);
                     return error.ExpectedAttributeName;
                 }
                 if (!tables.isNameStart(c)) {
-                    if (strict_mode) {
+                    if (validated) {
                         @branchHint(.unlikely);
                         return error.ExpectedAttributeName;
                     }
@@ -574,7 +574,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 const attr_name_start = self.i;
-                const attr_name_needs_unicode_validation = if (comptime strict_mode) blk: {
+                const attr_name_needs_unicode_validation = if (comptime validated) blk: {
                     const scan = scanner.scanNameEndAfterStart(self.input, self.i);
                     self.i = scan.end;
                     break :blk scan.needs_unicode_validation;
@@ -583,7 +583,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     break :blk false;
                 };
                 const attr_name_end = self.i;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (attr_name_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
                 }
                 const input = self.input;
@@ -597,7 +597,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         const quote = input[self.i + 1];
                         if (quote == '\'' or quote == '"') {
                             value_start = self.i + 2;
-                            if (comptime strict_mode) {
+                            if (comptime validated) {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
@@ -624,7 +624,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                             const quote = value_first;
                             self.i += 1;
                             value_start = self.i;
-                            if (comptime strict_mode) {
+                            if (comptime validated) {
                                 const scan = scanner.scanQuotedValueSpecials(input, value_start, quote);
                                 if (scan.end == input_len) return error.ExpectedQuote;
                                 value_end = scan.end;
@@ -638,7 +638,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                                 self.i = input_len;
                             }
                         } else {
-                            if (strict_mode) return error.ExpectedQuote;
+                            if (validated) return error.ExpectedQuote;
                             value_start = self.i;
                             const raw_end = scanner.findAttrUnquotedEnd(input, self.i);
                             if (raw_end > value_start and raw_end < input_len and input[raw_end] == '>' and input[raw_end - 1] == '/') {
@@ -652,14 +652,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         break :parse_value;
                     }
 
-                    if (strict_mode) {
+                    if (validated) {
                         @branchHint(.unlikely);
                         if (self.i >= input_len) return error.UnexpectedEndOfData;
                         return error.ExpectedEq;
                     }
                 }
 
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     const attr_len = self.doc.parse_attrs.items.len;
                     if (attr_len == self.doc.parse_attrs.capacity) {
                         @branchHint(.unlikely);
@@ -682,15 +682,15 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i += 2; // </
 
             if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) {
-                if (strict_mode) return error.InvalidClosingTagName;
+                if (validated) return error.InvalidClosingTagName;
                 self.skipWhitespace();
             }
             if (self.i >= self.input.len) {
-                if (strict_mode) return error.UnexpectedEndOfData;
+                if (validated) return error.UnexpectedEndOfData;
                 return;
             }
             if (!tables.isNameStart(self.input[self.i])) {
-                if (strict_mode) return error.InvalidClosingTagName;
+                if (validated) return error.InvalidClosingTagName;
                 const gt = scanner.findByte(self.input, self.i, '>') orelse {
                     self.i = self.input.len;
                     return;
@@ -702,7 +702,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_start = self.i;
             const close_scan = scanOpeningName(self.input, close_start);
             const close_end = close_scan.end;
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (close_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[close_start..close_end])) {
                     return error.InvalidClosingTagName;
                 }
@@ -710,13 +710,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i = close_end;
             if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) self.skipWhitespace();
             if (self.i >= self.input.len) {
-                if (strict_mode) return error.UnexpectedEndOfData;
+                if (validated) return error.UnexpectedEndOfData;
                 return;
             }
             if (self.input[self.i] == '>') {
                 self.i += 1;
             } else {
-                if (strict_mode) return error.InvalidClosingTagName;
+                if (validated) return error.InvalidClosingTagName;
                 const gt = scanner.findByte(self.input, self.i, '>') orelse {
                     self.i = self.input.len;
                     return;
@@ -725,7 +725,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             if (self.stackLen() <= 1) {
-                if (strict_mode) return error.InvalidClosingTagName;
+                if (validated) return error.InvalidClosingTagName;
                 return;
             }
 
@@ -736,7 +736,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.finishNode(self.popStack());
                 return;
             }
-            if (strict_mode) return error.InvalidClosingTagName;
+            if (validated) return error.InvalidClosingTagName;
 
             // Permissive XML recovery mirrors zhtml's malformed-close strategy:
             // search only after the hot top-match misses, pop through an exact
@@ -762,7 +762,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.i += 2; // <?
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
-                if (strict_mode) return error.ExpectedPiTarget;
+                if (validated) return error.ExpectedPiTarget;
                 self.i = blk: {
                     var j = self.i;
                     while (true) {
@@ -776,7 +776,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const target_start = self.i;
-            const target_needs_unicode_validation = if (comptime strict_mode) blk: {
+            const target_needs_unicode_validation = if (comptime validated) blk: {
                 const scan = scanner.scanNameEndAfterStart(self.input, self.i);
                 self.i = scan.end;
                 break :blk scan.needs_unicode_validation;
@@ -786,12 +786,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 break :blk false;
             };
             const target_end = self.i;
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (target_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[target_start..target_end])) return error.ExpectedPiTarget;
             }
             const xml_target = target_end - target_start == 3 and
                 std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
                 if (xml_target and markup_start != 0) return error.InvalidDeclaration;
                 if (xml_target and (target_end >= self.input.len or !tables.isWhitespace(self.input[target_end]))) return error.InvalidDeclaration;
@@ -816,14 +816,14 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     j = q + 1;
                 }
             } orelse {
-                if (strict_mode) return error.UnexpectedEndOfData;
+                if (validated) return error.UnexpectedEndOfData;
                 self.i = self.input.len;
                 return;
             };
             const value_end = end;
             self.i = end + 2;
 
-            if (comptime strict_mode) {
+            if (comptime validated) {
                 if (xml_target) {
                     const declaration = try document.validateXmlDeclaration(self.input[value_start..value_end]);
                     self.standalone_yes = declaration.standalone_yes;
@@ -848,11 +848,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (self.i + 3 < self.input.len and self.input[self.i + 2] == '-' and self.input[self.i + 3] == '-') {
                 const value_start = self.i + 4;
                 const end = scanner.findSequence(self.input, value_start, "-->") orelse {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (validated) return error.UnexpectedEndOfData;
                     self.i = self.input.len;
                     return;
                 };
-                if (comptime strict_mode) try validateComment(self.input[value_start..end]);
+                if (comptime validated) try validateComment(self.input[value_start..end]);
                 self.i = end + 3;
 
                 if (!opts.include_misc_nodes) return;
@@ -878,13 +878,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             {
                 const value_start = self.i + 9;
                 const end = scanner.findSequence(self.input, value_start, "]]>") orelse {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (validated) return error.UnexpectedEndOfData;
                     self.i = self.input.len;
                     return;
                 };
                 self.i = end + 3;
 
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (self.topIndex() == 0) return error.InvalidDocumentContent;
                 }
 
@@ -903,19 +903,19 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             if (scanner.isDoctype(self.input, self.i)) {
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
                     if (self.topIndex() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
                 }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (validated) return error.UnexpectedEndOfData;
                     self.i = self.input.len;
                     return;
                 };
 
                 const value_start = self.i + 9;
                 const value_end = j;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     const info = try document.validateDoctypeAlloc(self.doc.allocator, self.input[value_start..value_end]);
                     self.doctype_value_start = value_start;
                     self.doctype_value_end = value_end;
@@ -930,7 +930,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
                 self.i = j + 1;
 
-                if (comptime strict_mode) self.doctype_seen = true;
+                if (comptime validated) self.doctype_seen = true;
 
                 if (expand_dtd_entities) {
                     try self.doc.registerDoctypeEntities(self.input[value_start..value_end]);
@@ -948,7 +948,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 return;
             }
 
-            if (strict_mode) return error.ExpectedGt;
+            if (validated) return error.ExpectedGt;
             self.i = scanner.findByte(self.input, self.i, '>') orelse self.input.len;
             if (self.i < self.input.len) self.i += 1;
         }
@@ -1078,7 +1078,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const c = self.input[self.i];
             if (c == ' ') {
                 const next = self.i + 1;
-                if (comptime strict_mode) {
+                if (comptime validated) {
                     // All XML whitespace bytes are <= ASCII space. Keep the
                     // ordinary ` space + token` path to one extra comparison,
                     // but fall through for mixed space/newline/tab/CR runs.
@@ -1111,7 +1111,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             name_start: usize,
             name_end: usize,
         ) ParseError!bool {
-            comptime std.debug.assert(!strict_mode);
+            comptime std.debug.assert(!validated);
             const text_start = self.i;
             if (text_start >= self.input.len or self.input[text_start] == '<') return false;
 
@@ -1165,7 +1165,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             var has_close_bracket = false;
             var has_ampersand = false;
-            const lt = if (comptime strict_mode) blk: {
+            const lt = if (comptime validated) blk: {
                 const specials = scanner.scanTextSpecials(self.input, text_start);
                 has_close_bracket = specials.has_close_bracket;
                 has_ampersand = specials.has_ampersand;
@@ -1182,7 +1182,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             var j = close_end;
             if (j >= self.input.len) {
-                if (strict_mode) return error.UnexpectedEndOfData;
+                if (validated) return error.UnexpectedEndOfData;
                 return false;
             }
             if (self.input[j] == '>') {
@@ -1191,7 +1191,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 j += 1;
                 while (j < self.input.len and tables.isWhitespace(self.input[j])) : (j += 1) {}
                 if (j >= self.input.len) {
-                    if (strict_mode) return error.UnexpectedEndOfData;
+                    if (validated) return error.UnexpectedEndOfData;
                     return false;
                 }
                 if (self.input[j] != '>') return false;
@@ -1201,7 +1201,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const raw = self.input[text_start..lt];
-            if (comptime strict_mode) try self.validateCharacterDataSpecials(raw, has_close_bracket, has_ampersand);
+            if (comptime validated) try self.validateCharacterDataSpecials(raw, has_close_bracket, has_ampersand);
             if (drop_whitespace_text_nodes and tables.isWhitespace(raw[0])) {
                 const whitespace_only = blk: {
                     if (!tables.isWhitespace(raw[raw.len - 1])) break :blk false;
@@ -1221,7 +1221,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start: usize, attr_end: usize) ParseError!void {
-            if (comptime !strict_mode or expand_dtd_entities) return;
+            if (comptime !validated or expand_dtd_entities) return;
             if (self.doctype_seen and self.standalone_yes) {
                 @branchHint(.cold);
                 const validation: document.DtdAttributeValidation = .{
@@ -1297,7 +1297,7 @@ test "permissive generated DOM recovers malformed close structure" {
 }
 
 test "validated generated DOM rejects malformed close structure" {
-    const Options: ParseOptions = .{ .mode = .strict, .validate_well_formedness = true };
+    const Options: ParseOptions = .{ .validate_well_formedness = true };
     const Document = Options.Document();
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
@@ -1324,14 +1324,14 @@ test "open-element stack spills beyond inline capacity" {
     try std.testing.expectEqual(@as(IndexInt, 81), doc.nodes.items[1].subtree_end);
 }
 
-test "parseInto builds a minimal DOM and enforces strict closing tags" {
+test "parseInto builds a minimal DOM and enforces validated closing tags" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var ok = "<root><child>v</child></root>".*;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     doc.source = &ok;
-    try parseInto(&doc, &ok, .{ .mode = .strict, .validate_closing_tags = true });
+    try parseInto(&doc, &ok, .{ .validate_well_formedness = true });
     try std.testing.expectEqual(@as(usize, 4), doc.nodes.items.len);
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("child", doc.nodeAt(2).?.nameSlice());
@@ -1342,37 +1342,37 @@ test "parseInto builds a minimal DOM and enforces strict closing tags" {
     doc.source = &bad;
     try std.testing.expectError(
         error.InvalidClosingTagName,
-        parseInto(&doc, &bad, .{ .mode = .strict, .validate_closing_tags = true }),
+        parseInto(&doc, &bad, .{ .validate_well_formedness = true }),
     );
 }
 
-test "one-byte parser tails preserve strict and turbo behavior" {
+test "one-byte parser tails preserve strict and permissive behavior" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
 
     doc.source = "<";
-    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try parseInto(&doc, doc.source, .{});
     try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 
     doc.clear();
     doc.source = "<";
-    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_well_formedness = true }));
+    try std.testing.expectError(error.UnexpectedEndOfData, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
 
     doc.clear();
     doc.source = "x";
-    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try parseInto(&doc, doc.source, .{});
     try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
     try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.valueRawSlice());
 
     doc.clear();
     doc.source = "x";
-    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_well_formedness = true }));
+    try std.testing.expectError(error.InvalidDocumentContent, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
 
     doc.clear();
     doc.source = " ";
-    try parseInto(&doc, doc.source, .{ .mode = .turbo });
+    try parseInto(&doc, doc.source, .{});
     try std.testing.expectEqual(@as(usize, 1), doc.nodes.items.len);
 }
 
@@ -1397,17 +1397,17 @@ test "strict start-tag grammar rejects malformed attributes" {
     for (cases) |case| {
         doc.clear();
         doc.source = case.input;
-        try std.testing.expectError(case.err, parseInto(&doc, case.input, .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true }));
+        try std.testing.expectError(case.err, parseInto(&doc, case.input, .{ .validate_well_formedness = true }));
     }
 
     doc.clear();
     doc.source = "<r></ r>";
-    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, doc.source, .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true }));
+    try std.testing.expectError(error.InvalidClosingTagName, parseInto(&doc, doc.source, .{ .validate_well_formedness = true }));
 
     inline for (.{ "<r></ r>", "<r></>", "<r></r x>", "<r></r" }) |input| {
         doc.clear();
         doc.source = input;
-        const result = parseInto(&doc, input, .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = false });
+        const result = parseInto(&doc, input, .{ .validate_well_formedness = true });
         if (std.mem.eql(u8, input, "<r></r")) {
             try std.testing.expectError(error.UnexpectedEndOfData, result);
         } else {
@@ -1438,18 +1438,18 @@ test "full validation rejects element names longer than u16" {
     doc.source = source;
     try std.testing.expectError(
         error.InputTooLarge,
-        parseInto(&doc, source, .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true }),
+        parseInto(&doc, source, .{ .validate_well_formedness = true }),
     );
 
     // Fast mode deliberately skips the representation-limit check. The name
     // may be truncated for lazy access, but parsing remains bounded and safe.
     doc.clear();
     doc.source = source;
-    try parseInto(&doc, source, .{ .mode = .turbo });
+    try parseInto(&doc, source, .{});
     try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
 }
 
-test "turbo closing fast paths preserve permissive fallback forms" {
+test "permissive closing fast paths preserve permissive fallback forms" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     var doc = Document.init(std.testing.allocator);
@@ -1467,20 +1467,20 @@ test "turbo closing fast paths preserve permissive fallback forms" {
     }) |case| {
         doc.clear();
         doc.source = case.source;
-        try parseInto(&doc, case.source, .{ .mode = .turbo });
+        try parseInto(&doc, case.source, .{});
         try std.testing.expectEqualStrings("r", doc.nodeAt(1).?.nameSlice());
         try std.testing.expectEqualStrings(case.child, doc.nodeAt(2).?.nameSlice());
     }
 }
 
-test "turbo mode accepts mixed XML whitespace around attribute equals" {
+test "permissive mode accepts mixed XML whitespace around attribute equals" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     const source = "<r a \n \t=\r '1' b \r\n = \t\"2\"></r \n>";
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     doc.source = source;
-    try parseInto(&doc, source, .{ .mode = .turbo, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+    try parseInto(&doc, source, .{});
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a").?);
     try std.testing.expectEqualStrings("2", root.getAttributeValueRaw("b").?);
@@ -1493,7 +1493,7 @@ test "strict start tags accept mixed XML whitespace between attributes" {
     var doc = Document.init(std.testing.allocator);
     defer doc.deinit();
     doc.source = source;
-    try parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true });
+    try parseInto(&doc, source, .{ .validate_well_formedness = true });
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     var attrs = root.attributes();
     try std.testing.expectEqualStrings("a", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());
