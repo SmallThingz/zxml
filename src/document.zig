@@ -49,10 +49,13 @@ pub const ParseOptions = struct {
 
     /// Parses `input` and returns an owned document for this option set.
     pub fn parse(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) ParseError!options.Document() {
-        var doc = options.Document().init(allocator);
-        errdefer doc.deinit();
-        try doc.parse(input);
-        return doc;
+        return parser.parse(options, allocator, input);
+    }
+
+    /// Parses only to obtain a diagnostic. Successful parses are immediately
+    /// released; failures report the parser cursor without storing it in Document.
+    pub fn parseDiagnostic(comptime options: @This(), allocator: std.mem.Allocator, input: options.Input()) ?ParseDiagnostic {
+        return parser.parseDiagnostic(options, allocator, input);
     }
 
     /// Returns the document type for this option set.
@@ -2055,7 +2058,7 @@ fn GetNode(comptime options: ParseOptions) type {
         kind: NodeType,
 
         inline fn raw(self: Self) *const RawNodeType {
-            return &self.doc.nodes.items[self.index];
+            return &self.doc.nodes[self.index];
         }
 
         inline fn rawAttributes(self: Self) attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness) {
@@ -2143,8 +2146,8 @@ fn GetNode(comptime options: ParseOptions) type {
 
         pub fn firstChild(self: Self) ?Self {
             const idx = self.index + 1;
-            if (@as(usize, @intCast(idx)) >= self.doc.nodes.items.len) return null;
-            if (self.doc.nodes.items[idx].parent != self.index) return null;
+            if (@as(usize, @intCast(idx)) >= self.doc.nodes.len) return null;
+            if (self.doc.nodes[idx].parent != self.index) return null;
             return self.doc.nodeAt(idx);
         }
 
@@ -2153,8 +2156,8 @@ fn GetNode(comptime options: ParseOptions) type {
             var idx = self.index + 1;
             var last: IndexInt = InvalidIndex;
             const end = self.raw().subtree_end;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) {
-                if (self.doc.nodes.items[idx].parent == self.index) last = idx;
+            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) {
+                if (self.doc.nodes[idx].parent == self.index) last = idx;
                 const tail = self.doc.subtreeEndAt(idx);
                 idx = tail + 1;
             }
@@ -2165,8 +2168,8 @@ fn GetNode(comptime options: ParseOptions) type {
             const parent_idx = self.raw().parent;
             if (parent_idx == InvalidIndex) return null;
             const next_idx = self.doc.subtreeEndAt(self.index) + 1;
-            if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.items.len) return null;
-            if (self.doc.nodes.items[next_idx].parent != parent_idx) return null;
+            if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.len) return null;
+            if (self.doc.nodes[next_idx].parent != parent_idx) return null;
             return self.doc.nodeAt(next_idx);
         }
 
@@ -2177,7 +2180,7 @@ fn GetNode(comptime options: ParseOptions) type {
             var idx = parent_idx + 1;
             var prev: IndexInt = InvalidIndex;
             while (idx < self.index) {
-                if (self.doc.nodes.items[idx].parent == parent_idx) prev = idx;
+                if (self.doc.nodes[idx].parent == parent_idx) prev = idx;
                 const tail = self.doc.subtreeEndAt(idx);
                 idx = tail + 1;
             }
@@ -2212,11 +2215,11 @@ fn GetNode(comptime options: ParseOptions) type {
             const end = self.raw().subtree_end;
             var first: ?[]const u8 = null;
             var idx = self.index + 1;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
+            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 const kind = self.doc.kindAt(idx);
                 if (kind != .text and kind != .cdata) continue;
                 if (first != null) return null;
-                first = self.doc.nodes.items[idx].valueSpan(idx).slice(self.doc.source);
+                first = self.doc.nodes[idx].valueSpan(idx).slice(self.doc.source);
             }
             return first orelse "";
         }
@@ -2229,14 +2232,14 @@ fn GetNode(comptime options: ParseOptions) type {
             errdefer out.deinit(alloc);
             const end = self.raw().subtree_end;
             var idx = self.index + 1;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
+            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 switch (self.doc.kindAt(idx)) {
                     .text => {
                         const materialized = try self.doc.materializeText(idx, alloc);
                         defer materialized.free(alloc);
                         try out.appendSlice(alloc, materialized.value);
                     },
-                    .cdata => try out.appendSlice(alloc, self.doc.nodes.items[idx].valueSpan(idx).slice(self.doc.source)),
+                    .cdata => try out.appendSlice(alloc, self.doc.nodes[idx].valueSpan(idx).slice(self.doc.source)),
                     else => {},
                 }
             }
@@ -2250,7 +2253,7 @@ fn GetNode(comptime options: ParseOptions) type {
         pub fn querySelector(self: Self, selector: []const u8) ?Self {
             var idx = self.index + 1;
             const end = self.raw().subtree_end;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
+            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 const child = self.doc.nodeAt(idx).?;
                 if (child.kind == .element and selectorMatches(child, selector)) return child;
             }
@@ -2262,7 +2265,7 @@ fn GetNode(comptime options: ParseOptions) type {
             errdefer out.deinit(alloc);
             var idx = self.index + 1;
             const end = self.raw().subtree_end;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
+            while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 const child = self.doc.nodeAt(idx).?;
                 if (child.kind == .element and selectorMatches(child, selector)) try out.append(alloc, child);
             }
@@ -2286,11 +2289,9 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         allocator: std.mem.Allocator,
         source: options.Input() = emptyInput(options),
-        /// Reused node buffer. Parser metadata is generated into RawNode itself;
-        /// there is no parallel navigation sidecar.
-        nodes: std.ArrayList(RawNode) = .empty,
+        /// Finished node storage. Growth and parse scratch live in parser state.
+        nodes: []RawNode = &[_]RawNode{},
         entity_map: std.StringHashMap([]u8),
-        last_error_offset: usize = 0,
 
         pub fn init(allocator: std.mem.Allocator) Self {
             return .{
@@ -2302,35 +2303,15 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         pub fn deinit(self: *Self) void {
             self.clearEntityMap();
             self.entity_map.deinit();
-            self.nodes.deinit(self.allocator);
-        }
-
-        inline fn resetForParse(self: *Self) void {
-            self.clearEntityMap();
-            self.nodes.items.len = 0;
+            if (self.nodes.len != 0) self.allocator.free(self.nodes);
+            self.nodes = &[_]RawNode{};
         }
 
         pub fn clear(self: *Self) void {
-            self.resetForParse();
-            self.last_error_offset = 0;
+            self.clearEntityMap();
+            if (self.nodes.len != 0) self.allocator.free(self.nodes);
+            self.nodes = &[_]RawNode{};
             self.source = emptyInput(options);
-        }
-
-        pub fn parse(noalias self: *Self, input: options.Input()) ParseError!void {
-            self.resetForParse();
-            self.source = input;
-            try parser.parseInto(self, input, options);
-        }
-
-        pub fn parseDiagnostic(noalias self: *Self, input: options.Input()) ?ParseDiagnostic {
-            self.resetForParse();
-            self.source = input;
-            parser.parseIntoTracked(self, input, options, true) catch |err| return .{
-                .err = err,
-                .offset = self.last_error_offset,
-                .source = input,
-            };
-            return null;
         }
 
         inline fn clearEntityMap(self: *Self) void {
@@ -2357,7 +2338,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn textState(self: *const Self, idx: IndexInt) TextMaterializationState {
             if (comptime options.non_destructive) return .raw;
-            const node = &self.nodes.items[idx];
+            const node = &self.nodes[idx];
             const end: usize = @intCast(node.name_or_text.end);
             if (end >= self.source.len) return .raw;
             return switch (self.source[end]) {
@@ -2369,12 +2350,12 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn markTextState(self: *Self, idx: IndexInt, state: TextMaterializationState) void {
             if (comptime options.non_destructive) return;
-            const end: usize = @intCast(self.nodes.items[idx].name_or_text.end);
+            const end: usize = @intCast(self.nodes[idx].name_or_text.end);
             if (end < self.source.len) self.source[end] = @intFromEnum(state);
         }
 
         fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
-            const node = &self.nodes.items[idx];
+            const node = &self.nodes[idx];
             std.debug.assert(node.nodeKind(idx) == .text);
             if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.name_or_text.slice(self.source));
 
@@ -2451,20 +2432,20 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         pub inline fn kindAt(self: *const Self, idx: IndexInt) NodeType {
-            return self.nodes.items[idx].nodeKind(idx);
+            return self.nodes[idx].nodeKind(idx);
         }
 
         /// Inclusive subtree tail. Compact text/misc nodes store zero in the raw
         /// field as their kind sentinel, so leaves derive their tail from index.
         inline fn subtreeEndAt(self: *const Self, idx: IndexInt) IndexInt {
             return switch (self.kindAt(idx)) {
-                .document, .element => self.nodes.items[idx].subtree_end,
+                .document, .element => self.nodes[idx].subtree_end,
                 else => idx,
             };
         }
 
         pub fn nodeAt(self: *const Self, idx: IndexInt) ?Node {
-            if (idx == InvalidIndex or @as(usize, @intCast(idx)) >= self.nodes.items.len) return null;
+            if (idx == InvalidIndex or @as(usize, @intCast(idx)) >= self.nodes.len) return null;
             const doc = @constCast(self);
             return .{ .doc = doc, .index = idx, .kind = doc.kindAt(idx) };
         }
@@ -2475,19 +2456,19 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         fn writeNode(self: *const Self, writer: anytype, node: Node) !void {
-            if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.items.len) return;
+            if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.len) return;
             const start = node.index;
             const end = self.subtreeEndAt(start);
             var open_idx: IndexInt = InvalidIndex;
             var idx = start;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.items.len) : (idx += 1) {
-                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.nodes.items[open_idx].subtree_end < idx) {
+            while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.len) : (idx += 1) {
+                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.nodes[open_idx].subtree_end < idx) {
                     const closing = open_idx;
-                    open_idx = self.nodes.items[closing].parent;
+                    open_idx = self.nodes[closing].parent;
                     try self.writeCloseElement(writer, closing);
                 }
 
-                const raw = &self.nodes.items[idx];
+                const raw = &self.nodes[idx];
                 switch (self.kindAt(idx)) {
                     .document => {},
                     .element => {
@@ -2542,13 +2523,13 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
             while (open_idx != InvalidIndex and open_idx >= start and self.kindAt(open_idx) == .element) {
                 const closing = open_idx;
-                open_idx = self.nodes.items[closing].parent;
+                open_idx = self.nodes[closing].parent;
                 try self.writeCloseElement(writer, closing);
             }
         }
 
         fn writeOpenElement(self: *const Self, writer: anytype, idx: IndexInt) !void {
-            const raw = &self.nodes.items[idx];
+            const raw = &self.nodes[idx];
             try writer.writeAll("<");
             try writer.writeAll(raw.name_or_text.slice(self.source));
             var attrs = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness).initElement(self.source, raw.name_or_text.end);
@@ -2570,7 +2551,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         fn writeCloseElement(self: *const Self, writer: anytype, idx: IndexInt) !void {
             try writer.writeAll("</");
-            try writer.writeAll(self.nodes.items[idx].name_or_text.slice(self.source));
+            try writer.writeAll(self.nodes[idx].name_or_text.slice(self.source));
             try writer.writeAll(">");
         }
     };
@@ -2896,9 +2877,8 @@ test "validateDoctype handles deeply nested content models iteratively" {
 test "destructive text materialization caches decoded bytes in source" {
     const opts: ParseOptions = .{};
     var source = "<r>a&amp;b</r>".*;
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    try doc.parse(&source);
 
     const text = doc.nodeAt(1).?.firstChild().?;
     const first = try text.value(std.testing.allocator);
@@ -2923,9 +2903,8 @@ test "destructive text materialization caches decoded bytes in source" {
 test "raw attribute lookup does not trigger destructive materialization" {
     const opts: ParseOptions = .{};
     var source = "<r a='&amp;' b='two'/>".*;
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    try doc.parse(&source);
 
     const before = source;
     const root = doc.nodeAt(1).?;
@@ -2937,9 +2916,8 @@ test "raw attribute lookup does not trigger destructive materialization" {
 test "destructive attribute materialization caches decoded bytes and preserves handles" {
     const opts: ParseOptions = .{};
     var source = "<r a='&amp;' b='second' c='&lt;'></r>".*;
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    try doc.parse(&source);
 
     const root = doc.nodeAt(1).?;
     var attrs = root.attributes();
@@ -2974,9 +2952,8 @@ test "destructive attribute materialization caches decoded bytes and preserves h
 test "expanding DTD attribute uses owned fallback while shrinkable peers cache" {
     const opts: ParseOptions = .{ .expand_dtd_entities = true };
     var source = "<!DOCTYPE r [<!ENTITY x 'EXPANDED'>]><r a='&x;' b='&amp;'></r>".*;
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    try doc.parse(&source);
 
     const root = doc.root().?.firstChild().?;
     const a = root.firstAttribute() orelse return error.TestUnexpectedResult;
@@ -3000,9 +2977,8 @@ test "expanding DTD attribute uses owned fallback while shrinkable peers cache" 
 test "non destructive text decoding owns fallback and preserves source" {
     const opts: ParseOptions = .{ .non_destructive = true };
     const source = "<r>a&amp;b</r>";
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, source);
     defer doc.deinit();
-    try doc.parse(source);
 
     const value = try doc.nodeAt(1).?.firstChild().?.value(std.testing.allocator);
     defer value.free(std.testing.allocator);
@@ -3014,9 +2990,8 @@ test "non destructive text decoding owns fallback and preserves source" {
 test "expanding DTD text uses owned fallback without partial source decode" {
     const opts: ParseOptions = .{ .expand_dtd_entities = true };
     var source = "<!DOCTYPE r [<!ENTITY x 'EXPANDED'>]><r>&x;</r>".*;
-    var doc = opts.Document().init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, &source);
     defer doc.deinit();
-    try doc.parse(&source);
 
     const root = doc.nodeAt(1).?;
     const text = root.firstChild().?;

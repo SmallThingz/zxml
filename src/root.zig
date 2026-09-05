@@ -49,18 +49,31 @@ fn ParsedDoc(comptime opts: ParseOptions) type {
 }
 
 fn parseTestDoc(input: []const u8, comptime opts: ParseOptions) !ParsedDoc(opts) {
-    const DocumentType = Types(opts).Document;
     const buf = try std.testing.allocator.dupe(u8, input);
     errdefer std.testing.allocator.free(buf);
 
-    var doc = DocumentType.init(std.testing.allocator);
+    var doc = try opts.parse(std.testing.allocator, buf);
     errdefer doc.deinit();
-    try doc.parse(buf);
+    return .{ .doc = doc, .buf = buf };
+}
 
-    return .{
-        .doc = doc,
-        .buf = buf,
-    };
+fn resetParsed(doc: anytype, input: @TypeOf(doc.*).Options.Input()) !void {
+    const Options = @TypeOf(doc.*).Options;
+    const allocator = doc.allocator;
+    doc.deinit();
+    doc.* = try Options.parse(allocator, input);
+}
+
+fn expectParseError(doc: anytype, expected: ParseError, input: @TypeOf(doc.*).Options.Input()) !void {
+    const Options = @TypeOf(doc.*).Options;
+    const result = Options.parse(doc.allocator, input);
+    if (result) |value| {
+        var parsed = value;
+        parsed.deinit();
+        return error.TestExpectedError;
+    } else |err| {
+        try std.testing.expectEqual(expected, err);
+    }
 }
 
 fn initDoc(comptime opts: ParseOptions) Types(opts).Document {
@@ -70,14 +83,14 @@ fn initDoc(comptime opts: ParseOptions) Types(opts).Document {
 
 fn countKind(doc: anytype, kind: NodeType) usize {
     var n: usize = 0;
-    for (0..doc.nodes.items.len) |i| {
+    for (0..doc.nodes.len) |i| {
         if (doc.kindAt(@intCast(i)) == kind) n += 1;
     }
     return n;
 }
 
 fn findFirstKind(doc: anytype, kind: NodeType) ?std.meta.Child(@TypeOf(doc.nodeAt(0))) {
-    for (0..doc.nodes.items.len) |i| {
+    for (0..doc.nodes.len) |i| {
         if (doc.kindAt(@intCast(i)) == kind) return doc.nodeAt(@intCast(i));
     }
     return null;
@@ -117,7 +130,7 @@ test "smoke: parse nested nodes and attributes" {
     var parsed = try parseTestDoc("<root id='r'><child a='1'>text</child><child a='2'/></root>", .{});
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 5), parsed.doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 5), parsed.doc.nodes.len);
     const root = findFirstKind(&parsed.doc, .element) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.element, root.kind);
     try std.testing.expectEqualStrings("root", root.nameSlice());
@@ -312,7 +325,7 @@ test "dtd entity expansion max value length is enforced" {
     defer doc.deinit();
 
     var src = "<!DOCTYPE r [<!ENTITY big 'abcdef'>]><r>&big;</r>".*;
-    try std.testing.expectError(ParseError.EntityValueTooLarge, doc.parse(&src));
+    try expectParseError(&doc, ParseError.EntityValueTooLarge, &src);
 }
 
 test "document reuse clears opt-in dtd entity table" {
@@ -320,14 +333,14 @@ test "document reuse clears opt-in dtd entity table" {
     defer doc.deinit();
 
     var src1 = "<!DOCTYPE r [<!ENTITY safe 'SAFE'>]><r>&safe;</r>".*;
-    try doc.parse(&src1);
+    try resetParsed(&doc, &src1);
     const first_root = findFirstKind(&doc, .element) orelse return error.TestUnexpectedResult;
     const first = try first_root.firstChild().?.value(std.testing.allocator);
     defer first.free(std.testing.allocator);
     try std.testing.expectEqualStrings("SAFE", first.value);
 
     var src2 = "<r>&safe;</r>".*;
-    try doc.parse(&src2);
+    try resetParsed(&doc, &src2);
     const second_root = findFirstKind(&doc, .element) orelse return error.TestUnexpectedResult;
     const second = try second_root.firstChild().?.value(std.testing.allocator);
     defer second.free(std.testing.allocator);
@@ -545,7 +558,7 @@ test "permissive mismatched close tag recovers by name" {
     var parsed = try parseTestDoc("<a><b></a>", .{});
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.len);
     try std.testing.expectEqualStrings("a", parsed.doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("b", parsed.doc.nodeAt(2).?.nameSlice());
 }
@@ -555,14 +568,14 @@ test "validated mismatched close tag validation fails" {
     defer doc.deinit();
 
     var src = "<a><b></a>".*;
-    try std.testing.expectError(ParseError.InvalidClosingTagName, doc.parse(&src));
+    try expectParseError(&doc, ParseError.InvalidClosingTagName, &src);
 }
 
 test "permissive mode tolerates EOF with open elements" {
     var parsed = try parseTestDoc("<a><b>", .{});
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 3), parsed.doc.nodes.len);
     try std.testing.expectEqualStrings("a", parsed.doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("b", parsed.doc.nodeAt(2).?.nameSlice());
 }
@@ -572,7 +585,7 @@ test "validated mode requires balanced open elements" {
     defer doc.deinit();
 
     var src = "<a><b>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src));
+    try expectParseError(&doc, ParseError.UnexpectedEndOfData, &src);
 }
 
 test "permissive mode builds dom by default" {
@@ -581,7 +594,7 @@ test "permissive mode builds dom by default" {
     });
     defer parsed.deinit();
 
-    try std.testing.expectEqual(@as(usize, 5), parsed.doc.nodes.items.len);
+    try std.testing.expectEqual(@as(usize, 5), parsed.doc.nodes.len);
     const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(NodeType.element, root.kind);
     try std.testing.expectEqualStrings("root", root.nameSlice());
@@ -620,7 +633,7 @@ test "attribute-heavy element parses and preserves lookups" {
 
     var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
     defer doc.deinit();
-    try doc.parse(xml.items);
+    try resetParsed(&doc, xml.items);
 
     const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("v0", root.getAttributeValueRaw("a0").?);
@@ -691,7 +704,7 @@ test "validated attribute grammar covers XML whitespace and quoted value boundar
         .{ .source = "<r a='1' \n\t b = \"2\"/>", .b = "2" },
     };
     for (valid) |case| {
-        try doc.parse(case.source);
+        try resetParsed(&doc, case.source);
         const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
         try std.testing.expectEqualStrings("1", root.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult);
         if (case.b) |expected| try std.testing.expectEqualStrings(expected, root.getAttributeValueRaw("b") orelse return error.TestUnexpectedResult);
@@ -708,7 +721,7 @@ test "validated attribute grammar covers XML whitespace and quoted value boundar
             for (0..len) |_| try source.append(std.testing.allocator, 'x');
             try source.append(std.testing.allocator, quote);
             try source.appendSlice(std.testing.allocator, "/>");
-            try doc.parse(source.items);
+            try resetParsed(&doc, source.items);
             const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
             const raw = root.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult;
             try std.testing.expectEqual(len, raw.len);
@@ -726,10 +739,10 @@ test "validated attribute grammar covers XML whitespace and quoted value boundar
         .{ .source = "<r a='&amp'/>", .err = error.UnterminatedEntity },
         .{ .source = "<r a='&bogus;'/>", .err = error.InvalidNumericCharacterEntity },
     };
-    for (invalid) |case| try std.testing.expectError(case.err, doc.parse(case.source));
+    for (invalid) |case| try expectParseError(&doc, case.err, case.source);
 
     // A failure must not leave attribute spans or parser scratch visible to the next parse.
-    try doc.parse("<ok a='fresh' b='state'/>");
+    try resetParsed(&doc, "<ok a='fresh' b='state'/>");
     const recovered = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqualStrings("fresh", recovered.getAttributeValueRaw("a") orelse return error.TestUnexpectedResult);
     try std.testing.expectEqualStrings("state", recovered.getAttributeValueRaw("b") orelse return error.TestUnexpectedResult);
@@ -750,7 +763,7 @@ test "validated duplicate attributes cover short long Unicode and dispatch bound
         "<r ns:item='1' ns:item='2'/>",
         "<r é='1' é='2'/>",
     };
-    for (duplicate_pairs) |source_text| try std.testing.expectError(error.DuplicateAttribute, doc.parse(source_text));
+    for (duplicate_pairs) |source_text| try expectParseError(&doc, error.DuplicateAttribute, source_text);
 
     const distinct_pairs = [_][]const u8{
         "<r A='1' a='2'/>",
@@ -758,7 +771,7 @@ test "validated duplicate attributes cover short long Unicode and dispatch bound
         "<r ns:item='1' ns:Item='2'/>",
         "<r é='1' É='2'/>",
     };
-    for (distinct_pairs) |source_text| try doc.parse(source_text);
+    for (distinct_pairs) |source_text| try resetParsed(&doc, source_text);
 
     var many = std.ArrayList(u8).empty;
     defer many.deinit(std.testing.allocator);
@@ -768,12 +781,12 @@ test "validated duplicate attributes cover short long Unicode and dispatch bound
         try many.appendSlice(std.testing.allocator, "<r");
         for (0..count) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
         try many.appendSlice(std.testing.allocator, "/>");
-        try doc.parse(many.items);
+        try resetParsed(&doc, many.items);
 
         many.items.len -= 2;
         const duplicate_index = count / 2;
         try many.print(std.testing.allocator, " a{d}='duplicate'/>", .{duplicate_index});
-        try std.testing.expectError(error.DuplicateAttribute, doc.parse(many.items));
+        try expectParseError(&doc, error.DuplicateAttribute, many.items);
     }
 }
 
@@ -805,7 +818,7 @@ test "validated unquoted attributes fail" {
     defer doc.deinit();
 
     var src = "<r a=1/>".*;
-    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src));
+    try expectParseError(&doc, ParseError.ExpectedQuote, &src);
 }
 
 test "permissive unquoted attributes parse" {
@@ -826,7 +839,7 @@ test "validated unterminated quoted attribute fails" {
     defer doc.deinit();
 
     var src = "<r a='x></r>".*;
-    try std.testing.expectError(ParseError.ExpectedQuote, doc.parse(&src));
+    try expectParseError(&doc, ParseError.ExpectedQuote, &src);
 }
 
 test "validated unterminated comment fails" {
@@ -834,7 +847,7 @@ test "validated unterminated comment fails" {
     defer doc.deinit();
 
     var src = "<r><!--x</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src));
+    try expectParseError(&doc, ParseError.UnexpectedEndOfData, &src);
 }
 
 test "validated unterminated cdata fails" {
@@ -842,7 +855,7 @@ test "validated unterminated cdata fails" {
     defer doc.deinit();
 
     var src = "<r><![CDATA[x</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src));
+    try expectParseError(&doc, ParseError.UnexpectedEndOfData, &src);
 }
 
 test "validated unterminated processing instruction fails" {
@@ -850,7 +863,7 @@ test "validated unterminated processing instruction fails" {
     defer doc.deinit();
 
     var src = "<r><?build x='1'</r>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src));
+    try expectParseError(&doc, ParseError.UnexpectedEndOfData, &src);
 }
 
 test "validated unterminated doctype fails" {
@@ -858,7 +871,7 @@ test "validated unterminated doctype fails" {
     defer doc.deinit();
 
     var src = "<!DOCTYPE root [<!ELEMENT root ANY><root/>".*;
-    try std.testing.expectError(ParseError.UnexpectedEndOfData, doc.parse(&src));
+    try expectParseError(&doc, ParseError.UnexpectedEndOfData, &src);
 }
 
 test "validated rejects malformed and XML-invalid references during parse" {
@@ -880,9 +893,10 @@ test "validated rejects malformed and XML-invalid references during parse" {
     inline for (invalid) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
+        try expectParseError(
+            &doc,
             if (std.mem.indexOf(u8, source, ";") == null) error.UnterminatedEntity else error.InvalidNumericCharacterEntity,
-            doc.parse(source),
+            source,
         );
     }
 
@@ -896,7 +910,7 @@ test "validated enforces declared parsed general entities" {
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse("<r>&custom;</r>"));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, "<r>&custom;</r>");
     }
     {
         var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'x'>]><r>&custom;</r>", .{
@@ -911,13 +925,13 @@ test "validated enforces declared parsed general entities" {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n><!ENTITY custom 'later'>]><r>&custom;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
     {
         var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY custom 'first'><!NOTATION n SYSTEM 'urn:n'><!ENTITY custom SYSTEM 'urn:x' NDATA n>]><r>&custom;</r>", .{
@@ -928,31 +942,25 @@ test "validated enforces declared parsed general entities" {
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r><r a='&missing;'/>"),
-        );
-        try std.testing.expectError(
-            error.UnterminatedEntity,
-            doc.parse("<!DOCTYPE r><r a='&amp'/>"),
-        );
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, "<!DOCTYPE r><r a='&missing;'/>");
+        try expectParseError(&doc, error.UnterminatedEntity, "<!DOCTYPE r><r a='&amp'/>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try doc.parse("<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>");
+        try resetParsed(&doc, "<!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
         const source = "<?xml version='1.0' standalone='yes'?><!DOCTYPE r SYSTEM 'urn:external'><r>&external;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
         const source = "<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r a='&external;'/>";
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source));
+        try expectParseError(&doc, error.InvalidAttributeValue, source);
     }
     {
         var parsed = try parseTestDoc("<!DOCTYPE r [<!ENTITY external SYSTEM 'urn:x'>]><r>&external;</r>", .{
@@ -964,7 +972,7 @@ test "validated enforces declared parsed general entities" {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
         const source = "<!DOCTYPE r SYSTEM 'urn:subset' [<!NOTATION n SYSTEM 'urn:n'><!ENTITY raw SYSTEM 'urn:x' NDATA n>]><r>&raw;</r>";
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
 }
 
@@ -981,18 +989,12 @@ test "validated reuses validated entity references across repeated DOM attribute
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&missing;'/>"),
-        );
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, "<!DOCTYPE r [<!ENTITY a 'ok'>]><r x='&a;' y='&a;' z='&missing;'/>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidAttributeValue,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'><!ENTITY e SYSTEM 'urn:x'>]><r x='&a;' y='&a;' z='&e;'/>"),
-        );
+        try expectParseError(&doc, error.InvalidAttributeValue, "<!DOCTYPE r [<!ENTITY a 'ok'><!ENTITY e SYSTEM 'urn:x'>]><r x='&a;' y='&a;' z='&e;'/>");
     }
 }
 
@@ -1009,26 +1011,17 @@ test "validated repeated custom entity fast path preserves later validation" {
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&#0;</r>"),
-        );
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, "<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a;&#0;</r>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidNumericCharacterEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&missing;</r>"),
-        );
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, "<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&missing;</r>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.UnterminatedEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a</r>"),
-        );
+        try expectParseError(&doc, error.UnterminatedEntity, "<!DOCTYPE r [<!ENTITY a 'ok'>]><r>&a;&a;&a;&a</r>");
     }
 }
 
@@ -1041,7 +1034,7 @@ test "validated validates used entity replacement graphs" {
     inline for (invalid_entity) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
 
     const recursive = [_][]const u8{
@@ -1051,7 +1044,7 @@ test "validated validates used entity replacement graphs" {
     inline for (recursive) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.RecursiveEntity, doc.parse(source));
+        try expectParseError(&doc, error.RecursiveEntity, source);
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1064,7 +1057,7 @@ test "validated validates used entity replacement graphs" {
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source));
+        try expectParseError(&doc, error.InvalidAttributeValue, source);
     }
 
     const valid = [_][]const u8{
@@ -1092,16 +1085,13 @@ test "validated validates internal parameter entity replacement text" {
     inline for (invalid) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidDoctype, doc.parse(source));
+        try expectParseError(&doc, error.InvalidDoctype, source);
     }
 
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.RecursiveEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY % p '&#37;p;'>%p;]><r/>"),
-        );
+        try expectParseError(&doc, error.RecursiveEntity, "<!DOCTYPE r [<!ENTITY % p '&#37;p;'>%p;]><r/>");
     }
 
     const valid = [_][]const u8{
@@ -1127,7 +1117,7 @@ test "validated applies entity constraints to declarations from parameter entiti
     inline for (invalid_entity) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1137,24 +1127,18 @@ test "validated applies entity constraints to declarations from parameter entiti
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source));
+        try expectParseError(&doc, error.InvalidAttributeValue, source);
     }
 
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.RecursiveEntity,
-            doc.parse("<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>"),
-        );
+        try expectParseError(&doc, error.RecursiveEntity, "<!DOCTYPE r [<!ENTITY % p \"<!ENTITY e '&e;'>\">%p;]><r>&e;</r>");
     }
     {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(
-            error.InvalidDoctype,
-            doc.parse("<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>"),
-        );
+        try expectParseError(&doc, error.InvalidDoctype, "<?xml version='1.0' standalone='yes'?><!DOCTYPE r [%unknown;]><r/>");
     }
 
     var parsed = try parseTestDoc(
@@ -1178,7 +1162,7 @@ test "validated parameter entity inclusion is iterative for deep chains" {
 
     var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
     defer doc.deinit();
-    try doc.parse(source.items);
+    try resetParsed(&doc, source.items);
 }
 
 test "validated validates DTD attribute default entity constraints in declaration order" {
@@ -1191,7 +1175,7 @@ test "validated validates DTD attribute default entity constraints in declaratio
     inline for (undeclared_or_forward) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidNumericCharacterEntity, doc.parse(source));
+        try expectParseError(&doc, error.InvalidNumericCharacterEntity, source);
     }
 
     const invalid_attribute = [_][]const u8{
@@ -1203,7 +1187,7 @@ test "validated validates DTD attribute default entity constraints in declaratio
     inline for (invalid_attribute) |source| {
         var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
         defer doc.deinit();
-        try std.testing.expectError(error.InvalidAttributeValue, doc.parse(source));
+        try expectParseError(&doc, error.InvalidAttributeValue, source);
     }
 
     const valid = [_][]const u8{
@@ -1233,7 +1217,7 @@ test "validated entity graph validation is iterative for deep chains" {
 
     var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
     defer doc.deinit();
-    try doc.parse(source.items);
+    try resetParsed(&doc, source.items);
 }
 
 test "permissive invalid numeric entity stays literal in raw and decoded access" {
@@ -1272,12 +1256,12 @@ test "document can be reused across parses" {
     defer doc.deinit();
 
     var src1 = "<a><b/></a>".*;
-    try doc.parse(&src1);
-    try std.testing.expectEqual(@as(usize, 3), doc.nodes.items.len);
+    try resetParsed(&doc, &src1);
+    try std.testing.expectEqual(@as(usize, 3), doc.nodes.len);
 
     var src2 = "<root x='1'>ok</root>".*;
-    try doc.parse(&src2);
-    try std.testing.expectEqual(@as(usize, 3), doc.nodes.items.len);
+    try resetParsed(&doc, &src2);
+    try std.testing.expectEqual(@as(usize, 3), doc.nodes.len);
     try std.testing.expectEqualStrings("root", doc.nodeAt(1).?.nameSlice());
     try std.testing.expectEqualStrings("1", doc.nodeAt(1).?.getAttributeValueRaw("x").?);
     try std.testing.expectEqualStrings("ok", doc.nodeAt(2).?.valueRawSlice());
@@ -1298,8 +1282,8 @@ test "u16 parse accepts input exactly at the index range boundary" {
     @memcpy(src[0..3], "<r>");
     @memcpy(src[src.len - 4 ..], "</r>");
 
-    try doc.parse(src);
-    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
+    try resetParsed(&doc, src);
+    try std.testing.expectEqual(@as(usize, 2), doc.nodes.len);
     try std.testing.expectEqual(@as(common.IndexInt, MaxInputLen), @as(common.IndexInt, @intCast(src.len)));
 }
 
@@ -1319,7 +1303,7 @@ test "u16 parse rejects input larger than index range" {
     src[1] = 'r';
     src[2] = '>';
 
-    try std.testing.expectError(error.InputTooLarge, doc.parse(src));
+    try expectParseError(&doc, error.InputTooLarge, src);
 }
 
 test "validated deep balanced close tags" {
@@ -1340,7 +1324,7 @@ test "validated deep balanced close tags" {
 
     var doc = initDoc(.{ .validate_well_formedness = true, .non_destructive = true });
     defer doc.deinit();
-    try doc.parse(xml.items);
+    try resetParsed(&doc, xml.items);
 
     try std.testing.expectEqual(@as(usize, 129), countKind(&doc, .element));
 }
@@ -1587,19 +1571,19 @@ test "validated enforces document-level well-formedness" {
     var doc = initDoc(opts);
     defer doc.deinit();
 
-    try std.testing.expectError(error.ExpectedDocumentElement, doc.parse(""));
-    try std.testing.expectError(error.ExpectedDocumentElement, doc.parse("<!--only misc-->"));
-    try std.testing.expectError(error.MultipleDocumentElements, doc.parse("<a/><b/>"));
-    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("text<a/>"));
-    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("<a/>text"));
-    try std.testing.expectError(error.InvalidDocumentContent, doc.parse("<![CDATA[x]]><a/>"));
-    try std.testing.expectError(error.InvalidDoctype, doc.parse("<!DOCTYPE a><!DOCTYPE a><a/>"));
-    try std.testing.expectError(error.InvalidDoctype, doc.parse("<a/><!DOCTYPE a>"));
-    try std.testing.expectError(error.InvalidDoctype, doc.parse("<a><!DOCTYPE a></a>"));
-    try std.testing.expectError(error.InvalidDeclaration, doc.parse(" <?xml version='1.0'?><a/>"));
-    try std.testing.expectError(error.InvalidDeclaration, doc.parse("<?pi x?><?xml version='1.0'?><a/>"));
+    try expectParseError(&doc, error.ExpectedDocumentElement, "");
+    try expectParseError(&doc, error.ExpectedDocumentElement, "<!--only misc-->");
+    try expectParseError(&doc, error.MultipleDocumentElements, "<a/><b/>");
+    try expectParseError(&doc, error.InvalidDocumentContent, "text<a/>");
+    try expectParseError(&doc, error.InvalidDocumentContent, "<a/>text");
+    try expectParseError(&doc, error.InvalidDocumentContent, "<![CDATA[x]]><a/>");
+    try expectParseError(&doc, error.InvalidDoctype, "<!DOCTYPE a><!DOCTYPE a><a/>");
+    try expectParseError(&doc, error.InvalidDoctype, "<a/><!DOCTYPE a>");
+    try expectParseError(&doc, error.InvalidDoctype, "<a><!DOCTYPE a></a>");
+    try expectParseError(&doc, error.InvalidDeclaration, " <?xml version='1.0'?><a/>");
+    try expectParseError(&doc, error.InvalidDeclaration, "<?pi x?><?xml version='1.0'?><a/>");
 
-    try doc.parse("<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>");
+    try resetParsed(&doc, "<?xml version='1.0'?><!--x--><!DOCTYPE a><a><![CDATA[x]]></a><?pi y?>");
 }
 
 test "validated validates processing instruction separators" {
@@ -1616,11 +1600,11 @@ test "validated validates processing instruction separators" {
         "<r><?pi:data/x?></r>",
     };
     inline for (invalid) |source| {
-        try std.testing.expectError(error.ExpectedGt, doc.parse(source));
+        try expectParseError(&doc, error.ExpectedGt, source);
     }
 
-    try doc.parse("<?pi?><r/>");
-    try doc.parse("<?pi data?><r/>");
+    try resetParsed(&doc, "<?pi?><r/>");
+    try resetParsed(&doc, "<?pi data?><r/>");
 }
 
 test "validated two-attribute duplicate pair checks exact names" {
@@ -1631,13 +1615,13 @@ test "validated two-attribute duplicate pair checks exact names" {
     var doc = initDoc(opts);
     defer doc.deinit();
 
-    try doc.parse("<r id='1' kind='2'/>");
-    try doc.parse("<r aa='1' bb='2'/>");
-    try doc.parse("<r a='1' b='2'/>");
-    try doc.parse("<r é='1' É='2'/>");
-    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r id='1' id='2'/>"));
-    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r long_name='1' long_name='2'/>"));
-    try std.testing.expectError(error.DuplicateAttribute, doc.parse("<r é='1' é='2'/>"));
+    try resetParsed(&doc, "<r id='1' kind='2'/>");
+    try resetParsed(&doc, "<r aa='1' bb='2'/>");
+    try resetParsed(&doc, "<r a='1' b='2'/>");
+    try resetParsed(&doc, "<r é='1' É='2'/>");
+    try expectParseError(&doc, error.DuplicateAttribute, "<r id='1' id='2'/>");
+    try expectParseError(&doc, error.DuplicateAttribute, "<r long_name='1' long_name='2'/>");
+    try expectParseError(&doc, error.DuplicateAttribute, "<r é='1' é='2'/>");
 }
 
 test "validated rejects duplicate attribute names" {
@@ -1647,31 +1631,31 @@ test "validated rejects duplicate attribute names" {
     };
     var validated_doc = initDoc(validated_opts);
     defer validated_doc.deinit();
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse("<r a='1' a='2'/>"));
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse("<r><x a='1' b='2' a='3'/></r>"));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, "<r a='1' a='2'/>");
+    try expectParseError(&validated_doc, error.DuplicateAttribute, "<r><x a='1' b='2' a='3'/></r>");
 
     const duplicate_pair_self = "<r a='1' a='2'/>";
-    const self_diag = validated_doc.parseDiagnostic(duplicate_pair_self) orelse return error.TestUnexpectedResult;
+    const self_diag = validated_opts.parseDiagnostic(std.testing.allocator, duplicate_pair_self) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(error.DuplicateAttribute, self_diag.err);
     try std.testing.expectEqual(@as(usize, 9), self_diag.offset);
 
     const duplicate_pair_open = "<r a='1' a='2'></r>";
-    const open_diag = validated_doc.parseDiagnostic(duplicate_pair_open) orelse return error.TestUnexpectedResult;
+    const open_diag = validated_opts.parseDiagnostic(std.testing.allocator, duplicate_pair_open) orelse return error.TestUnexpectedResult;
     try std.testing.expectEqual(error.DuplicateAttribute, open_diag.err);
     try std.testing.expectEqual(@as(usize, 9), open_diag.offset);
     // Distinct names sharing the lightweight uniqueness bucket must fall back
     // to exact comparisons rather than false-positive as duplicates.
-    try validated_doc.parse("<r h='1' ab='2' z='3'/>");
+    try resetParsed(&validated_doc, "<r h='1' ab='2' z='3'/>");
 
     var many = std.ArrayList(u8).empty;
     defer many.deinit(std.testing.allocator);
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..65) |index| try many.print(std.testing.allocator, " a{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
     many.items.len -= 2;
     try many.appendSlice(std.testing.allocator, " a63='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the full 256-slot exact table, including a duplicate at its
     // saturation boundary, and the >256 exact fallback.
@@ -1679,19 +1663,19 @@ test "validated rejects duplicate attribute names" {
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..256) |index| try many.print(std.testing.allocator, " b{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..255) |index| try many.print(std.testing.allocator, " c{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " c127='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..256) |index| try many.print(std.testing.allocator, " d{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " d127='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the widened 512-slot exact table and preserve exact fallback
     // behavior immediately beyond its saturation boundary.
@@ -1699,76 +1683,76 @@ test "validated rejects duplicate attribute names" {
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..512) |index| try many.print(std.testing.allocator, " e{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..511) |index| try many.print(std.testing.allocator, " f{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " f255='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..512) |index| try many.print(std.testing.allocator, " g{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " g255='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the widened 1024-slot exact table and its >1024 fallback.
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..1024) |index| try many.print(std.testing.allocator, " h{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..1023) |index| try many.print(std.testing.allocator, " i{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " i511='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..1024) |index| try many.print(std.testing.allocator, " j{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " j511='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the widened 2048-slot exact table and its >2048 fallback.
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..2048) |index| try many.print(std.testing.allocator, " k{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..2047) |index| try many.print(std.testing.allocator, " l{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " l1023='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..2048) |index| try many.print(std.testing.allocator, " m{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " m1023='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the widened 4096-slot exact table and its >4096 fallback.
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..4096) |index| try many.print(std.testing.allocator, " n{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, "/>");
-    try validated_doc.parse(many.items);
+    try resetParsed(&validated_doc, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..4095) |index| try many.print(std.testing.allocator, " o{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " o2047='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     many.clearRetainingCapacity();
     try many.appendSlice(std.testing.allocator, "<r");
     for (0..4096) |index| try many.print(std.testing.allocator, " p{d}='{d}'", .{ index, index });
     try many.appendSlice(std.testing.allocator, " p2047='duplicate'/>");
-    try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+    try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
 
     // Exercise the partitioned >4096 path at its major boundaries. The
     // boundary number is the unique attribute count; the final attribute
@@ -1801,7 +1785,7 @@ test "validated rejects duplicate attribute names" {
         try many.append(std.testing.allocator, ' ');
         try many.appendSlice(std.testing.allocator, first_name[0..name_width]);
         try many.appendSlice(std.testing.allocator, "=''/>");
-        try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+        try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
     }
 
     // All 4097 distinct names below have the same length and first eight
@@ -1829,17 +1813,17 @@ test "validated rejects duplicate attribute names" {
             try many.appendSlice(std.testing.allocator, "=''");
         }
         try many.appendSlice(std.testing.allocator, "/>");
-        try validated_doc.parse(many.items);
+        try resetParsed(&validated_doc, many.items);
 
         many.items.len -= 2;
         try many.appendSlice(std.testing.allocator, " abcdefgh000=''/>");
-        try std.testing.expectError(error.DuplicateAttribute, validated_doc.parse(many.items));
+        try expectParseError(&validated_doc, error.DuplicateAttribute, many.items);
     }
 
     const permissive_opts: ParseOptions = .{ .non_destructive = true };
     var permissive_doc = initDoc(permissive_opts);
     defer permissive_doc.deinit();
-    try permissive_doc.parse("<r a='1' a='2'/>");
+    try resetParsed(&permissive_doc, "<r a='1' a='2'/>");
 }
 
 test "validated validates XML declaration grammar" {
@@ -1860,10 +1844,10 @@ test "validated validates XML declaration grammar" {
         "<?xml version='1.0' extra='x'?><r/>",
         "<?xml version=1.0?><r/>",
     };
-    for (invalid) |source| try std.testing.expectError(error.InvalidDeclaration, doc.parse(source));
+    for (invalid) |source| try expectParseError(&doc, error.InvalidDeclaration, source);
 
-    try doc.parse("<?xml version = '1.0' encoding='UTF-8' standalone=\"no\" ?><r/>");
-    try doc.parse("<?xml version='1.23'?><r/>");
+    try resetParsed(&doc, "<?xml version = '1.0' encoding='UTF-8' standalone=\"no\" ?><r/>");
+    try resetParsed(&doc, "<?xml version='1.23'?><r/>");
 }
 
 test "validated validates DOCTYPE grammar" {
@@ -1918,7 +1902,7 @@ test "validated validates DOCTYPE grammar" {
         "<!DOCTYPE r [<!NOTATION n SYSTEM>]><r/>",
         "<!DOCTYPE r [<!NOTATION n PUBLIC>]><r/>",
     };
-    for (invalid) |source| try std.testing.expectError(error.InvalidDoctype, doc.parse(source));
+    for (invalid) |source| try expectParseError(&doc, error.InvalidDoctype, source);
 
     const valid = [_][]const u8{
         "<!DOCTYPE r SYSTEM 'urn:test'><r/>",
@@ -1933,5 +1917,5 @@ test "validated validates DOCTYPE grammar" {
         "<!DOCTYPE r [<!ENTITY % p SYSTEM 'urn:p'><!NOTATION n SYSTEM 'urn:n'><!NOTATION m PUBLIC 'id' 'urn:m'>]><r/>",
         "<!DOCTYPE r [<!ELEMENT \xC3\xA9l\xC3\xA9ment EMPTY>]><r/>",
     };
-    for (valid) |source| try doc.parse(source);
+    for (valid) |source| try resetParsed(&doc, source);
 }

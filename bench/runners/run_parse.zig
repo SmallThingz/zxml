@@ -28,15 +28,12 @@ fn elapsedNs(start: std.Io.Clock.Timestamp, finish: std.Io.Clock.Timestamp) u64 
 }
 
 fn runDomValidated(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_validated_options).Document;
-    var doc = Document.init(alloc);
-    defer doc.deinit();
-
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input);
-        checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+        var doc = try dom_validated_options.parse(alloc, input);
+        checksum +%= @as(u64, @intCast(doc.nodes.len));
+        doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);
@@ -44,15 +41,12 @@ fn runDomValidated(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations
 }
 
 fn runDomValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_validated_trusted_options).Document;
-    var doc = Document.init(alloc);
-    defer doc.deinit();
-
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input);
-        checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+        var doc = try dom_validated_trusted_options.parse(alloc, input);
+        checksum +%= @as(u64, @intCast(doc.nodes.len));
+        doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);
@@ -60,15 +54,12 @@ fn runDomValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, ite
 }
 
 fn runDomPermissive(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations: usize) !u64 {
-    const Document = zxml.Types(dom_permissive_options).Document;
-    var doc = Document.init(alloc);
-    defer doc.deinit();
-
     var checksum: u64 = 0;
     const start = std.Io.Clock.Timestamp.now(io, .awake);
     for (0..iterations) |_| {
-        try doc.parse(input);
-        checksum +%= @as(u64, @intCast(doc.nodes.items.len));
+        var doc = try dom_permissive_options.parse(alloc, input);
+        checksum +%= @as(u64, @intCast(doc.nodes.len));
+        doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
     std.mem.doNotOptimizeAway(checksum);

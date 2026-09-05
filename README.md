@@ -72,7 +72,7 @@ defer doc.deinit();
 
 ## Generated API
 
-The public configuration surface is `zxml.ParseOptions`. Options are compile-time inputs to the generated types, not arguments passed to each `Document.parse` call.
+The public configuration surface is `zxml.ParseOptions`. Options are compile-time inputs to the generated parser and document types.
 
 ```zig
 const options: zxml.ParseOptions = .{
@@ -104,18 +104,16 @@ Useful root declarations include:
 - `options.Document()`
 - `options.parse(allocator, input)`
 
-`Document.parse(input)` reuses an existing generated document. There is no per-call option object:
+Parsing is a construction operation. Parser-owned growable storage and scratch are released after parsing; the returned document owns only its finished node slice and document-owned entity data:
 
 ```zig
-var src1 = "<a/>".*;
-var src2 = "<b/>".*;
-
+var src = "<a/>".*;
 const options: zxml.ParseOptions = .{};
-var doc = options.Document().init(allocator);
+var doc = try options.parse(allocator, &src);
 defer doc.deinit();
-try doc.parse(&src1);
-try doc.parse(&src2);
 ```
+
+`options.parseDiagnostic(allocator, input)` runs the same generated parser while returning a `ParseDiagnostic` on failure. `Document.init()`/`clear()` remain useful for empty document/query state, but documents are not reusable parser workspaces.
 
 Index width is configurable at build time:
 
