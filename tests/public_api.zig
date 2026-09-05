@@ -53,7 +53,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
         "StreamingAttribute", "StreamingAttributeIterator", "StreamingEvent", "StreamingParser",
     });
     assertDeclCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
-    assertDeclCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
+    assertDeclCoverage(T.RawNode, &.{ "nameSpan", "valueSpan", "attributeSpan" });
     assertDeclCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertDeclCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertDeclCoverage(T.AttributeIterator, &.{"next"});
@@ -73,7 +73,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     assertDeclCoverage(T.StreamingParser.State, &.{});
 
     assertFnCoverage(T.Span, &.{ "len", "isEmpty", "slice" });
-    assertFnCoverage(T.RawNode, &.{ "valueSpan", "attributeSpan" });
+    assertFnCoverage(T.RawNode, &.{ "nameSpan", "valueSpan", "attributeSpan" });
     assertFnCoverage(T.RawAttributeIterator, &.{ "init", "next" });
     assertFnCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertFnCoverage(T.AttributeIterator, &.{"next"});
@@ -94,9 +94,10 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     const source = "<!DOCTYPE ns:r [<!ENTITY e 'decoded'>]><ns:r xmlns:ns='urn:test' a='&amp;'><x>text</x><y/></ns:r>";
     var doc = T.Document.init(std.testing.allocator);
     defer doc.deinit();
-    try doc.reserveForInput(source.len);
+    try doc.reserveForInput(source.len, opts);
     try doc.parse(source, opts);
 
+    _ = (T.RawNode{ .kind = .text }).nameSpan();
     _ = (T.RawNode{ .kind = .text }).valueSpan();
     _ = (T.RawNode{ .kind = .element }).attributeSpan();
     const span: T.Span = .{ .start = 0, .end = 2 };
