@@ -1980,6 +1980,12 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
 
 const ValueError = std.mem.Allocator.Error || entities.DecodeError;
 
+const TextMaterializationState = enum(u8) {
+    decode_failed = 1,
+    decoded = 2,
+    raw = 0xff,
+};
+
 fn GetAttribute(comptime options: ParseOptions) type {
     return struct {
         const DocumentType = GetDocument(options);
@@ -2006,8 +2012,8 @@ fn GetAttribute(comptime options: ParseOptions) type {
             return name[split + 1 ..];
         }
 
-        pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError![]u8 {
-            return self.doc.decodeValueAlloc(alloc, self.valueRawSlice());
+        pub fn value(self: @This(), alloc: std.mem.Allocator) ValueError!common.SliceResult {
+            return self.doc.decodeValueResult(alloc, self.valueRawSlice());
         }
 
         pub fn write(self: @This(), writer: anytype) !void {
@@ -2117,10 +2123,9 @@ fn GetNode(comptime options: ParseOptions) type {
             return self.raw().valueSpan(self.index).slice(self.doc.source);
         }
 
-        pub fn value(self: Self, alloc: std.mem.Allocator) ValueError![]u8 {
-            const raw_value = self.valueRawSlice();
-            if (self.kind == .text) return self.doc.decodeValueAlloc(alloc, raw_value);
-            return alloc.dupe(u8, raw_value);
+        pub fn value(self: Self, alloc: std.mem.Allocator) ValueError!common.SliceResult {
+            if (self.kind == .text) return self.doc.materializeText(self.index, alloc);
+            return .{ .value = self.valueRawSlice() };
         }
 
         pub fn firstChild(self: Self) ?Self {
@@ -2175,9 +2180,9 @@ fn GetNode(comptime options: ParseOptions) type {
             return attr.value.slice(self.doc.source);
         }
 
-        pub fn getAttributeValue(self: Self, alloc: std.mem.Allocator, name: []const u8) ValueError!?[]u8 {
+        pub fn getAttributeValue(self: Self, alloc: std.mem.Allocator, name: []const u8) ValueError!?common.SliceResult {
             const raw_value = self.getAttributeValueRaw(name) orelse return null;
-            return try self.doc.decodeValueAlloc(alloc, raw_value);
+            return try self.doc.decodeValueResult(alloc, raw_value);
         }
 
         pub fn firstAttribute(self: Self) ?AttributeType {
@@ -2199,22 +2204,30 @@ fn GetNode(comptime options: ParseOptions) type {
             return first orelse "";
         }
 
-        pub fn innerText(self: Self, alloc: std.mem.Allocator) ValueError![]u8 {
-            if (self.kind == .text or self.kind == .cdata) return self.value(alloc);
+        pub fn innerText(self: Self, alloc: std.mem.Allocator) ValueError!common.SliceResult {
+            if (self.kind == .text) return self.value(alloc);
+            if (self.kind == .cdata) return .{ .value = self.valueRawSlice() };
+
             var out = std.ArrayList(u8).empty;
             errdefer out.deinit(alloc);
             const end = self.raw().subtree_end;
             var idx = self.index + 1;
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.items.len) : (idx += 1) {
-                const kind = self.doc.kindAt(idx);
-                const raw_node = &self.doc.nodes.items[idx];
-                switch (kind) {
-                    .text => try self.doc.appendDecodedValue(&out, alloc, raw_node.valueSpan(idx).slice(self.doc.source)),
-                    .cdata => try out.appendSlice(alloc, raw_node.valueSpan(idx).slice(self.doc.source)),
+                switch (self.doc.kindAt(idx)) {
+                    .text => {
+                        const materialized = try self.doc.materializeText(idx, alloc);
+                        defer materialized.free(alloc);
+                        try out.appendSlice(alloc, materialized.value);
+                    },
+                    .cdata => try out.appendSlice(alloc, self.doc.nodes.items[idx].valueSpan(idx).slice(self.doc.source)),
                     else => {},
                 }
             }
-            return out.toOwnedSlice(alloc);
+            if (out.items.len == 0) {
+                out.deinit(alloc);
+                return .{ .value = "" };
+            }
+            return .{ .value = try out.toOwnedSlice(alloc), .owned = true };
         }
 
         pub fn querySelector(self: Self, selector: []const u8) ?Self {
@@ -2318,18 +2331,68 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             self.entity_map.clearRetainingCapacity();
         }
 
-        fn decodeValueAlloc(self: *const Self, alloc: std.mem.Allocator, raw: []const u8) ValueError![]u8 {
-            if (!options.expand_dtd_entities) {
-                return entities.decodeAllocWithEntityMap(alloc, raw, options.mode == .strict, null);
-            }
-            return entities.decodeAllocWithEntityMap(alloc, raw, options.mode == .strict, &self.entity_map);
+        inline fn entityMap(self: *const Self) ?*const std.StringHashMap([]u8) {
+            return if (comptime options.expand_dtd_entities) &self.entity_map else null;
         }
 
-        fn appendDecodedValue(self: *const Self, out: *std.ArrayList(u8), alloc: std.mem.Allocator, raw: []const u8) ValueError!void {
-            if (!options.expand_dtd_entities) {
-                return entities.appendDecodedWithEntityMap(out, alloc, raw, options.mode == .strict, null);
+        fn decodeValueResult(self: *const Self, alloc: std.mem.Allocator, raw: []const u8) ValueError!common.SliceResult {
+            if (std.mem.indexOfScalar(u8, raw, '&') == null) return .{ .value = raw };
+            return .{
+                .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
+                .owned = true,
+            };
+        }
+
+        inline fn textState(self: *const Self, idx: IndexInt) TextMaterializationState {
+            if (comptime options.non_destructive) return .raw;
+            const node = &self.nodes.items[idx];
+            const end: usize = @intCast(node.name_or_text.end);
+            if (end >= self.source.len) return .raw;
+            return switch (self.source[end]) {
+                @intFromEnum(TextMaterializationState.decoded) => .decoded,
+                @intFromEnum(TextMaterializationState.decode_failed) => .decode_failed,
+                else => .raw,
+            };
+        }
+
+        inline fn markTextState(self: *Self, idx: IndexInt, state: TextMaterializationState) void {
+            if (comptime options.non_destructive) return;
+            const end: usize = @intCast(self.nodes.items[idx].name_or_text.end);
+            if (end < self.source.len) self.source[end] = @intFromEnum(state);
+        }
+
+        fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
+            const node = &self.nodes.items[idx];
+            std.debug.assert(node.nodeKind(idx) == .text);
+            if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.name_or_text.slice(self.source));
+
+            switch (self.textState(idx)) {
+                .decoded => return .{ .value = node.name_or_text.slice(self.source) },
+                .decode_failed => {
+                    const raw = node.name_or_text.slice(self.source);
+                    return .{
+                        .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
+                        .owned = true,
+                    };
+                },
+                .raw => {},
             }
-            return entities.appendDecodedWithEntityMap(out, alloc, raw, options.mode == .strict, &self.entity_map);
+
+            const original_end = node.name_or_text.end;
+            const result = try entities.decodeInPlaceWithEntityMap(node.name_or_text.sliceMut(self.source), options.validate_well_formedness, self.entityMap());
+            if (result.complete) {
+                node.name_or_text.end = node.name_or_text.start + @as(IndexInt, @intCast(result.len));
+                self.markTextState(idx, .decoded);
+                return .{ .value = node.name_or_text.slice(self.source) };
+            }
+
+            node.name_or_text.end = original_end;
+            self.markTextState(idx, .decode_failed);
+            const raw = node.name_or_text.slice(self.source);
+            return .{
+                .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
+                .owned = true,
+            };
         }
 
         pub fn registerDoctypeEntities(self: *Self, doctype_value: []const u8) ParseError!void {
@@ -2415,7 +2478,14 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                             open_idx = idx;
                         }
                     },
-                    .text => try writer.writeAll(raw.valueSpan(idx).slice(self.source)),
+                    .text => {
+                        const text = raw.valueSpan(idx).slice(self.source);
+                        if (comptime !options.non_destructive) {
+                            if (self.textState(idx) == .decoded) {
+                                try writeEscapedText(writer, text);
+                            } else try writer.writeAll(text);
+                        } else try writer.writeAll(text);
+                    },
                     .comment => {
                         try writer.writeAll("<!--");
                         try writer.writeAll(raw.valueSpan(idx).slice(self.source));
@@ -2491,6 +2561,24 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             }
         }
     };
+}
+
+fn writeEscapedText(writer: anytype, value: []const u8) !void {
+    var start: usize = 0;
+    for (value, 0..) |c, i| {
+        const escaped: ?[]const u8 = switch (c) {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            else => null,
+        };
+        if (escaped) |bytes| {
+            try writer.writeAll(value[start..i]);
+            try writer.writeAll(bytes);
+            start = i + 1;
+        }
+    }
+    try writer.writeAll(value[start..]);
 }
 
 fn writeDoubleQuotedAttributeValue(writer: anytype, value: []const u8) !void {
@@ -2772,4 +2860,63 @@ test "validateDoctype handles deeply nested content models iteratively" {
 
     const info = try validateDoctypeAlloc(std.testing.allocator, value.items);
     try std.testing.expectEqualStrings("r", value.items[info.name_start..info.name_end]);
+}
+
+test "destructive text materialization caches decoded bytes in source" {
+    const opts: ParseOptions = .{};
+    var source = "<r>a&amp;b</r>".*;
+    var doc = opts.Document().init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(&source);
+
+    const text = doc.nodeAt(1).?.firstChild().?;
+    const first = try text.value(std.testing.allocator);
+    defer first.free(std.testing.allocator);
+    try std.testing.expect(!first.owned);
+    try std.testing.expectEqualStrings("a&b", first.value);
+    try std.testing.expectEqualStrings("a&b", text.valueRawSlice());
+
+    const after_first = source;
+    const second = try text.value(std.testing.allocator);
+    defer second.free(std.testing.allocator);
+    try std.testing.expect(!second.owned);
+    try std.testing.expectEqualStrings("a&b", second.value);
+    try std.testing.expectEqualSlices(u8, &after_first, &source);
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try doc.write(&out.writer);
+    try std.testing.expectEqualStrings("<r>a&amp;b</r>", out.written());
+}
+
+test "non destructive text decoding owns fallback and preserves source" {
+    const opts: ParseOptions = .{ .non_destructive = true };
+    const source = "<r>a&amp;b</r>";
+    var doc = opts.Document().init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(source);
+
+    const value = try doc.nodeAt(1).?.firstChild().?.value(std.testing.allocator);
+    defer value.free(std.testing.allocator);
+    try std.testing.expect(value.owned);
+    try std.testing.expectEqualStrings("a&b", value.value);
+    try std.testing.expectEqualStrings("<r>a&amp;b</r>", source);
+}
+
+test "expanding DTD text uses owned fallback without partial source decode" {
+    const opts: ParseOptions = .{ .expand_dtd_entities = true };
+    var source = "<!DOCTYPE r [<!ENTITY x 'EXPANDED'>]><r>&x;</r>".*;
+    var doc = opts.Document().init(std.testing.allocator);
+    defer doc.deinit();
+    try doc.parse(&source);
+
+    const root = doc.nodeAt(1).?;
+    const text = root.firstChild().?;
+    const before_raw = try std.testing.allocator.dupe(u8, text.valueRawSlice());
+    defer std.testing.allocator.free(before_raw);
+    const value = try text.value(std.testing.allocator);
+    defer value.free(std.testing.allocator);
+    try std.testing.expect(value.owned);
+    try std.testing.expectEqualStrings("EXPANDED", value.value);
+    try std.testing.expectEqualSlices(u8, before_raw, text.valueRawSlice());
 }
