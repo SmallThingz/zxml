@@ -422,9 +422,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
             } else scanner.NameScan{ .end = scanner.findNameEndAfterStart(self.input, self.i), .key = 0 };
             const name_end = name_scan.end;
-            if (name_end - name_start > std.math.maxInt(u16)) {
-                @branchHint(.unlikely);
-                return error.InputTooLarge;
+            if (comptime strict_mode) {
+                if (name_end - name_start > std.math.maxInt(u16)) {
+                    @branchHint(.unlikely);
+                    return error.InputTooLarge;
+                }
             }
             if (comptime strict_mode) {
                 if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[name_start..name_end])) return error.ExpectedElementName;
@@ -1437,7 +1439,7 @@ test "strict start-tag grammar rejects malformed attributes" {
     }
 }
 
-test "compact DOM rejects element names longer than u16" {
+test "full validation rejects element names longer than u16" {
     const options: ParseOptions = .{};
     const Document = document.Types(options).Document;
     const name_len = 70_000;
@@ -1459,8 +1461,15 @@ test "compact DOM rejects element names longer than u16" {
     doc.source = source;
     try std.testing.expectError(
         error.InputTooLarge,
-        parseInto(&doc, source, .{ .mode = .strict, .validate_closing_tags = true, .require_closed_elements_on_eof = true }),
+        parseInto(&doc, source, .{ .mode = .strict, .validate_well_formedness = true, .validate_closing_tags = true, .require_closed_elements_on_eof = true }),
     );
+
+    // Fast mode deliberately skips the representation-limit check. The name
+    // may be truncated for lazy access, but parsing remains bounded and safe.
+    doc.clear();
+    doc.source = source;
+    try parseInto(&doc, source, .{ .mode = .turbo });
+    try std.testing.expectEqual(@as(usize, 2), doc.nodes.items.len);
 }
 
 test "turbo closing fast paths preserve permissive fallback forms" {
