@@ -31,6 +31,8 @@ Headline zxml modes are now:
 
 <!-- README_AUTO_SUMMARY:END -->
 
+Current code-validation and benchmark status: [rewrite validation](bench/VALIDATION.md).
+
 ## Quick Start
 
 ```bash
