@@ -277,7 +277,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
         parse_attrs: ValidationAttrs = if (validated) .empty else {},
         root_seen: ValidationBool = if (validated) false else {},
-        doctype_seen: ValidationBool = if (validated) false else {},
         standalone_yes: ValidationBool = if (validated) false else {},
         doctype_value_start: ValidationUsize = if (validated) 0 else {},
         doctype_value_end: ValidationUsize = if (validated) 0 else {},
@@ -956,7 +955,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (scanner.isDoctype(self.input, self.i)) {
                 if (comptime validated) {
                     if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
-                    if (self.topIndex() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
+                    if (self.topIndex() != 0 or self.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
                 }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (validated) return error.UnexpectedEndOfData;
@@ -968,20 +967,19 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const value_end = j;
                 if (comptime validated) {
                     const info = try document.validateDoctypeAlloc(self.doc.allocator, self.input[value_start..value_end]);
-                    self.doctype_value_start = value_start;
-                    self.doctype_value_end = value_end;
-                    self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                    const require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
                     try document.validateDoctypeEntityConstraintsAlloc(
                         self.doc.allocator,
                         self.input[value_start..value_end],
-                        self.require_declared_entities,
+                        require_declared_entities,
                         null,
                     );
+                    self.doctype_value_start = value_start;
+                    self.doctype_value_end = value_end;
+                    self.require_declared_entities = require_declared_entities;
                     self.standalone_yes = false;
                 }
                 self.i = j + 1;
-
-                if (comptime validated) self.doctype_seen = true;
 
                 if (expand_dtd_entities) {
                     try self.doc.registerDoctypeEntities(self.input[value_start..value_end]);
@@ -1274,7 +1272,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start: usize, attr_end: usize) ParseError!void {
             if (comptime !validated or expand_dtd_entities) return;
-            if (self.doctype_seen and self.standalone_yes) {
+            if (self.doctypeSeen() and self.standalone_yes) {
                 @branchHint(.cold);
                 const validation: document.DtdAttributeValidation = .{
                     .input = input,
@@ -1294,7 +1292,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (has_lt) return error.InvalidAttributeValue;
             if (has_ampersand) {
                 if (comptime !expand_dtd_entities) {
-                    if (self.doctype_seen) {
+                    if (self.doctypeSeen()) {
                         self.standalone_yes = true;
                         return;
                     }
@@ -1319,8 +1317,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
         }
 
+        inline fn doctypeSeen(self: *const Self) bool {
+            if (comptime !validated) return false;
+            return self.doctype_value_end != 0;
+        }
+
         inline fn doctypeValue(self: *const Self) ?[]const u8 {
-            if (!self.doctype_seen) return null;
+            if (!self.doctypeSeen()) return null;
             return self.input[self.doctype_value_start..self.doctype_value_end];
         }
     };
@@ -1334,7 +1337,8 @@ test "permissive parser erases validation-only state" {
 
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "parse_attrs"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "root_seen"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_seen"));
+    try std.testing.expect(!@hasField(PermissiveParser, "doctype_seen"));
+    try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "standalone_yes"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_start"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_end"));

@@ -164,7 +164,6 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_skip_stack_len: usize = 0,
             restore_generation: u64 = 0,
             root_seen: ValidationBool = if (validated) false else {},
-            doctype_seen: ValidationBool = if (validated) false else {},
             standalone_yes: ValidationBool = if (validated) false else {},
             doctype_value_start: ValidationUsize = if (validated) 0 else {},
             doctype_value_end: ValidationUsize = if (validated) 0 else {},
@@ -182,7 +181,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 needs_more: bool,
                 stack_generation: u64,
                 root_seen: ValidationBool,
-                doctype_seen: ValidationBool,
                 standalone_yes: ValidationBool,
                 doctype_value_start: ValidationUsize,
                 doctype_value_end: ValidationUsize,
@@ -195,7 +193,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 skip_stack_len: usize,
                 needs_more: bool,
                 root_seen: ValidationBool,
-                doctype_seen: ValidationBool,
                 standalone_yes: ValidationBool,
                 doctype_value_start: ValidationUsize,
                 doctype_value_end: ValidationUsize,
@@ -217,7 +214,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
                 if (comptime validated) {
                     self.root_seen = false;
-                    self.doctype_seen = false;
                     self.standalone_yes = false;
                     self.doctype_value_start = 0;
                     self.doctype_value_end = 0;
@@ -301,7 +297,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = false;
                 if (comptime validated) {
                     self.root_seen = false;
-                    self.doctype_seen = false;
                     self.standalone_yes = false;
                     self.doctype_value_start = 0;
                     self.doctype_value_end = 0;
@@ -322,7 +317,6 @@ pub fn Types(comptime options: ParseOptions) type {
                     .needs_more = self.needs_more,
                     .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
                     .root_seen = if (validated) self.root_seen else {},
-                    .doctype_seen = if (validated) self.doctype_seen else {},
                     .standalone_yes = if (validated) self.standalone_yes else {},
                     .doctype_value_start = if (validated) self.doctype_value_start else {},
                     .doctype_value_end = if (validated) self.doctype_value_end else {},
@@ -338,7 +332,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = state.needs_more;
                 if (comptime validated) {
                     self.root_seen = state.root_seen;
-                    self.doctype_seen = state.doctype_seen;
                     self.standalone_yes = state.standalone_yes;
                     self.doctype_value_start = state.doctype_value_start;
                     self.doctype_value_end = state.doctype_value_end;
@@ -375,7 +368,6 @@ pub fn Types(comptime options: ParseOptions) type {
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
                     .root_seen = if (validated) self.root_seen else {},
-                    .doctype_seen = if (validated) self.doctype_seen else {},
                     .standalone_yes = if (validated) self.standalone_yes else {},
                     .doctype_value_start = if (validated) self.doctype_value_start else {},
                     .doctype_value_end = if (validated) self.doctype_value_end else {},
@@ -388,7 +380,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.needs_more = state.needs_more;
                 if (comptime validated) {
                     self.root_seen = state.root_seen;
-                    self.doctype_seen = state.doctype_seen;
                     self.standalone_yes = state.standalone_yes;
                     self.doctype_value_start = state.doctype_value_start;
                     self.doctype_value_end = state.doctype_value_end;
@@ -522,9 +513,14 @@ pub fn Types(comptime options: ParseOptions) type {
                 };
             }
 
+            inline fn doctypeSeen(self: *const Self) bool {
+                if (comptime !validated) return false;
+                return self.doctype_value_end != 0;
+            }
+
             inline fn doctypeValue(self: *const Self, input: []const u8) ?[]const u8 {
                 if (comptime !validated) return null;
-                if (!self.doctype_seen) return null;
+                if (!self.doctypeSeen()) return null;
                 return input[self.doctype_value_start..self.doctype_value_end];
             }
 
@@ -1119,7 +1115,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (scanner.isDoctype(input, start)) {
                     if (comptime validated) {
                         if (!scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
-                        if (self.stackLen() != 0 or self.root_seen or self.doctype_seen) return error.InvalidDoctype;
+                        if (self.stackLen() != 0 or self.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
                     }
                     const end = scanner.findDoctypeEnd(input, start + 9) orelse {
                         if (validated or incremental) return error.UnexpectedEndOfData;
@@ -1128,15 +1124,16 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (comptime validated) {
                         const value_start = start + 9;
                         const info = try document.validateDoctypeAlloc(self.allocator, input[value_start..end]);
-                        self.doctype_value_start = value_start;
-                        self.doctype_value_end = end;
-                        self.require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                        const require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
                         try document.validateDoctypeEntityConstraintsAlloc(
                             self.allocator,
                             input[value_start..end],
-                            self.require_declared_entities,
+                            require_declared_entities,
                             null,
                         );
+                        self.doctype_value_start = value_start;
+                        self.doctype_value_end = end;
+                        self.require_declared_entities = require_declared_entities;
                         if (comptime !incremental) {
                             // Full-stream parsing may borrow unused element-stack
                             // capacity for a root-attribute DTD index. Reserve here,
@@ -1159,7 +1156,6 @@ pub fn Types(comptime options: ParseOptions) type {
                                 };
                             }
                         }
-                        self.doctype_seen = true;
                     }
                     if (include_misc_nodes) {
                         const node: Node = .{
@@ -2683,7 +2679,6 @@ test "permissive streaming parser erases validation-only state" {
 
     inline for (&.{
         "root_seen",
-        "doctype_seen",
         "standalone_yes",
         "doctype_value_start",
         "doctype_value_end",
@@ -2694,7 +2689,6 @@ test "permissive streaming parser erases validation-only state" {
     }
     inline for (&.{
         "root_seen",
-        "doctype_seen",
         "standalone_yes",
         "doctype_value_start",
         "doctype_value_end",
@@ -2702,6 +2696,10 @@ test "permissive streaming parser erases validation-only state" {
     }) |field| {
         try std.testing.expectEqual(void, @FieldType(PermissiveState, field));
     }
+    try std.testing.expect(!@hasField(PermissiveParser, "doctype_seen"));
+    try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
+    try std.testing.expect(!@hasField(PermissiveState, "doctype_seen"));
+    try std.testing.expect(!@hasField(ValidatedState, "doctype_seen"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
     try std.testing.expect(@sizeOf(PermissiveState) < @sizeOf(ValidatedState));
 }
