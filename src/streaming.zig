@@ -151,6 +151,7 @@ pub fn Types(comptime options: ParseOptions) type {
         const ValidationBool = if (validated) bool else void;
         const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
+        const CheckpointLen = if (std.debug.runtime_safety) usize else void;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -187,8 +188,8 @@ pub fn Types(comptime options: ParseOptions) type {
             };
 
             const Checkpoint = struct {
-                stack_len: usize,
-                skip_stack_len: usize,
+                stack_len: CheckpointLen,
+                skip_stack_len: CheckpointLen,
                 root_seen: ValidationBool,
                 standalone_yes: ValidationBool,
                 doctype_value: ValidationSpan,
@@ -355,8 +356,8 @@ pub fn Types(comptime options: ParseOptions) type {
 
             inline fn checkpoint(self: *const Self) Checkpoint {
                 return .{
-                    .stack_len = self.stackLen(),
-                    .skip_stack_len = self.skipStackLen(),
+                    .stack_len = if (std.debug.runtime_safety) self.stackLen() else {},
+                    .skip_stack_len = if (std.debug.runtime_safety) self.skipStackLen() else {},
                     .root_seen = if (validated) self.root_seen else {},
                     .standalone_yes = if (validated) self.standalone_yes else {},
                     .doctype_value = if (validated) self.doctype_value else {},
@@ -372,8 +373,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     self.require_declared_entities = state.require_declared_entities;
                 }
                 std.debug.assert(!self.restore_pending);
-                std.debug.assert(state.stack_len == self.stack.items.len);
-                std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                if (comptime std.debug.runtime_safety) {
+                    std.debug.assert(state.stack_len == self.stack.items.len);
+                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                }
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
@@ -2692,6 +2695,11 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expect(!@hasField(ValidatedParser.Checkpoint, "needs_more"));
     try std.testing.expect(!@hasField(PermissiveParser.Checkpoint, "offset"));
     try std.testing.expect(!@hasField(ValidatedParser.Checkpoint, "offset"));
+    const ExpectedCheckpointLen = if (std.debug.runtime_safety) usize else void;
+    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(PermissiveParser.Checkpoint, "stack_len"));
+    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(ValidatedParser.Checkpoint, "stack_len"));
+    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(PermissiveParser.Checkpoint, "skip_stack_len"));
+    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(ValidatedParser.Checkpoint, "skip_stack_len"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
