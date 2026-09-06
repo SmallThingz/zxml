@@ -38,6 +38,8 @@ zig build tools -- run-benchmarks --profile stable --resume
 - `README.md` auto-summary block
 - `bench/README.md` latest benchmark snapshot block
 
+For a frozen-binary measurement, build the runners first and use `zig-out/bin/zxml-tools run-benchmarks --profile stable --no-build` inside the quiet-host guard. This skips compilation, not parsing or validation; the caller must verify that all four runner binaries match the intended source revision.
+
 Results are written to:
 
 - `bench/results/latest.json`

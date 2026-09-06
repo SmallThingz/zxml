@@ -2135,6 +2135,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     var profile_name: []const u8 = "quick";
     var write_baseline = false;
     var resume_stable = false;
+    var skip_build = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2147,6 +2148,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             write_baseline = true;
         } else if (std.mem.eql(u8, arg, "--resume")) {
             resume_stable = true;
+        } else if (std.mem.eql(u8, arg, "--no-build")) {
+            skip_build = true;
         } else {
             return error.InvalidArguments;
         }
@@ -2158,8 +2161,10 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     defer environment.deinit(alloc);
 
     try common.ensureDir(io, RESULTS_DIR);
-    try ensureExternalParsersBuilt(io, alloc);
-    try buildRunners(io, alloc);
+    if (!skip_build) {
+        try ensureExternalParsersBuilt(io, alloc);
+        try buildRunners(io, alloc);
+    }
 
     var parse_results = std.ArrayList(ParseResult).empty;
     defer {
