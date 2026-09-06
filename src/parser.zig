@@ -265,8 +265,12 @@ fn parseTracked(
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     const validated = opts.validate_well_formedness;
     const ValidationAttrs = if (validated) std.ArrayListUnmanaged(document.RawAttribute) else void;
-    const ValidationBool = if (validated) bool else void;
     const ValidationSpan = if (validated) document.Span else void;
+    const ValidationFlags = if (validated) packed struct {
+        root_seen: bool = false,
+        standalone_yes: bool = false,
+        require_declared_entities: bool = true,
+    } else void;
 
     return struct {
         doc: *DocType,
@@ -276,10 +280,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
         parse_attrs: ValidationAttrs = if (validated) .empty else {},
-        root_seen: ValidationBool = if (validated) false else {},
-        standalone_yes: ValidationBool = if (validated) false else {},
+        validation_flags: ValidationFlags = if (validated) .{} else {},
         doctype_value: ValidationSpan = if (validated) .{} else {},
-        require_declared_entities: ValidationBool = if (validated) true else {},
 
         const Self = @This();
         const RawNode = DocType.RawNode;
@@ -434,7 +436,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             if (comptime validated) {
                 if (self.stackLen() > 1) return error.UnexpectedEndOfData;
-                if (!self.root_seen) return error.ExpectedDocumentElement;
+                if (!self.validation_flags.root_seen) return error.ExpectedDocumentElement;
             }
 
             while (self.stackLen() > 1) {
@@ -473,8 +475,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const parent_idx = self.topIndex();
             if (comptime validated) {
                 if (parent_idx == 0) {
-                    if (self.root_seen) return error.MultipleDocumentElements;
-                    self.root_seen = true;
+                    if (self.validation_flags.root_seen) return error.MultipleDocumentElements;
+                    self.validation_flags.root_seen = true;
                 }
             }
             // Common path: start tag with no attributes.
@@ -875,7 +877,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime validated) {
                 if (xml_target) {
                     const declaration = try document.validateXmlDeclaration(self.input[value_start..value_end]);
-                    self.standalone_yes = declaration.standalone_yes;
+                    self.validation_flags.standalone_yes = declaration.standalone_yes;
                 }
             }
 
@@ -954,7 +956,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (scanner.isDoctype(self.input, self.i)) {
                 if (comptime validated) {
                     if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
-                    if (self.topIndex() != 0 or self.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
+                    if (self.topIndex() != 0 or self.validation_flags.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
                 }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (validated) return error.UnexpectedEndOfData;
@@ -966,7 +968,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 const value_end = j;
                 if (comptime validated) {
                     const info = try document.validateDoctypeAlloc(self.doc.allocator, self.input[value_start..value_end]);
-                    const require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                    const require_declared_entities = self.validation_flags.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
                     try document.validateDoctypeEntityConstraintsAlloc(
                         self.doc.allocator,
                         self.input[value_start..value_end],
@@ -974,8 +976,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         null,
                     );
                     self.doctype_value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
-                    self.require_declared_entities = require_declared_entities;
-                    self.standalone_yes = false;
+                    self.validation_flags.require_declared_entities = require_declared_entities;
+                    self.validation_flags.standalone_yes = false;
                 }
                 self.i = j + 1;
 
@@ -1270,7 +1272,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateDeferredDtdAttributeReferences(self: *Self, input: []const u8, attr_start: usize, attr_end: usize) ParseError!void {
             if (comptime !validated or expand_dtd_entities) return;
-            if (self.doctypeSeen() and self.standalone_yes) {
+            if (self.doctypeSeen() and self.validation_flags.standalone_yes) {
                 @branchHint(.cold);
                 const validation: document.DtdAttributeValidation = .{
                     .input = input,
@@ -1279,10 +1281,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 try document.validateDoctypeEntityConstraintsAlloc(
                     self.doc.allocator,
                     self.doctype_value.slice(input),
-                    self.require_declared_entities,
+                    self.validation_flags.require_declared_entities,
                     &validation,
                 );
-                self.standalone_yes = false;
+                self.validation_flags.standalone_yes = false;
             }
         }
 
@@ -1291,11 +1293,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (has_ampersand) {
                 if (comptime !expand_dtd_entities) {
                     if (self.doctypeSeen()) {
-                        self.standalone_yes = true;
+                        self.validation_flags.standalone_yes = true;
                         return;
                     }
                 }
-                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.require_declared_entities, null);
+                try document.validateXmlAttributeReferencesAlloc(self.doc.allocator, value, self.doctypeValue(), self.validation_flags.require_declared_entities, null);
             }
         }
 
@@ -1311,7 +1313,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         inline fn validateCharacterDataSpecials(self: *const Self, value: []const u8, has_close_bracket: bool, has_ampersand: bool) ParseError!void {
             if (has_close_bracket and std.mem.indexOf(u8, value, "]]>") != null) return error.InvalidCharacterData;
             if (has_ampersand) {
-                try document.validateXmlReferencesAlloc(self.doc.allocator, value, false, self.doctypeValue(), self.require_declared_entities);
+                try document.validateXmlReferencesAlloc(self.doc.allocator, value, false, self.doctypeValue(), self.validation_flags.require_declared_entities);
             }
         }
 
@@ -1334,13 +1336,16 @@ test "permissive parser erases validation-only state" {
     const ValidatedParser = Parser(.{ .validate_well_formedness = true }, ValidatedDocument);
 
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "parse_attrs"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "root_seen"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "validation_flags"));
+    inline for (.{ "root_seen", "standalone_yes", "require_declared_entities" }) |field| {
+        try std.testing.expect(!@hasField(PermissiveParser, field));
+        try std.testing.expect(!@hasField(ValidatedParser, field));
+    }
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(@FieldType(ValidatedParser, "validation_flags")));
     try std.testing.expect(!@hasField(PermissiveParser, "doctype_seen"));
     try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "standalone_yes"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value"));
     try std.testing.expectEqual(document.Span, @FieldType(ValidatedParser, "doctype_value"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "require_declared_entities"));
     try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
     try std.testing.expect(!@hasField(PermissiveParser, "parse_stack_heap_owned"));
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(PermissiveParser.OpenElem));
