@@ -147,6 +147,10 @@ pub fn Types(comptime options: ParseOptions) type {
         };
         const Stack = std.ArrayList(StackEntry);
         const Allocator = std.mem.Allocator;
+        const validated = options.validate_well_formedness;
+        const ValidationBool = if (validated) bool else void;
+        const ValidationUsize = if (validated) usize else void;
+        const ValidationU64 = if (validated) u64 else void;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -160,17 +164,16 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_stack_len: usize = 0,
             restore_skip_stack_len: usize = 0,
             restore_generation: u64 = 0,
-            root_seen: bool = false,
-            doctype_seen: bool = false,
-            standalone_yes: bool = false,
-            doctype_value_start: usize = 0,
-            doctype_value_end: usize = 0,
-            require_declared_entities: bool = true,
-            xml_validated_offset: usize = 0,
-            attribute_name_filter: u64 = 0,
+            root_seen: ValidationBool = if (validated) false else {},
+            doctype_seen: ValidationBool = if (validated) false else {},
+            standalone_yes: ValidationBool = if (validated) false else {},
+            doctype_value_start: ValidationUsize = if (validated) 0 else {},
+            doctype_value_end: ValidationUsize = if (validated) 0 else {},
+            require_declared_entities: ValidationBool = if (validated) true else {},
+            xml_validated_offset: ValidationUsize = if (validated) 0 else {},
+            attribute_name_filter: ValidationU64 = if (validated) 0 else {},
 
             const Self = @This();
-            const validated = options.validate_well_formedness;
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
             const include_misc_nodes = options.include_misc_nodes;
 
@@ -180,12 +183,12 @@ pub fn Types(comptime options: ParseOptions) type {
                 skip_stack_len: usize,
                 needs_more: bool,
                 stack_generation: u64,
-                root_seen: bool,
-                doctype_seen: bool,
-                standalone_yes: bool,
-                doctype_value_start: usize,
-                doctype_value_end: usize,
-                require_declared_entities: bool,
+                root_seen: ValidationBool,
+                doctype_seen: ValidationBool,
+                standalone_yes: ValidationBool,
+                doctype_value_start: ValidationUsize,
+                doctype_value_end: ValidationUsize,
+                require_declared_entities: ValidationBool,
             };
 
             const Checkpoint = struct {
@@ -193,12 +196,12 @@ pub fn Types(comptime options: ParseOptions) type {
                 stack_len: usize,
                 skip_stack_len: usize,
                 needs_more: bool,
-                root_seen: bool,
-                doctype_seen: bool,
-                standalone_yes: bool,
-                doctype_value_start: usize,
-                doctype_value_end: usize,
-                require_declared_entities: bool,
+                root_seen: ValidationBool,
+                doctype_seen: ValidationBool,
+                standalone_yes: ValidationBool,
+                doctype_value_start: ValidationUsize,
+                doctype_value_end: ValidationUsize,
+                require_declared_entities: ValidationBool,
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
@@ -214,13 +217,15 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.clearStacks();
                 self.offset = 0;
                 self.needs_more = false;
-                self.root_seen = false;
-                self.doctype_seen = false;
-                self.standalone_yes = false;
-                self.doctype_value_start = 0;
-                self.doctype_value_end = 0;
-                self.require_declared_entities = true;
-                self.xml_validated_offset = 0;
+                if (comptime validated) {
+                    self.root_seen = false;
+                    self.doctype_seen = false;
+                    self.standalone_yes = false;
+                    self.doctype_value_start = 0;
+                    self.doctype_value_end = 0;
+                    self.require_declared_entities = true;
+                    self.xml_validated_offset = 0;
+                }
                 if (comptime validated and options.validate_xml_characters) {
                     try document.validateXmlCharactersStreaming(input);
                     self.xml_validated_offset = input.len;
@@ -296,13 +301,15 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.clearStacks();
                 self.offset = 0;
                 self.needs_more = false;
-                self.root_seen = false;
-                self.doctype_seen = false;
-                self.standalone_yes = false;
-                self.doctype_value_start = 0;
-                self.doctype_value_end = 0;
-                self.require_declared_entities = true;
-                self.xml_validated_offset = 0;
+                if (comptime validated) {
+                    self.root_seen = false;
+                    self.doctype_seen = false;
+                    self.standalone_yes = false;
+                    self.doctype_value_start = 0;
+                    self.doctype_value_end = 0;
+                    self.require_declared_entities = true;
+                    self.xml_validated_offset = 0;
+                }
             }
 
             /// Saves the logical incremental-parser state. A saved state may be
@@ -316,12 +323,12 @@ pub fn Types(comptime options: ParseOptions) type {
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
                     .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
-                    .root_seen = self.root_seen,
-                    .doctype_seen = self.doctype_seen,
-                    .standalone_yes = self.standalone_yes,
-                    .doctype_value_start = self.doctype_value_start,
-                    .doctype_value_end = self.doctype_value_end,
-                    .require_declared_entities = self.require_declared_entities,
+                    .root_seen = if (validated) self.root_seen else {},
+                    .doctype_seen = if (validated) self.doctype_seen else {},
+                    .standalone_yes = if (validated) self.standalone_yes else {},
+                    .doctype_value_start = if (validated) self.doctype_value_start else {},
+                    .doctype_value_end = if (validated) self.doctype_value_end else {},
+                    .require_declared_entities = if (validated) self.require_declared_entities else {},
                 };
             }
 
@@ -331,15 +338,17 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn restore(self: *Self, state: State) void {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
-                self.root_seen = state.root_seen;
-                self.doctype_seen = state.doctype_seen;
-                self.standalone_yes = state.standalone_yes;
-                self.doctype_value_start = state.doctype_value_start;
-                self.doctype_value_end = state.doctype_value_end;
-                self.require_declared_entities = state.require_declared_entities;
-                // A restored continuation may diverge immediately after the
-                // saved parse offset, so revalidate from that byte onward.
-                self.xml_validated_offset = state.offset;
+                if (comptime validated) {
+                    self.root_seen = state.root_seen;
+                    self.doctype_seen = state.doctype_seen;
+                    self.standalone_yes = state.standalone_yes;
+                    self.doctype_value_start = state.doctype_value_start;
+                    self.doctype_value_end = state.doctype_value_end;
+                    self.require_declared_entities = state.require_declared_entities;
+                    // A restored continuation may diverge immediately after the
+                    // saved parse offset, so revalidate from that byte onward.
+                    self.xml_validated_offset = state.offset;
+                }
                 self.state_tracking = true;
 
                 if (!self.restore_pending and state.stack_generation == self.stack_generation) {
@@ -367,24 +376,26 @@ pub fn Types(comptime options: ParseOptions) type {
                     .stack_len = self.stackLen(),
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
-                    .root_seen = self.root_seen,
-                    .doctype_seen = self.doctype_seen,
-                    .standalone_yes = self.standalone_yes,
-                    .doctype_value_start = self.doctype_value_start,
-                    .doctype_value_end = self.doctype_value_end,
-                    .require_declared_entities = self.require_declared_entities,
+                    .root_seen = if (validated) self.root_seen else {},
+                    .doctype_seen = if (validated) self.doctype_seen else {},
+                    .standalone_yes = if (validated) self.standalone_yes else {},
+                    .doctype_value_start = if (validated) self.doctype_value_start else {},
+                    .doctype_value_end = if (validated) self.doctype_value_end else {},
+                    .require_declared_entities = if (validated) self.require_declared_entities else {},
                 };
             }
 
             inline fn restoreCheckpoint(self: *Self, state: Checkpoint) void {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
-                self.root_seen = state.root_seen;
-                self.doctype_seen = state.doctype_seen;
-                self.standalone_yes = state.standalone_yes;
-                self.doctype_value_start = state.doctype_value_start;
-                self.doctype_value_end = state.doctype_value_end;
-                self.require_declared_entities = state.require_declared_entities;
+                if (comptime validated) {
+                    self.root_seen = state.root_seen;
+                    self.doctype_seen = state.doctype_seen;
+                    self.standalone_yes = state.standalone_yes;
+                    self.doctype_value_start = state.doctype_value_start;
+                    self.doctype_value_end = state.doctype_value_end;
+                    self.require_declared_entities = state.require_declared_entities;
+                }
                 std.debug.assert(!self.restore_pending);
                 std.debug.assert(state.stack_len == self.stack.items.len);
                 std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
@@ -514,6 +525,7 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn doctypeValue(self: *const Self, input: []const u8) ?[]const u8 {
+                if (comptime !validated) return null;
                 if (!self.doctype_seen) return null;
                 return input[self.doctype_value_start..self.doctype_value_end];
             }
@@ -531,6 +543,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                     return;
                 }
+                if (comptime !validated) unreachable;
                 const doctype = self.doctypeValue(input);
 
                 if (doctype) |dtd| fast: {
@@ -1286,7 +1299,14 @@ pub fn Types(comptime options: ParseOptions) type {
                                 continue;
                             }
 
-                            const open = scanOpeningTagToken(input, lt, validated, if (comptime validated) self.allocator else null, self.doctypeValue(input), self.require_declared_entities) catch |err| switch (err) {
+                            const open = scanOpeningTagToken(
+                                input,
+                                lt,
+                                validated,
+                                if (comptime validated) self.allocator else null,
+                                self.doctypeValue(input),
+                                if (comptime validated) self.require_declared_entities else false,
+                            ) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
                                 else
@@ -2654,6 +2674,38 @@ inline fn validateCharacterDataRange(input: []const u8, start: usize, end: usize
     std.debug.assert(start <= end and end <= input.len);
     const specials = scanner.bytePairPresence(input[start..end], ']', '&');
     try validateCharacterDataSpecials(input, start, end, specials.first, specials.second, incremental);
+}
+
+test "permissive streaming parser erases validation-only state" {
+    const PermissiveParser = Types(.{}).Parser;
+    const ValidatedParser = Types(.{ .validate_well_formedness = true }).Parser;
+    const PermissiveState = PermissiveParser.State;
+    const ValidatedState = ValidatedParser.State;
+
+    inline for (&.{
+        "root_seen",
+        "doctype_seen",
+        "standalone_yes",
+        "doctype_value_start",
+        "doctype_value_end",
+        "require_declared_entities",
+        "xml_validated_offset",
+        "attribute_name_filter",
+    }) |field| {
+        try std.testing.expectEqual(void, @FieldType(PermissiveParser, field));
+    }
+    inline for (&.{
+        "root_seen",
+        "doctype_seen",
+        "standalone_yes",
+        "doctype_value_start",
+        "doctype_value_end",
+        "require_declared_entities",
+    }) |field| {
+        try std.testing.expectEqual(void, @FieldType(PermissiveState, field));
+    }
+    try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
+    try std.testing.expect(@sizeOf(PermissiveState) < @sizeOf(ValidatedState));
 }
 
 test "streaming parser self-test: order attributes and depths" {
