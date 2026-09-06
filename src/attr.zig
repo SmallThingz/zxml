@@ -215,11 +215,13 @@ pub fn materializeAttributes(
 /// Generated DOM attribute iterator. Destructive documents materialize once;
 /// non-destructive documents remain on the raw source tokenizer forever.
 pub fn Iterator(comptime non_destructive: bool, comptime validated: bool) type {
+    const OptionalCompactIterator = if (non_destructive) void else CompactIterator;
+    const OptionalCompactFlag = if (non_destructive) void else bool;
+
     return struct {
-        source: []const u8,
         raw: RawIterator(validated),
-        compact: CompactIterator,
-        use_compact: bool = false,
+        compact: OptionalCompactIterator,
+        use_compact: OptionalCompactFlag = if (non_destructive) {} else false,
 
         pub fn initElement(source_input: if (non_destructive) []const u8 else []u8, name_end_idx: IndexInt) @This() {
             const source: []const u8 = source_input;
@@ -227,7 +229,6 @@ pub fn Iterator(comptime non_destructive: bool, comptime validated: bool) type {
             if (comptime !non_destructive) {
                 if (looksCompact(source, name_end)) {
                     return .{
-                        .source = source,
                         .raw = RawIterator(validated).init(source, .{}),
                         .compact = .{ .source = source, .cursor = name_end },
                         .use_compact = true,
@@ -236,22 +237,30 @@ pub fn Iterator(comptime non_destructive: bool, comptime validated: bool) type {
             }
 
             const tail = scanner.scanStartTagEnd(source, name_end) orelse return .{
-                .source = source,
                 .raw = RawIterator(validated).init(source, .{}),
-                .compact = .{ .source = source, .cursor = source.len },
+                .compact = if (non_destructive) {} else .{ .source = source, .cursor = source.len },
             };
             const end = if (tail.self_closing and tail.end > name_end) tail.end - 1 else tail.end;
             return .{
-                .source = source,
                 .raw = RawIterator(validated).init(source, .{ .start = @intCast(name_end), .end = @intCast(end) }),
-                .compact = .{ .source = source, .cursor = source.len },
+                .compact = if (non_destructive) {} else .{ .source = source, .cursor = source.len },
             };
         }
 
         pub fn next(self: *@This()) ?RawAttribute {
+            if (comptime non_destructive) return self.raw.next();
             return if (self.use_compact) self.compact.next() else self.raw.next();
         }
     };
+}
+
+test "non destructive iterator erases destructive-only state" {
+    const Immutable = Iterator(true, false);
+    const Destructive = Iterator(false, false);
+
+    try std.testing.expectEqual(void, @FieldType(Immutable, "compact"));
+    try std.testing.expectEqual(void, @FieldType(Immutable, "use_compact"));
+    try std.testing.expect(@sizeOf(Immutable) < @sizeOf(Destructive));
 }
 
 test "destructive materialization decodes and compacts once" {
