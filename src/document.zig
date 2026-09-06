@@ -691,6 +691,34 @@ noinline fn xmlAsciiPrefixLenWide(input: []const u8) usize {
     return i;
 }
 
+/// Validate a whole UTF-8/XML block starting at a codepoint boundary.
+/// Any incomplete trailing codepoint is re-read in the next block or scalar tail.
+noinline fn xmlUtf8BlockPrefix(bytes: @Vector(xml_scan_vector_len, u8)) ParseError!usize {
+    const n = xml_scan_vector_len;
+    const Vec = @Vector(n, u8);
+    const indexes = comptime std.simd.iota(i32, n);
+    const zero: Vec = @splat(0);
+    const p1 = @shuffle(u8, bytes, zero, indexes - @as(@Vector(n, i32), @splat(1)));
+    const p2 = @shuffle(u8, bytes, zero, indexes - @as(@Vector(n, i32), @splat(2)));
+    const p3 = @shuffle(u8, bytes, zero, indexes - @as(@Vector(n, i32), @splat(3)));
+    const continuation = (bytes & @as(Vec, @splat(0xc0))) == @as(Vec, @splat(0x80));
+    const expected = (p1 >= @as(Vec, @splat(0xc0))) |
+        (p2 >= @as(Vec, @splat(0xe0))) | (p3 >= @as(Vec, @splat(0xf0)));
+    const invalid_lead = (bytes >= @as(Vec, @splat(0xc0))) &
+        ((bytes < @as(Vec, @splat(0xc2))) | (bytes > @as(Vec, @splat(0xf4))));
+    const invalid_range =
+        ((p1 == @as(Vec, @splat(0xe0))) & (bytes < @as(Vec, @splat(0xa0)))) |
+        ((p1 == @as(Vec, @splat(0xed))) & (bytes > @as(Vec, @splat(0x9f)))) |
+        ((p1 == @as(Vec, @splat(0xf0))) & (bytes < @as(Vec, @splat(0x90)))) |
+        ((p1 == @as(Vec, @splat(0xf4))) & (bytes > @as(Vec, @splat(0x8f)))) |
+        ((p2 == @as(Vec, @splat(0xef))) & (p1 == @as(Vec, @splat(0xbf))) & (bytes >= @as(Vec, @splat(0xbe))));
+    if (@reduce(.Or, (continuation != expected) | invalid_lead | invalid_range)) return error.InvalidXmlCharacter;
+    if (bytes[n - 1] >= 0xc0) return n - 1;
+    if (bytes[n - 2] >= 0xe0) return n - 2;
+    if (bytes[n - 3] >= 0xf0) return n - 3;
+    return n;
+}
+
 fn xmlValidPrefixLenImpl(input: []const u8, comptime use_wide_ascii_prefix: bool) ParseError!usize {
     const Vec = @Vector(xml_scan_vector_len, u8);
     const high_bit: Vec = @splat(0x80);
@@ -717,7 +745,14 @@ fn xmlValidPrefixLenImpl(input: []const u8, comptime use_wide_ascii_prefix: bool
             }
             const invalid_control = (bytes < control_limit) &
                 (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
-            if (@reduce(.Or, non_ascii | invalid_control)) break;
+            if (@reduce(.Or, non_ascii | invalid_control)) {
+                // Preserve streaming's wide-ASCII code shape; its scalar window
+                // remains cheaper on token-heavy incremental workloads.
+                if (comptime use_wide_ascii_prefix) break;
+                if (@reduce(.Or, invalid_control)) return error.InvalidXmlCharacter;
+                i += try xmlUtf8BlockPrefix(bytes);
+                continue;
+            }
             i += @sizeOf(Vec);
         }
         // Decode a whole mixed/Unicode window before trying SIMD again.
@@ -3056,4 +3091,28 @@ test "XML character validation crosses dense Unicode and ASCII windows" {
     }
     try validateXmlCharacters(source);
     try validateXmlCharactersStreaming(source);
+}
+
+test "vector UTF-8 validation rejects illegal sequences at every lane boundary" {
+    var input: [192]u8 = undefined;
+    const invalid = [_][]const u8{
+        "\x00",         "\x01",         "\x1f",             "\x80",             "\xbf",             "\xc0\x80",     "\xc1\xbf",
+        "\xe0\x9f\xbf", "\xed\xa0\x80", "\xf0\x8f\xbf\xbf", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xef\xbf\xbe", "\xef\xbf\xbf",
+        "\xc2a",        "\xe2\x82a",    "\xf0\x90a\x80",
+    };
+    for (0..97) |offset| {
+        for (invalid) |sequence| {
+            @memset(&input, 'a');
+            @memcpy(input[offset..][0..sequence.len], sequence);
+            try std.testing.expectError(error.InvalidXmlCharacter, xmlValidPrefixLen(&input));
+            try std.testing.expectError(error.InvalidXmlCharacter, xmlValidPrefixLenStreaming(&input));
+        }
+    }
+    const valid = "é漢😀Ω" ** 12 ++ " \t\n\rASCII" ** 4;
+    for (0..valid.len + 1) |end| {
+        var boundary = end;
+        while (!std.unicode.utf8ValidateSlice(valid[0..boundary])) : (boundary -= 1) {}
+        try std.testing.expectEqual(boundary, try xmlValidPrefixLen(valid[0..end]));
+        try std.testing.expectEqual(boundary, try xmlValidPrefixLenStreaming(valid[0..end]));
+    }
 }

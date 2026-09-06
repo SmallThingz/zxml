@@ -137,7 +137,7 @@ fn parseTracked(
     // materializing an undefined array field can otherwise emit a full memset.
     var inline_nodes: [SmallInitialNodeCapacity]Doc.RawNode = undefined;
     var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = 0, .nodes = .initBuffer(&inline_nodes) };
-    errdefer p.deinitNodes();
+    errdefer if (p.nodes.capacity > SmallInitialNodeCapacity) p.nodes.deinit(allocator);
     p.parse() catch |err| {
         if (error_offset) |offset| offset.* = @min(p.i, input.len);
         return err;
@@ -884,10 +884,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime opts.store_last_child) self.nodes.items[@intCast(parent_idx)].last_child = idx;
         }
 
-        inline fn deinitNodes(noalias self: *Self) void {
-            if (self.nodes.capacity > SmallInitialNodeCapacity) self.nodes.deinit(self.doc.allocator);
-        }
-
         noinline fn growNodes(noalias self: *Self, needed: usize) ParseError!void {
             @branchHint(.cold);
             const len = self.nodes.items.len;
@@ -1149,11 +1145,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn validateComment(value: []const u8) ParseError!void {
             if (std.mem.indexOf(u8, value, "--") != null or (value.len != 0 and value[value.len - 1] == '-')) return error.InvalidComment;
-        }
-
-        inline fn validateCharacterData(self: *const Self, value: []const u8) ParseError!void {
-            const specials = scanner.bytePairPresence(value, ']', '&');
-            return self.validateCharacterDataSpecials(value, specials.first, specials.second);
         }
 
         inline fn validateCharacterDataSpecials(self: *const Self, value: []const u8, has_close_bracket: bool, has_ampersand: bool) ParseError!void {

@@ -56,7 +56,8 @@ pub inline fn findTextEnd(noalias haystack: []const u8, start: usize) ?usize {
     if (haystack.len - start >= @sizeOf(Vec)) {
         const Bits = @Vector(byte_scan_vector_len, u1);
         const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
-        const bytes: Vec = haystack[start..][0..@sizeOf(Vec)].*;
+        // Load the vector directly; array coercion can reconstruct it from scalar loads.
+        const bytes = @as(*align(1) const Vec, @ptrCast(haystack.ptr + start)).*;
         const lt_vec: Vec = @splat('<');
         const bits: Bits = @select(u1, bytes == lt_vec, @as(Bits, @splat(1)), @as(Bits, @splat(0)));
         const mask: Mask = @bitCast(bits);
@@ -1016,4 +1017,21 @@ test "node-only tag scanner never returns a different boundary" {
             try std.testing.expectEqual(padding + source.len - 1, result.end);
         }
     }
+}
+
+test "direct text vector loads preserve every alignment and short tail" {
+    var source: [160]u8 = undefined;
+    for (0..33) |start| {
+        for (0..96) |len| {
+            @memset(&source, 'x');
+            const input = source[0 .. start + len];
+            try std.testing.expectEqual(@as(?usize, null), findTextEnd(input, start));
+            for (0..len) |offset| {
+                source[start + offset] = '<';
+                try std.testing.expectEqual(@as(?usize, start + offset), findTextEnd(input, start));
+                source[start + offset] = 'x';
+            }
+        }
+    }
+    try std.testing.expectEqual(@as(?usize, null), findTextEnd(&source, std.math.maxInt(usize)));
 }
