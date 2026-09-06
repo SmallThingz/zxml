@@ -263,6 +263,11 @@ fn parseTracked(
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
+    const validated = opts.validate_well_formedness;
+    const ValidationAttrs = if (validated) std.ArrayListUnmanaged(document.RawAttribute) else void;
+    const ValidationBool = if (validated) bool else void;
+    const ValidationUsize = if (validated) usize else void;
+
     return struct {
         doc: *DocType,
         input: []const u8,
@@ -271,13 +276,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
         parse_stack_heap_owned: bool = false,
-        parse_attrs: std.ArrayListUnmanaged(document.RawAttribute) = .empty,
-        root_seen: bool = false,
-        doctype_seen: bool = false,
-        standalone_yes: bool = false,
-        doctype_value_start: usize = 0,
-        doctype_value_end: usize = 0,
-        require_declared_entities: bool = true,
+        parse_attrs: ValidationAttrs = if (validated) .empty else {},
+        root_seen: ValidationBool = if (validated) false else {},
+        doctype_seen: ValidationBool = if (validated) false else {},
+        standalone_yes: ValidationBool = if (validated) false else {},
+        doctype_value_start: ValidationUsize = if (validated) 0 else {},
+        doctype_value_end: ValidationUsize = if (validated) 0 else {},
+        require_declared_entities: ValidationBool = if (validated) true else {},
 
         const Self = @This();
         const RawNode = DocType.RawNode;
@@ -287,7 +292,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             tag_len: IndexInt = 0,
         };
 
-        const validated = opts.validate_well_formedness;
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
@@ -1321,6 +1325,22 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return self.input[self.doctype_value_start..self.doctype_value_end];
         }
     };
+}
+
+test "permissive parser erases validation-only state" {
+    const PermissiveDocument = document.Types(.{}).Document;
+    const ValidatedDocument = document.Types(.{ .validate_well_formedness = true }).Document;
+    const PermissiveParser = Parser(.{}, PermissiveDocument);
+    const ValidatedParser = Parser(.{ .validate_well_formedness = true }, ValidatedDocument);
+
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "parse_attrs"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "root_seen"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_seen"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "standalone_yes"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_start"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_end"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "require_declared_entities"));
+    try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
 }
 
 test "permissive generated DOM recovers malformed close structure" {
