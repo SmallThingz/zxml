@@ -2058,13 +2058,13 @@ fn GetNode(comptime options: ParseOptions) type {
         kind: NodeType,
 
         inline fn raw(self: Self) *const RawNodeType {
-            return &self.doc.nodes[self.index];
+            return &self.doc.nodes[@intCast(self.index)];
         }
 
         inline fn rawAttributes(self: Self) attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness) {
             const IteratorType = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness);
             if (self.kind != .element) return IteratorType.initElement(self.doc.source, @intCast(self.doc.source.len));
-            return IteratorType.initElement(self.doc.source, self.raw().name_or_text.end);
+            return IteratorType.initElement(self.doc.source, @intCast(self.raw().name_or_text.end));
         }
 
         inline fn materializeAttributes(self: Self) void {
@@ -2073,7 +2073,7 @@ fn GetNode(comptime options: ParseOptions) type {
             _ = attrs_mod.materializeAttributes(
                 options.validate_well_formedness,
                 self.doc.source,
-                self.raw().name_or_text.end,
+                @intCast(self.raw().name_or_text.end),
                 self.doc.entityMap(),
             );
         }
@@ -2147,7 +2147,7 @@ fn GetNode(comptime options: ParseOptions) type {
         pub fn firstChild(self: Self) ?Self {
             const idx = self.index + 1;
             if (@as(usize, @intCast(idx)) >= self.doc.nodes.len) return null;
-            if (self.doc.nodes[idx].parent != self.index) return null;
+            if (self.doc.nodes[@intCast(idx)].parent != self.index) return null;
             return self.doc.nodeAt(idx);
         }
 
@@ -2157,7 +2157,7 @@ fn GetNode(comptime options: ParseOptions) type {
             var last: IndexInt = InvalidIndex;
             const end = self.raw().subtree_end;
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) {
-                if (self.doc.nodes[idx].parent == self.index) last = idx;
+                if (self.doc.nodes[@intCast(idx)].parent == self.index) last = idx;
                 const tail = self.doc.subtreeEndAt(idx);
                 idx = tail + 1;
             }
@@ -2169,7 +2169,7 @@ fn GetNode(comptime options: ParseOptions) type {
             if (parent_idx == InvalidIndex) return null;
             const next_idx = self.doc.subtreeEndAt(self.index) + 1;
             if (@as(usize, @intCast(next_idx)) >= self.doc.nodes.len) return null;
-            if (self.doc.nodes[next_idx].parent != parent_idx) return null;
+            if (self.doc.nodes[@intCast(next_idx)].parent != parent_idx) return null;
             return self.doc.nodeAt(next_idx);
         }
 
@@ -2180,7 +2180,7 @@ fn GetNode(comptime options: ParseOptions) type {
             var idx = parent_idx + 1;
             var prev: IndexInt = InvalidIndex;
             while (idx < self.index) {
-                if (self.doc.nodes[idx].parent == parent_idx) prev = idx;
+                if (self.doc.nodes[@intCast(idx)].parent == parent_idx) prev = idx;
                 const tail = self.doc.subtreeEndAt(idx);
                 idx = tail + 1;
             }
@@ -2219,7 +2219,7 @@ fn GetNode(comptime options: ParseOptions) type {
                 const kind = self.doc.kindAt(idx);
                 if (kind != .text and kind != .cdata) continue;
                 if (first != null) return null;
-                first = self.doc.nodes[idx].valueSpan(idx).slice(self.doc.source);
+                first = self.doc.nodes[@intCast(idx)].valueSpan(idx).slice(self.doc.source);
             }
             return first orelse "";
         }
@@ -2239,7 +2239,7 @@ fn GetNode(comptime options: ParseOptions) type {
                         defer materialized.free(alloc);
                         try out.appendSlice(alloc, materialized.value);
                     },
-                    .cdata => try out.appendSlice(alloc, self.doc.nodes[idx].valueSpan(idx).slice(self.doc.source)),
+                    .cdata => try out.appendSlice(alloc, self.doc.nodes[@intCast(idx)].valueSpan(idx).slice(self.doc.source)),
                     else => {},
                 }
             }
@@ -2340,7 +2340,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn textState(self: *const Self, idx: IndexInt) TextMaterializationState {
             if (comptime options.non_destructive) return .raw;
-            const node = &self.nodes[idx];
+            const node = &self.nodes[@intCast(idx)];
             const end: usize = @intCast(node.name_or_text.end);
             if (end >= self.source.len) return .raw;
             return switch (self.source[end]) {
@@ -2352,12 +2352,12 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn markTextState(self: *Self, idx: IndexInt, state: TextMaterializationState) void {
             if (comptime options.non_destructive) return;
-            const end: usize = @intCast(self.nodes[idx].name_or_text.end);
+            const end: usize = @intCast(self.nodes[@intCast(idx)].name_or_text.end);
             if (end < self.source.len) self.source[end] = @intFromEnum(state);
         }
 
         fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
-            const node = &self.nodes[idx];
+            const node = &self.nodes[@intCast(idx)];
             std.debug.assert(node.nodeKind(idx) == .text);
             if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.name_or_text.slice(self.source));
 
@@ -2434,20 +2434,20 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         pub inline fn kindAt(self: *const Self, idx: IndexInt) NodeType {
-            return self.nodes[idx].nodeKind(idx);
+            return self.nodes[@intCast(idx)].nodeKind(idx);
         }
 
         /// Inclusive subtree tail. Compact text/misc nodes store zero in the raw
         /// field as their kind sentinel, so leaves derive their tail from index.
         inline fn subtreeEndAt(self: *const Self, idx: IndexInt) IndexInt {
             return switch (self.kindAt(idx)) {
-                .document, .element => self.nodes[idx].subtree_end,
+                .document, .element => self.nodes[@intCast(idx)].subtree_end,
                 else => idx,
             };
         }
 
         pub fn nodeAt(self: *const Self, idx: IndexInt) ?Node {
-            if (idx == InvalidIndex or @as(usize, @intCast(idx)) >= self.nodes.len) return null;
+            if (idx == InvalidIndex or idx >= self.nodes.len) return null;
             const doc = @constCast(self);
             return .{ .doc = doc, .index = idx, .kind = doc.kindAt(idx) };
         }
@@ -2458,19 +2458,19 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         }
 
         fn writeNode(self: *const Self, writer: anytype, node: Node) !void {
-            if (node.index == InvalidIndex or @as(usize, @intCast(node.index)) >= self.nodes.len) return;
+            if (node.index == InvalidIndex or node.index >= self.nodes.len) return;
             const start = node.index;
             const end = self.subtreeEndAt(start);
             var open_idx: IndexInt = InvalidIndex;
             var idx = start;
             while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.len) : (idx += 1) {
-                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.nodes[open_idx].subtree_end < idx) {
+                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.nodes[@intCast(open_idx)].subtree_end < idx) {
                     const closing = open_idx;
-                    open_idx = self.nodes[closing].parent;
+                    open_idx = self.nodes[@intCast(closing)].parent;
                     try self.writeCloseElement(writer, closing);
                 }
 
-                const raw = &self.nodes[idx];
+                const raw = &self.nodes[@intCast(idx)];
                 switch (self.kindAt(idx)) {
                     .document => {},
                     .element => {
@@ -2525,13 +2525,13 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
             while (open_idx != InvalidIndex and open_idx >= start and self.kindAt(open_idx) == .element) {
                 const closing = open_idx;
-                open_idx = self.nodes[closing].parent;
+                open_idx = self.nodes[@intCast(closing)].parent;
                 try self.writeCloseElement(writer, closing);
             }
         }
 
         fn writeOpenElement(self: *const Self, writer: anytype, idx: IndexInt) !void {
-            const raw = &self.nodes[idx];
+            const raw = &self.nodes[@intCast(idx)];
             try writer.writeAll("<");
             try writer.writeAll(raw.name_or_text.slice(self.source));
             var attrs = attrs_mod.Iterator(options.non_destructive, options.validate_well_formedness).initElement(self.source, raw.name_or_text.end);
@@ -2553,7 +2553,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         fn writeCloseElement(self: *const Self, writer: anytype, idx: IndexInt) !void {
             try writer.writeAll("</");
-            try writer.writeAll(self.nodes[idx].name_or_text.slice(self.source));
+            try writer.writeAll(self.nodes[@intCast(idx)].name_or_text.slice(self.source));
             try writer.writeAll(">");
         }
     };

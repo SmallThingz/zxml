@@ -1,4 +1,5 @@
 const std = @import("std");
+const builtin = @import("builtin");
 const common = @import("common.zig");
 const document = @import("document.zig");
 const scanner = @import("scanner.zig");
@@ -9,6 +10,14 @@ const ParseError = document.ParseError;
 const NodeType = document.NodeType;
 const Span = document.Span;
 const IndexInt = common.IndexInt;
+const cold_section = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
+    else => ".zxml_cold",
+};
+const enormous_section = switch (builtin.os.tag) {
+    .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
+    else => ".zxml_enormous",
+};
 
 pub fn Types(comptime options: ParseOptions) type {
     return struct {
@@ -118,7 +127,7 @@ pub fn Types(comptime options: ParseOptions) type {
             /// For elements that start with another tag, this is empty.
             pub fn leadingTextRaw(self: @This()) []const u8 {
                 if (self.kind != .element or self.self_closing) return "";
-                const start: usize = self.token_end;
+                const start: usize = @intCast(self.token_end);
                 if (start >= self.source.len or self.source[start] == '<') return "";
                 const lt = scanner.findByte(self.source, start, '<') orelse self.source.len;
                 return self.source[start..lt];
@@ -493,7 +502,7 @@ pub fn Types(comptime options: ParseOptions) type {
             const dtd_scratch_unsupported_magic: u64 = 0xd7dc_6ca7_a109_4b52;
             const ColdOperation = enum { deinit, validate_attribute_references };
 
-            noinline fn coldOperation(self: *const Self, operation: ColdOperation, input: []const u8, value: []const u8) linksection(".zxml_cold") ParseError!void {
+            noinline fn coldOperation(self: *const Self, operation: ColdOperation, input: []const u8, value: []const u8) linksection(cold_section) ParseError!void {
                 if (operation == .deinit) {
                     const mutable = @constCast(self);
                     mutable.stack.deinit(mutable.allocator);
@@ -519,7 +528,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     var scratch = self.stack.allocatedSlice()[self.stack.items.len..];
                     if (scratch.len == 0 or scratch[0].key == dtd_scratch_unsupported_magic) break :fast;
                     if (scratch[0].key == dtd_scratch_prepared_magic) {
-                        const estimated: usize = scratch[0].name.end;
+                        const estimated: usize = @intCast(scratch[0].name.end);
                         if (estimated == 0 or estimated + 1 > scratch.len or (estimated & (estimated - 1)) != 0) break :fast;
 
                         const subset = try document.findInternalSubset(dtd) orelse {
@@ -586,7 +595,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             hash |= 1;
                             var slot: usize = @intCast(hash & (estimated - 1));
                             while (table[slot].key != 0) : (slot = (slot + 1) & (estimated - 1)) {
-                                if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], name)) break;
+                                if (table[slot].key == hash and std.mem.eql(u8, table[slot].name.slice(dtd), name)) break;
                             }
                             if (table[slot].key == 0) table[slot] = .{
                                 .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
@@ -603,7 +612,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                     if (scratch[0].key != dtd_scratch_built_magic) break :fast;
                     scratch = self.stack.allocatedSlice()[self.stack.items.len..];
-                    const table_len: usize = scratch[0].name.end;
+                    const table_len: usize = @intCast(scratch[0].name.end);
                     if (table_len == 0 or table_len + 1 > scratch.len) break :fast;
                     const table = scratch[1 .. table_len + 1];
                     var hash: u64 = 0xcbf2_9ce4_8422_2325;
@@ -612,7 +621,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     var slot: usize = @intCast(hash & (table_len - 1));
                     const first_slot = slot;
                     while (table[slot].key != 0) {
-                        if (table[slot].key == hash and std.mem.eql(u8, dtd[table[slot].name.start..table[slot].name.end], target)) return;
+                        if (table[slot].key == hash and std.mem.eql(u8, table[slot].name.slice(dtd), target)) return;
                         slot = (slot + 1) & (table_len - 1);
                         if (slot == first_slot) break;
                     }
@@ -1310,7 +1319,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (lt >= input.len) return null;
                 if (lt + 2 >= input.len or input[lt + 1] != '/') return null;
 
-                const open_len: usize = name.len();
+                const open_len: usize = @intCast(name.len());
                 const close_start = lt + 2;
                 const close_end = close_start + open_len;
                 if (close_end > input.len) return null;
@@ -1514,7 +1523,7 @@ fn subtreeEndOffset(
     self_closing: bool,
     comptime validated: bool,
 ) ParseError!usize {
-    const end: usize = token_end;
+    const end: usize = @intCast(token_end);
     return switch (kind) {
         .text, .comment, .cdata, .pi, .declaration, .doctype, .document => end,
         .element => if (self_closing)
@@ -1570,7 +1579,7 @@ fn skipSubtreeStateless(
                 };
                 i = close.next;
 
-                const expected = expectedOpenNameAtDepth(input, start, root_name, i - close.name.len() - 3, depth, validated) catch |err| {
+                const expected = expectedOpenNameAtDepth(input, start, root_name, lt, depth, validated) catch |err| {
                     if (validated) return err;
                     continue;
                 };
@@ -1586,7 +1595,7 @@ fn skipSubtreeStateless(
                 var matched: ?usize = null;
                 while (ancestor_depth > 1) {
                     ancestor_depth -= 1;
-                    const ancestor = expectedOpenNameAtDepth(input, start, root_name, i - close.name.len() - 3, ancestor_depth, false) catch continue;
+                    const ancestor = expectedOpenNameAtDepth(input, start, root_name, lt, ancestor_depth, false) catch continue;
                     if (spanMatchesClose(ancestor, close, input)) {
                         matched = ancestor_depth;
                         break;
@@ -2199,12 +2208,12 @@ noinline fn validateUniqueAttributesRawLarge(input: []const u8, start: usize, en
     }
 }
 
-noinline fn validateUniqueAttributesOverflow(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+noinline fn validateUniqueAttributesOverflow(input: []const u8, start: usize, end: usize) linksection(cold_section) ParseError!void {
     if (end - start > 600) return validateUniqueAttributesRawVeryLarge(input, start, end);
     return validateUniqueAttributesQuadratic(input, start, end);
 }
 
-noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize, end: usize) linksection(cold_section) ParseError!void {
     const table_capacity = 128;
     const NameSlot = struct {
         hash: u64,
@@ -2245,7 +2254,7 @@ noinline fn validateUniqueAttributesRawVeryLarge(input: []const u8, start: usize
     }
 }
 
-noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end: usize) linksection(cold_section) ParseError!void {
     const primary_capacity = 256;
     const overflow_capacity = 16;
     const total_capacity = primary_capacity + overflow_capacity;
@@ -2356,7 +2365,7 @@ noinline fn validateUniqueAttributesRawHuge(input: []const u8, start: usize, end
     }
 }
 
-noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(".zxml_cold") ParseError!void {
+noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, end: usize) linksection(cold_section) ParseError!void {
     const table_capacity = 4096;
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var hashes: [table_capacity]u64 = undefined;
@@ -2399,7 +2408,7 @@ noinline fn validateUniqueAttributesRawMassive(input: []const u8, start: usize, 
     }
 }
 
-noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize, end: usize) linksection(".zxml_enormous") ParseError!void {
+noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize, end: usize) linksection(enormous_section) ParseError!void {
     const table_capacity = 32768;
     if (end - start > std.math.maxInt(u32)) return validateUniqueAttributesQuadratic(input, start, end);
     var hashes: [table_capacity]u64 = undefined;
@@ -2411,7 +2420,7 @@ noinline fn validateUniqueAttributesRawEnormous(input: []const u8, start: usize,
         if (seen_count == table_capacity) {
             var partition_bits: u6 = 1;
             partition_retry: while (partition_bits <= 3) : (partition_bits += 1) {
-                const partition_count = @as(usize, 1) << partition_bits;
+                const partition_count = @as(usize, 1) << @intCast(partition_bits);
                 const partition_mask = partition_count - 1;
                 for (0..partition_count) |partition| {
                     @memset(&occupied, 0);

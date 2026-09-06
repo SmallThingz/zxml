@@ -98,6 +98,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     defer std.testing.allocator.free(source);
     var doc = try opts.parse(std.testing.allocator, source);
     defer doc.deinit();
+    try std.testing.expect(doc.nodeAt(std.math.maxInt(T.IndexInt) - 1) == null);
 
     const raw_document = T.RawNode.initDocument();
     _ = raw_document.nodeKind(0);

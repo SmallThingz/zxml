@@ -37,10 +37,16 @@ jobs:
         shell: bash
         run: |
           zig build bench-only -Doptimize=ReleaseFast
-          for mode in strict strict-trusted turbo; do
+          for mode in validated validated-trusted permissive; do
             ./zig-out/bin/zxml-bench parse "$mode" bench/smoke.xml 1 >/dev/null
             ./zig-out/bin/zxml-stream-bench parse "$mode" bench/smoke.xml 1 >/dev/null
           done
+
+      - name: Darwin compile and 32-bit public API
+        shell: bash
+        run: |
+          zig build bench-only -Dtarget=x86_64-macos -Doptimize=ReleaseFast
+          zig build test-public-api -Dtarget=x86-linux-musl -Dintlen=u64 -Doptimize=ReleaseSafe
 
       - name: Conformance
         run: zig build conformance
