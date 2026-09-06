@@ -47,7 +47,7 @@ inline fn attributeNameHashLarge(name: []const u8) u64 {
     return mixed;
 }
 
-noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(".text.unlikely.zxml") ?usize {
+noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(duplicate_helper_section) ?usize {
     @branchHint(.cold);
     if (attrs.len >= 32 and attrs.len <= 262144) {
         @branchHint(.unlikely);
@@ -57,13 +57,13 @@ noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const do
     for (attrs, 0..) |current, i| {
         const current_name = current.name.slice(input);
         for (attrs[0..i]) |previous| {
-            if (std.mem.eql(u8, previous.name.slice(input), current_name)) return current.name.start;
+            if (std.mem.eql(u8, previous.name.slice(input), current_name)) return @intCast(current.name.start);
         }
     }
     return null;
 }
 
-noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: []const u8, attrs: []const document.RawAttribute) linksection(".text.unlikely.zxml") ?usize {
+noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: []const u8, attrs: []const document.RawAttribute) linksection(duplicate_helper_section) ?usize {
     @branchHint(.cold);
     if (comptime table_capacity == 128) {
         var slots = [_]u32{0} ** table_capacity;
@@ -79,7 +79,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
                 }
                 if (slots[slot_index] == fingerprint) {
                     for (attrs[0..attr_index]) |previous| {
-                        if (std.mem.eql(u8, previous.name.slice(input), name)) return attr.name.start;
+                        if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
                     }
                 }
                 slot_index = (slot_index + 1) & (table_capacity - 1);
@@ -108,7 +108,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
 
             var partition_bits: u6 = 1;
             partition_select: while (partition_bits <= max_partition_bits) : (partition_bits += 1) {
-                const partition_count = @as(usize, 1) << partition_bits;
+                const partition_count = @as(usize, 1) << @intCast(partition_bits);
                 const max_parts_per_partition = max_partition_count / partition_count;
                 for (0..partition_count) |partition| {
                     var count: u32 = 0;
@@ -120,7 +120,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
             }
 
             if (partition_bits <= max_partition_bits) {
-                const partition_count = @as(usize, 1) << partition_bits;
+                const partition_count = @as(usize, 1) << @intCast(partition_bits);
                 const partition_mask = partition_count - 1;
                 for (0..partition_count) |partition| {
                     @memset(&occupied, 0);
@@ -144,7 +144,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
                             }
                             if (slots[slot_index] == fingerprint) {
                                 for (attrs[0..attr_index]) |previous| {
-                                    if (std.mem.eql(u8, previous.name.slice(input), name)) return attr.name.start;
+                                    if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
                                 }
                             }
                             slot_index = (slot_index + 1) & (table_capacity - 1);
@@ -157,7 +157,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
             for (attrs, 0..) |current, i| {
                 const current_name = current.name.slice(input);
                 for (attrs[0..i]) |previous| {
-                    if (std.mem.eql(u8, previous.name.slice(input), current_name)) return current.name.start;
+                    if (std.mem.eql(u8, previous.name.slice(input), current_name)) return @intCast(current.name.start);
                 }
             }
             return null;
@@ -179,7 +179,7 @@ noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: [
             }
             if (slots[slot_index] == fingerprint) {
                 for (attrs[0..attr_index]) |previous| {
-                    if (std.mem.eql(u8, previous.name.slice(input), name)) return attr.name.start;
+                    if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
                 }
             }
             slot_index = (slot_index + 1) & (table_capacity - 1);
@@ -199,8 +199,8 @@ inline fn findDuplicateAttributePair(input: []const u8, attrs: []const document.
     const second = attrs[1].name;
     const first_len = first.len();
     if (first_len != second.len()) return null;
-    if (first_len == 1) return if (input[first.start] == input[second.start]) second.start else null;
-    return if (equalLongAttributePairNames(input, first, second)) second.start else null;
+    if (first_len == 1) return if (input[@intCast(first.start)] == input[@intCast(second.start)]) @as(usize, @intCast(second.start)) else null;
+    return if (equalLongAttributePairNames(input, first, second)) @as(usize, @intCast(second.start)) else null;
 }
 
 noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) linksection(duplicate_helper_section) ?usize {
@@ -1009,7 +1009,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (len <= 1) return InvalidIndex;
             var candidate: IndexInt = @intCast(len - 1);
             while (candidate != InvalidIndex and candidate > parent_idx) {
-                const parent = self.nodes.items[candidate].parent;
+                const parent = self.nodes.items[@intCast(candidate)].parent;
                 if (parent == parent_idx) return candidate;
                 if (parent == InvalidIndex or parent >= candidate) return InvalidIndex;
                 candidate = parent;
@@ -1018,7 +1018,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn commitChildMetadata(noalias self: *Self, parent_idx: IndexInt, idx: IndexInt) void {
-            if (comptime opts.store_last_child) self.nodes.items[parent_idx].last_child = idx;
+            if (comptime opts.store_last_child) self.nodes.items[@intCast(parent_idx)].last_child = idx;
         }
 
         inline fn ensureNodeCapacity(noalias self: *Self, needed: usize) ParseError!void {
@@ -1111,7 +1111,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const open_tag_key: u64 = if (OpenTagKey == u64) open.tag_key else @bitCast(open.tag_key);
             if (open_tag_key != close_key) return false;
             if (close_name.len < 8) return true;
-            const open_span = self.nodes.items[open.idx].name_or_text;
+            const open_span = self.nodes.items[@intCast(open.idx)].name_or_text;
             if (open_span.len() != close_name.len) return false;
             if (close_name.len == 8) return true;
             return std.mem.eql(u8, open_span.slice(self.input)[8..], close_name[8..]);
@@ -1122,7 +1122,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
-            self.nodes.items[idx].subtree_end = @intCast(self.nodes.items.len - 1);
+            self.nodes.items[@intCast(idx)].subtree_end = @intCast(self.nodes.items.len - 1);
         }
 
         inline fn skipWhitespace(noalias self: *Self) void {

@@ -38,7 +38,7 @@ pub fn RawIterator(comptime validated: bool) type {
         end: usize,
 
         pub inline fn init(source: []const u8, span: Span) @This() {
-            return .{ .source = source, .i = span.start, .end = span.end };
+            return .{ .source = source, .i = @intCast(span.start), .end = @intCast(span.end) };
         }
 
         pub fn next(self: *@This()) ?RawAttribute {

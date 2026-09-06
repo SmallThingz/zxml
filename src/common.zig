@@ -33,11 +33,11 @@ pub const Span = struct {
     }
 
     pub inline fn slice(self: @This(), source: []const u8) []const u8 {
-        return source[self.start..self.end];
+        return source[@intCast(self.start)..@intCast(self.end)];
     }
 
     pub inline fn sliceMut(self: @This(), source: []u8) []u8 {
-        return source[self.start..self.end];
+        return source[@intCast(self.start)..@intCast(self.end)];
     }
 
     pub inline fn setEnd(self: *@This(), end_offset: IndexInt) void {
