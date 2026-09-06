@@ -707,77 +707,62 @@ fn xmlValidPrefixLenImpl(input: []const u8, comptime use_wide_ascii_prefix: bool
         xmlAsciiPrefixLenWide(input)
     else
         0;
-    var ascii_fast = true;
     while (i < input.len) {
-        // XML is overwhelmingly ASCII. Compact ASCII runs need only the two
-        // broad range checks. Once a non-ASCII byte appears, stay on the exact
-        // classifier so Unicode-heavy documents do not repeatedly pay both.
-        if (ascii_fast) {
-            while (i + @sizeOf(Vec) <= input.len) {
-                const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
-                const non_ascii = bytes >= high_bit;
-                const exceptional = (bytes < control_limit) | non_ascii;
-                if (!@reduce(.Or, exceptional)) {
-                    i += @sizeOf(Vec);
-                    continue;
-                }
-                if (@reduce(.Or, non_ascii)) {
-                    ascii_fast = false;
-                    break;
-                }
-                const invalid_control = (bytes < control_limit) &
-                    (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
-                if (@reduce(.Or, invalid_control)) break;
+        while (input.len - i >= @sizeOf(Vec)) {
+            const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+            const non_ascii = bytes >= high_bit;
+            if (!@reduce(.Or, (bytes < control_limit) | non_ascii)) {
                 i += @sizeOf(Vec);
+                continue;
             }
-        } else {
-            while (i + @sizeOf(Vec) <= input.len) {
-                const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
-                const invalid_control = (bytes < control_limit) &
-                    (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
-                if (@reduce(.Or, (bytes >= high_bit) | invalid_control)) break;
-                i += @sizeOf(Vec);
+            const invalid_control = (bytes < control_limit) &
+                (bytes != tab) & (bytes != newline) & (bytes != carriage_return);
+            if (@reduce(.Or, non_ascii | invalid_control)) break;
+            i += @sizeOf(Vec);
+        }
+        // Decode a whole mixed/Unicode window before trying SIMD again.
+        // Rescanning a vector after each scalar character repeats its work and
+        // creates a vector-to-scalar dependency on every short UTF-8 sequence.
+        const scalar_end = i + @min(@sizeOf(Vec), input.len - i);
+        while (i < scalar_end) {
+            const first = input[i];
+            if (first < 0x80) {
+                if (first != '\t' and first != '\n' and first != '\r' and first < 0x20) return error.InvalidXmlCharacter;
+                i += 1;
+                continue;
             }
-        }
-        if (i == input.len) break;
 
-        const first = input[i];
-        if (first < 0x80) {
-            if (first != '\t' and first != '\n' and first != '\r' and first < 0x20) return error.InvalidXmlCharacter;
-            i += 1;
-            continue;
-        }
+            const sequence_len: usize = if (first >= 0xC2 and first <= 0xDF)
+                2
+            else if (first >= 0xE0 and first <= 0xEF)
+                3
+            else if (first >= 0xF0 and first <= 0xF4)
+                4
+            else
+                return error.InvalidXmlCharacter;
 
-        const sequence_len: usize = if (first >= 0xC2 and first <= 0xDF)
-            2
-        else if (first >= 0xE0 and first <= 0xEF)
-            3
-        else if (first >= 0xF0 and first <= 0xF4)
-            4
-        else
-            return error.InvalidXmlCharacter;
-
-        const available = @min(sequence_len, input.len - i);
-        var j: usize = 1;
-        while (j < available) : (j += 1) {
-            const continuation = input[i + j];
-            if (continuation < 0x80 or continuation > 0xBF) return error.InvalidXmlCharacter;
-            if (j == 1) {
-                if (first == 0xE0 and continuation < 0xA0) return error.InvalidXmlCharacter;
-                if (first == 0xED and continuation > 0x9F) return error.InvalidXmlCharacter;
-                if (first == 0xF0 and continuation < 0x90) return error.InvalidXmlCharacter;
-                if (first == 0xF4 and continuation > 0x8F) return error.InvalidXmlCharacter;
+            const available = @min(sequence_len, input.len - i);
+            var j: usize = 1;
+            while (j < available) : (j += 1) {
+                const continuation = input[i + j];
+                if (continuation < 0x80 or continuation > 0xBF) return error.InvalidXmlCharacter;
+                if (j == 1) {
+                    if (first == 0xE0 and continuation < 0xA0) return error.InvalidXmlCharacter;
+                    if (first == 0xED and continuation > 0x9F) return error.InvalidXmlCharacter;
+                    if (first == 0xF0 and continuation < 0x90) return error.InvalidXmlCharacter;
+                    if (first == 0xF4 and continuation > 0x8F) return error.InvalidXmlCharacter;
+                }
             }
-        }
-        if (available < sequence_len) return i;
+            if (available < sequence_len) return i;
 
-        // The UTF-8 shape/range checks above reject overlong encodings, surrogates,
-        // and values above U+10FFFF. Of the remaining non-ASCII scalar values XML
-        // only excludes U+FFFE and U+FFFF, whose encodings differ in the last byte.
-        if (first == 0xEF and input[i + 1] == 0xBF and input[i + 2] >= 0xBE) {
-            return error.InvalidXmlCharacter;
+            // The UTF-8 shape/range checks above reject overlong encodings, surrogates,
+            // and values above U+10FFFF. Of the remaining non-ASCII scalar values XML
+            // only excludes U+FFFE and U+FFFF, whose encodings differ in the last byte.
+            if (first == 0xEF and input[i + 1] == 0xBF and input[i + 2] >= 0xBE) {
+                return error.InvalidXmlCharacter;
+            }
+            i += sequence_len;
         }
-        i += sequence_len;
     }
     return input.len;
 }
@@ -2583,6 +2568,7 @@ fn writeEscapedAttributeValue(writer: anytype, value: []const u8) !void {
         const escaped: ?[]const u8 = switch (c) {
             '&' => "&amp;",
             '<' => "&lt;",
+            '>' => "&gt;",
             '"' => "&quot;",
             else => null,
         };
@@ -2596,11 +2582,18 @@ fn writeEscapedAttributeValue(writer: anytype, value: []const u8) !void {
 }
 
 fn writeDoubleQuotedAttributeValue(writer: anytype, value: []const u8) !void {
+    // Preserve existing entity references, but keep emitted attributes readable
+    // by the node-only parser even after source-backed materialization.
     var start: usize = 0;
-    while (std.mem.indexOfScalarPos(u8, value, start, '"')) |quote| {
-        try writer.writeAll(value[start..quote]);
-        try writer.writeAll("&quot;");
-        start = quote + 1;
+    for (value, 0..) |c, i| {
+        const escaped: []const u8 = switch (c) {
+            '"' => "&quot;",
+            '>' => "&gt;",
+            else => continue,
+        };
+        try writer.writeAll(value[start..i]);
+        try writer.writeAll(escaped);
+        start = i + 1;
     }
     try writer.writeAll(value[start..]);
 }
@@ -3051,4 +3044,16 @@ test "XML character vector exits never skip invalid controls or encodings" {
             }
         }
     }
+}
+
+test "XML character validation crosses dense Unicode and ASCII windows" {
+    const source = "é漢😀" ** 20 ++ " ASCII " ** 20 ++ "Ω漢é" ** 35;
+    for (0..source.len + 1) |split| {
+        var expected = split;
+        while (!std.unicode.utf8ValidateSlice(source[0..expected])) : (expected -= 1) {}
+        try std.testing.expectEqual(expected, try xmlValidPrefixLen(source[0..split]));
+        try std.testing.expectEqual(expected, try xmlValidPrefixLenStreaming(source[0..split]));
+    }
+    try validateXmlCharacters(source);
+    try validateXmlCharactersStreaming(source);
 }

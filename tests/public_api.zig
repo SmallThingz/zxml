@@ -228,3 +228,32 @@ test "public parser functions instantiate in permissive and validated configurat
     try exerciseTypes(.{});
     try exerciseTypes(.{ .validate_well_formedness = true, .non_destructive = true, .include_misc_nodes = true });
 }
+
+test "serialized attributes remain readable by the node-only default parser" {
+    inline for (.{ false, true }) |immutable| {
+        inline for (.{ false, true }) |materialize| {
+            inline for (.{ "<r a='left&gt;right'/>", "<r a='left>right'/>" }) |source| {
+                const options: zxml.ParseOptions = .{ .validate_well_formedness = true, .non_destructive = immutable };
+                var input = source.*;
+                var doc = try options.parse(std.testing.allocator, &input);
+                defer doc.deinit();
+                if (materialize) {
+                    const value = (try doc.nodeAt(1).?.getAttributeValue(std.testing.allocator, "a")).?;
+                    defer value.free(std.testing.allocator);
+                    try std.testing.expectEqualStrings("left>right", value.value);
+                }
+                var writer: std.Io.Writer.Allocating = .init(std.testing.allocator);
+                defer writer.deinit();
+                try doc.write(&writer.writer);
+                const bytes = try std.testing.allocator.dupe(u8, writer.written());
+                defer std.testing.allocator.free(bytes);
+                const fast: zxml.ParseOptions = .{};
+                var roundtrip = try fast.parse(std.testing.allocator, bytes);
+                defer roundtrip.deinit();
+                const result = (try roundtrip.nodeAt(1).?.getAttributeValue(std.testing.allocator, "a")).?;
+                defer result.free(std.testing.allocator);
+                try std.testing.expectEqualStrings("left>right", result.value);
+            }
+        }
+    }
+}

@@ -95,6 +95,21 @@ pub noinline fn scanStartTagEnd(noalias input: []const u8, start: usize) ?StartT
         const sq_mask: Mask = @bitCast(sq_bits);
         const dq_mask: Mask = @bitCast(dq_bits);
 
+        // A complete ordinary tag can be classified without walking every
+        // quote. Ignore bytes after the first '>'; mixed quote styles and
+        // quoted '>' keep the exact state-machine fallback below.
+        if (quote == 0 and gt_mask != 0) {
+            const before = (gt_mask & (0 -% gt_mask)) - 1;
+            const sq_before = sq_mask & before;
+            const dq_before = dq_mask & before;
+            if ((sq_before == 0 or dq_before == 0) and
+                @popCount(sq_before | dq_before) & 1 == 0)
+            {
+                const end = i + @ctz(gt_mask);
+                return .{ .end = end, .self_closing = end > start and input[end - 1] == '/' };
+            }
+        }
+
         if (quote == 0 and (sq_mask | dq_mask) == 0) {
             if (gt_mask != 0) {
                 const off: std.math.Log2Int(Mask) = @intCast(@ctz(gt_mask));
@@ -128,6 +143,53 @@ pub noinline fn scanStartTagEnd(noalias input: []const u8, start: usize) ?StartT
         } else if (c == quote) {
             quote = 0;
         }
+    }
+    return null;
+}
+
+/// Node-only parsing stops at the first raw `>` and checks quote parity in
+/// bulk. A `>` inside a quoted value may be rejected; mixed quote kinds use
+/// the general scanner. The fully validating parser retains the full grammar.
+pub noinline fn scanStartTagEndFast(noalias input: []const u8, start: usize) ?StartTagEndScan {
+    if (start >= input.len) return null;
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    var saw_single = false;
+    var saw_double = false;
+    var odd = false;
+    var i = start;
+    while (input.len - i >= @sizeOf(Vec)) : (i += @sizeOf(Vec)) {
+        const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
+        const gt: Mask = @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('>')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))));
+        const before = (gt -% 1) & ~gt;
+        const single: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('\'')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
+        const double: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('"')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
+        saw_single = saw_single or single != 0;
+        saw_double = saw_double or double != 0;
+        if (saw_single and saw_double) return scanStartTagEnd(input, start);
+        odd = odd != (@popCount(single | double) & 1 != 0);
+        if (gt != 0) {
+            if (odd) return null;
+            const end = i + @ctz(gt);
+            return .{ .end = end, .self_closing = end > start and input[end - 1] == '/' };
+        }
+    }
+    while (i < input.len) : (i += 1) {
+        const c = input[i];
+        if (c == '>') {
+            if (odd) return null;
+            return .{ .end = i, .self_closing = i > start and input[i - 1] == '/' };
+        }
+        if (c == '\'') {
+            saw_single = true;
+            odd = !odd;
+        }
+        if (c == '"') {
+            saw_double = true;
+            odd = !odd;
+        }
+        if (saw_single and saw_double) return scanStartTagEnd(input, start);
     }
     return null;
 }
@@ -883,4 +945,75 @@ test "scanTextRun tracks non-whitespace text" {
     const end = scanTextRun("abc", 3);
     try std.testing.expectEqual(@as(usize, 3), end.lt_index);
     try std.testing.expect(!end.has_non_whitespace);
+}
+
+test "start tag quote shortcuts match the scalar state machine" {
+    const Ref = struct {
+        fn scan(input: []const u8, start: usize) ?StartTagEndScan {
+            var quote: u8 = 0;
+            var i = start;
+            while (i < input.len) : (i += 1) {
+                const c = input[i];
+                if (quote != 0) {
+                    if (c == quote) quote = 0;
+                } else if (c == '>') {
+                    return .{ .end = i, .self_closing = i > start and input[i - 1] == '/' };
+                } else if (c == '\'' or c == '"') quote = c;
+            }
+            return null;
+        }
+        fn check(input: []const u8, start: usize) !void {
+            const expected = scan(input, start);
+            const actual = scanStartTagEnd(input, start);
+            try std.testing.expectEqual(expected == null, actual == null);
+            if (expected) |e| {
+                try std.testing.expectEqual(e.end, actual.?.end);
+                try std.testing.expectEqual(e.self_closing, actual.?.self_closing);
+            }
+        }
+    };
+    var input: [256]u8 = undefined;
+    const tails = [_][]const u8{ " a='x'>tail\"", " a=\"x\"/>tail'", " a='>' b=\"x\">", " a=\"it's > quoted\" b='x'>", " a='\">'>", " a='unterminated>", "/>", ">" };
+    for (0..97) |padding| {
+        for (tails) |tail| {
+            @memset(input[0..padding], 'x');
+            @memcpy(input[padding..][0..tail.len], tail);
+            const source = input[0 .. padding + tail.len];
+            for (0..source.len + 1) |end| try Ref.check(source[0..end], 0);
+        }
+    }
+    var prng = std.Random.DefaultPrng.init(0x71756f7465);
+    const random = prng.random();
+    const alphabet = "abcxyz =/>'\"";
+    for (0..4000) |_| {
+        const len = random.uintLessThan(usize, input.len + 1);
+        for (input[0..len]) |*c| c.* = alphabet[random.uintLessThan(usize, alphabet.len)];
+        try Ref.check(input[0..len], random.uintLessThan(usize, len + 2));
+    }
+}
+
+test "node-only tag scanner never returns a different boundary" {
+    var random_state = std.Random.DefaultPrng.init(0x4e4f444553);
+    const random = random_state.random();
+    const alphabet = "abcXYZ /=>\'\"\t\n";
+    var input: [257]u8 = undefined;
+    for (0..12000) |_| {
+        const len = random.uintLessThan(usize, input.len + 1);
+        for (input[0..len]) |*c| c.* = alphabet[random.uintLessThan(usize, alphabet.len)];
+        const start = random.uintLessThan(usize, len + 1);
+        if (scanStartTagEndFast(input[0..len], start)) |fast| {
+            const reference = scanStartTagEnd(input[0..len], start) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(reference.end, fast.end);
+            try std.testing.expectEqual(reference.self_closing, fast.self_closing);
+        }
+    }
+    for ([_][]const u8{ " a='one'/>", " a=\"one\" b='two'>", " a=\"a'b\"/>", " a='a\"b'>" }) |source| {
+        for (0..65) |padding| {
+            @memset(input[0..padding], 'x');
+            @memcpy(input[padding..][0..source.len], source);
+            @memset(input[padding + source.len ..], '\'');
+            const result = scanStartTagEndFast(&input, padding) orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(padding + source.len - 1, result.end);
+        }
+    }
 }

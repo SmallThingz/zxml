@@ -1,221 +1,102 @@
 const std = @import("std");
-const builtin = @import("builtin");
 const common = @import("common.zig");
 const document = @import("document.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
+const attr = @import("attr.zig");
 
 const ParseOptions = document.ParseOptions;
 const ParseError = document.ParseError;
 const NodeType = document.NodeType;
 const IndexInt = document.IndexInt;
 const InvalidIndex = document.InvalidIndex;
-const InitialParseStackCapacity: usize = 24;
 const SmallInitialNodeCapacity: usize = 64;
 const LargeInitialNodeCapacity: usize = 512;
 const SmallInputThreshold: usize = 4 * 1024;
 const NodeDensitySampleBytes: usize = 64 * 1024;
 
-const duplicate_helper_section = switch (builtin.os.tag) {
-    .macos, .ios, .tvos, .watchos, .visionos => "__TEXT,__text",
-    else => ".text.unlikely.zxml",
-};
-
 inline fn attributeNameHash(name: []const u8) u64 {
+    if (name.len == 1) {
+        const c = name[0];
+        return (@as(u64, c & 63) << 58) | (@as(u64, c >> 2) << 32);
+    }
     var mixed = scanner.prefixKey(name) ^ (@as(u64, name.len) << 56);
     mixed *%= 0x9e3779b97f4a7c15;
     mixed ^= mixed >> 32;
     return mixed;
 }
 
-inline fn attributeNameHashLarge(name: []const u8) u64 {
-    const key: u64 = if (name.len <= 4) blk: {
-        const bytes: *align(1) const [4]u8 = @ptrCast(name.ptr);
-        const word = std.mem.readInt(u32, bytes, .little);
-        const shift: u5 = @intCast((4 - name.len) * 8);
-        break :blk word & (@as(u32, 0xffffffff) >> shift);
-    } else blk: {
-        const bytes: *align(1) const [8]u8 = @ptrCast(name.ptr);
-        const word = std.mem.readInt(u64, bytes, .little);
-        if (name.len >= 8) break :blk word;
-        const shift: u6 = @intCast((8 - name.len) * 8);
-        break :blk word & (@as(u64, 0xffffffffffffffff) >> shift);
-    };
-    var mixed = key ^ (@as(u64, name.len) << 56);
-    mixed *%= 0x9e3779b97f4a7c15;
-    mixed ^= mixed >> 32;
-    return mixed;
-}
+/// Validation keeps only two name spans and a collision filter, never a list
+/// of attributes or values. Exact source rescanning is the uncommon fallback.
+const AttributeNames = struct {
+    first: document.Span = undefined,
+    second: document.Span = undefined,
+    count: usize = 0,
+    buckets: u64 = 0,
+    buckets_second: u64 = 0,
+    collision: bool = false,
 
-noinline fn findDuplicateAttributeQuadratic(input: []const u8, attrs: []const document.RawAttribute) align(256) linksection(duplicate_helper_section) ?usize {
-    @branchHint(.cold);
-    if (attrs.len >= 32 and attrs.len <= 262144) {
-        @branchHint(.unlikely);
-        if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
-        return findDuplicateAttributeLarge(4096, input, attrs);
+    inline fn addHash(self: *AttributeNames, hash: u64) void {
+        const first = @as(u64, 1) << @as(u6, @intCast(hash >> 58));
+        const second = @as(u64, 1) << @as(u6, @truncate(hash >> 32));
+        self.collision = self.collision or
+            ((self.buckets & first != 0) and (self.buckets_second & second != 0));
+        self.buckets |= first;
+        self.buckets_second |= second;
     }
-    for (attrs, 0..) |current, i| {
-        const current_name = current.name.slice(input);
-        for (attrs[0..i]) |previous| {
-            if (std.mem.eql(u8, previous.name.slice(input), current_name)) return @intCast(current.name.start);
+
+    inline fn note(self: *AttributeNames, input: []const u8, name: document.Span) void {
+        switch (self.count) {
+            0 => self.first = name,
+            1 => self.second = name,
+            else => {
+                if (self.count == 2) {
+                    self.addHash(attributeNameHash(self.first.slice(input)));
+                    self.addHash(attributeNameHash(self.second.slice(input)));
+                }
+                self.addHash(attributeNameHash(name.slice(input)));
+            },
         }
+        self.count += 1;
     }
-    return null;
-}
 
-noinline fn findDuplicateAttributeLarge(comptime table_capacity: usize, input: []const u8, attrs: []const document.RawAttribute) linksection(duplicate_helper_section) ?usize {
+    inline fn duplicate(self: AttributeNames, allocator: std.mem.Allocator, input: []const u8, start: usize, end: usize) ParseError!?usize {
+        if (self.count < 2) return null;
+        if (self.count == 2) {
+            if (self.first.len() != self.second.len()) return null;
+            const equal = if (self.first.len() == 1)
+                input[@intCast(self.first.start)] == input[@intCast(self.second.start)]
+            else
+                std.mem.eql(u8, self.first.slice(input), self.second.slice(input));
+            return if (equal) @as(usize, @intCast(self.second.start)) else null;
+        }
+        if (!self.collision) return null;
+        return duplicateAttributeInSource(allocator, input, start, end, self.count);
+    }
+};
+
+noinline fn duplicateAttributeInSource(allocator: std.mem.Allocator, input: []const u8, start: usize, end: usize, count: usize) ParseError!?usize {
     @branchHint(.cold);
-    if (comptime table_capacity == 128) {
-        var slots = [_]u32{0} ** table_capacity;
-        for (attrs, 0..) |attr, attr_index| {
-            const name = attr.name.slice(input);
-            const hash = attributeNameHashLarge(name);
-            const fingerprint: u32 = @as(u32, @truncate(hash)) | 1;
-            var slot_index: usize = @intCast(hash >> 57);
-            while (true) {
-                if (slots[slot_index] == 0) {
-                    slots[slot_index] = fingerprint;
-                    break;
-                }
-                if (slots[slot_index] == fingerprint) {
-                    for (attrs[0..attr_index]) |previous| {
-                        if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
-                    }
-                }
-                slot_index = (slot_index + 1) & (table_capacity - 1);
+    const span: document.Span = .{ .start = @intCast(start), .end = @intCast(end) };
+    var outer = attr.RawIterator(true).init(input, span);
+    if (count <= 32) {
+        while (outer.next()) |current| {
+            var previous = attr.RawIterator(true).init(input, .{ .start = span.start, .end = current.name.start });
+            while (previous.next()) |other| {
+                if (std.mem.eql(u8, current.name.slice(input), other.name.slice(input))) return @intCast(current.name.start);
             }
         }
         return null;
     }
-
-    var slots: [table_capacity]u32 = undefined;
-    var occupied = [_]u64{0} ** (table_capacity / 64);
-    const slot_shift: u6 = comptime @intCast(@as(u7, 64) - @as(u7, std.math.log2_int(usize, table_capacity)));
-
-    if (comptime table_capacity == 4096) {
-        if (attrs.len > table_capacity) {
-            const max_partition_bits: u6 = 12;
-            const max_partition_count = @as(usize, 1) << max_partition_bits;
-            const partition_counts = slots[0..max_partition_count];
-            @memset(partition_counts, 0);
-            for (attrs) |attr| {
-                const hash = std.hash.Wyhash.hash(0, attr.name.slice(input));
-                const partition_index: usize = @intCast(
-                    (hash >> @intCast(64 - 12 - max_partition_bits)) & (max_partition_count - 1),
-                );
-                partition_counts[partition_index] += 1;
-            }
-
-            var partition_bits: u6 = 1;
-            partition_select: while (partition_bits <= max_partition_bits) : (partition_bits += 1) {
-                const partition_count = @as(usize, 1) << @intCast(partition_bits);
-                const max_parts_per_partition = max_partition_count / partition_count;
-                for (0..partition_count) |partition| {
-                    var count: u32 = 0;
-                    const first = partition * max_parts_per_partition;
-                    for (partition_counts[first .. first + max_parts_per_partition]) |part_count| count += part_count;
-                    if (count > table_capacity) continue :partition_select;
-                }
-                break;
-            }
-
-            if (partition_bits <= max_partition_bits) {
-                const partition_count = @as(usize, 1) << @intCast(partition_bits);
-                const partition_mask = partition_count - 1;
-                for (0..partition_count) |partition| {
-                    @memset(&occupied, 0);
-                    for (attrs, 0..) |attr, attr_index| {
-                        const name = attr.name.slice(input);
-                        const hash = std.hash.Wyhash.hash(0, name);
-                        const partition_index: usize = @intCast(
-                            (hash >> @intCast(64 - 12 - partition_bits)) & partition_mask,
-                        );
-                        if (partition_index != partition) continue;
-
-                        const fingerprint: u32 = @truncate(hash);
-                        var slot_index: usize = @intCast(hash >> slot_shift);
-                        while (true) {
-                            const word_index = slot_index >> 6;
-                            const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
-                            if (occupied[word_index] & bit == 0) {
-                                slots[slot_index] = fingerprint;
-                                occupied[word_index] |= bit;
-                                break;
-                            }
-                            if (slots[slot_index] == fingerprint) {
-                                for (attrs[0..attr_index]) |previous| {
-                                    if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
-                                }
-                            }
-                            slot_index = (slot_index + 1) & (table_capacity - 1);
-                        }
-                    }
-                }
-                return null;
-            }
-
-            for (attrs, 0..) |current, i| {
-                const current_name = current.name.slice(input);
-                for (attrs[0..i]) |previous| {
-                    if (std.mem.eql(u8, previous.name.slice(input), current_name)) return @intCast(current.name.start);
-                }
-            }
-            return null;
-        }
-    }
-
-    for (attrs, 0..) |attr, attr_index| {
-        const name = attr.name.slice(input);
-        const hash = attributeNameHashLarge(name);
-        const fingerprint: u32 = @truncate(hash);
-        var slot_index: usize = @intCast(hash >> slot_shift);
-        while (true) {
-            const word_index = slot_index >> 6;
-            const bit = @as(u64, 1) << @as(u6, @intCast(slot_index & 63));
-            if (occupied[word_index] & bit == 0) {
-                slots[slot_index] = fingerprint;
-                occupied[word_index] |= bit;
-                break;
-            }
-            if (slots[slot_index] == fingerprint) {
-                for (attrs[0..attr_index]) |previous| {
-                    if (std.mem.eql(u8, previous.name.slice(input), name)) return @intCast(attr.name.start);
-                }
-            }
-            slot_index = (slot_index + 1) & (table_capacity - 1);
-        }
-    }
-    return null;
-}
-
-noinline fn equalLongAttributePairNames(input: []const u8, first: document.Span, second: document.Span) linksection(duplicate_helper_section) bool {
-    std.debug.assert(first.len() == second.len() and first.len() > 1);
-    return std.mem.eql(u8, first.slice(input), second.slice(input));
-}
-
-inline fn findDuplicateAttributePair(input: []const u8, attrs: []const document.RawAttribute) ?usize {
-    std.debug.assert(attrs.len == 2);
-    const first = attrs[0].name;
-    const second = attrs[1].name;
-    const first_len = first.len();
-    if (first_len != second.len()) return null;
-    if (first_len == 1) return if (input[@intCast(first.start)] == input[@intCast(second.start)]) @as(usize, @intCast(second.start)) else null;
-    return if (equalLongAttributePairNames(input, first, second)) @as(usize, @intCast(second.start)) else null;
-}
-
-noinline fn findDuplicateAttribute(input: []const u8, attrs: []const document.RawAttribute) align(128) linksection(duplicate_helper_section) ?usize {
-    if (attrs.len >= 32 and attrs.len <= 4096) {
-        @branchHint(.unlikely);
-        if (attrs.len <= 96) return findDuplicateAttributeLarge(128, input, attrs);
-        return findDuplicateAttributeLarge(4096, input, attrs);
-    }
-    var buckets: u64 = 0;
-    for (attrs) |attr| {
-        const name = attr.name.slice(input);
-        const hash = attributeNameHash(name);
-        const bit = @as(u64, 1) << @as(u6, @intCast(hash >> 58));
-        if (buckets & bit != 0) return findDuplicateAttributeQuadratic(input, attrs);
-        buckets |= bit;
+    // Spec-heavy tags use an exact name set rather than quadratic rescanning.
+    // This is validation-only scratch and is released before the node is built.
+    if (count > std.math.maxInt(u32)) return error.InputTooLarge;
+    var names: std.StringHashMapUnmanaged(void) = .empty;
+    defer names.deinit(allocator);
+    names.ensureTotalCapacity(allocator, @intCast(count)) catch return error.OutOfMemory;
+    while (outer.next()) |current| {
+        const entry = names.getOrPutAssumeCapacity(current.name.slice(input));
+        if (entry.found_existing) return @intCast(current.name.start);
     }
     return null;
 }
@@ -252,21 +133,25 @@ fn parseTracked(
     errdefer doc.deinit();
     doc.source = input;
 
-    var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = 0 };
-    errdefer p.nodes.deinit(allocator);
+    // Keep the uninitialized node buffer outside the aggregate initializer:
+    // materializing an undefined array field can otherwise emit a full memset.
+    var inline_nodes: [SmallInitialNodeCapacity]Doc.RawNode = undefined;
+    var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = 0, .nodes = .initBuffer(&inline_nodes) };
+    errdefer p.deinitNodes();
     p.parse() catch |err| {
         if (error_offset) |offset| offset.* = @min(p.i, input.len);
         return err;
     };
-    doc.nodes = p.nodes.toOwnedSlice(allocator) catch return error.OutOfMemory;
+    doc.nodes = if (p.nodes.capacity == SmallInitialNodeCapacity)
+        allocator.dupe(Doc.RawNode, p.nodes.items) catch return error.OutOfMemory
+    else
+        p.nodes.toOwnedSlice(allocator) catch return error.OutOfMemory;
     return doc;
 }
 
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     const validated = opts.validate_well_formedness;
-    const ValidationAttrs = if (validated) std.ArrayListUnmanaged(document.RawAttribute) else void;
     const ValidationSpan = if (validated) document.Span else void;
-    const OpenTagKey = if (@sizeOf(IndexInt) <= @sizeOf(u32)) [2]u32 else u64;
     const ValidationFlags = if (validated) packed struct {
         root_seen: bool = false,
         standalone_yes: bool = false,
@@ -278,19 +163,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         input: []const u8,
         i: usize,
         nodes: std.ArrayListUnmanaged(RawNode) = .empty,
-        parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
-        parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
-        parse_attrs: ValidationAttrs = if (validated) .empty else {},
+        current_parent: IndexInt = 0,
         validation_flags: ValidationFlags = if (validated) .{} else {},
         doctype_value: ValidationSpan = if (validated) .{} else {},
 
         const Self = @This();
         const RawNode = DocType.RawNode;
-        const OpenElem = struct {
-            tag_key: OpenTagKey = if (OpenTagKey == u64) 0 else .{ 0, 0 },
-            idx: IndexInt,
-        };
-
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
 
@@ -345,9 +223,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn initContainers(noalias self: *Self) ParseError!void {
-            const initial_nodes = if (self.input.len <= SmallInputThreshold)
-                SmallInitialNodeCapacity
-            else blk: {
+            if (self.input.len <= SmallInputThreshold) return;
+            self.nodes = .empty;
+            const initial_nodes = blk: {
                 const sample_len = @min(self.input.len, NodeDensitySampleBytes);
                 const lt_count = scanner.countByte(self.input[0..sample_len], '<');
                 const projected = std.math.mul(usize, lt_count, self.input.len) catch self.input.len;
@@ -358,16 +236,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         fn parse(noalias self: *Self) align(128) ParseError!void {
-            defer self.deinitParseStack();
-            defer {
-                if (comptime validated) self.parse_attrs.deinit(self.doc.allocator);
-            }
             try self.initContainers();
             std.debug.assert(self.nodes.items.len == 0);
             _ = self.nodes.addOneAssumeCapacity();
             self.nodes.items[0] = RawNode.initDocument();
-            self.parse_stack = .initBuffer(&self.parse_stack_inline);
-            self.parse_stack.appendAssumeCapacity(.{ .idx = 0 });
             while (self.i + 1 < self.input.len) {
                 if (self.input[self.i] != '<') {
                     if (comptime validated) {
@@ -377,9 +249,9 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         const run = if (has_non_whitespace) scanner.scanTextSpecials(self.input, whitespace_end) else scanner.TextSpecialRun{ .lt_index = whitespace_end };
                         if (run.lt_index > text_start) {
                             try self.validateCharacterDataSpecials(self.input[text_start..run.lt_index], run.has_close_bracket, run.has_ampersand);
-                            if (self.topIndex() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
+                            if (self.current_parent == 0 and has_non_whitespace) return error.InvalidDocumentContent;
                             if (!drop_whitespace_text_nodes or has_non_whitespace) {
-                                const parent_idx = self.topIndex();
+                                const parent_idx = self.current_parent;
                                 _ = try self.appendTextNodeTo(parent_idx, text_start, run.lt_index);
                             }
                         }
@@ -396,7 +268,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         }
                         const run = scanner.scanTextRun(self.input, self.i);
                         if (run.lt_index > self.i and (!drop_whitespace_text_nodes or run.has_non_whitespace)) {
-                            const parent_idx = self.topIndex();
+                            const parent_idx = self.current_parent;
                             _ = try self.appendTextNodeTo(parent_idx, self.i, run.lt_index);
                         }
                         self.i = run.lt_index;
@@ -427,21 +299,21 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     self.i = self.input.len;
                     if (comptime validated) {
                         try self.validateCharacterDataSpecials(self.input[text_start..], false, self.input[text_start] == '&');
-                        if (self.topIndex() == 0 and !tables.WhitespaceTable[self.input[text_start]]) return error.InvalidDocumentContent;
+                        if (self.current_parent == 0 and !tables.WhitespaceTable[self.input[text_start]]) return error.InvalidDocumentContent;
                     }
                     if (!drop_whitespace_text_nodes or !tables.WhitespaceTable[self.input[text_start]]) {
-                        _ = try self.appendTextNodeTo(self.topIndex(), text_start, self.input.len);
+                        _ = try self.appendTextNodeTo(self.current_parent, text_start, self.input.len);
                     }
                 }
             }
 
             if (comptime validated) {
-                if (self.stackLen() > 1) return error.UnexpectedEndOfData;
+                if (self.current_parent != 0) return error.UnexpectedEndOfData;
                 if (!self.validation_flags.root_seen) return error.ExpectedDocumentElement;
             }
 
-            while (self.stackLen() > 1) {
-                self.finishNode(self.popStack());
+            while (self.current_parent != 0) {
+                self.closeCurrentNode();
             }
             if (self.nodes.items.len != 0) {
                 self.finishNode(0);
@@ -473,7 +345,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
             self.i = name_end;
 
-            const parent_idx = self.topIndex();
+            const parent_idx = self.current_parent;
             if (comptime validated) {
                 if (parent_idx == 0) {
                     if (self.validation_flags.root_seen) return error.MultipleDocumentElements;
@@ -494,7 +366,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key);
+                    self.current_parent = element_idx;
                     return;
                 }
             } else {
@@ -509,7 +381,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key);
+                    self.current_parent = element_idx;
                     return;
                 }
             }
@@ -531,7 +403,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
             const attr_start = self.i;
             if (comptime !validated) {
-                const tail = scanner.scanStartTagEnd(self.input, attr_start) orelse {
+                const tail = scanner.scanStartTagEndFast(self.input, attr_start) orelse {
                     self.i = self.input.len;
                     return error.UnexpectedEndOfData;
                 };
@@ -550,10 +422,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (comptime validated) {
                     if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                 }
-                try self.pushStack(element_idx, name_scan.key);
+                self.current_parent = element_idx;
                 return;
             }
-            self.parse_attrs.items.len = 0;
+            var attribute_names: AttributeNames = .{};
             while (self.i < self.input.len) {
                 const boundary = self.i;
                 self.skipWhitespace();
@@ -565,13 +437,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
-                        const attrs = self.parse_attrs.items;
-                        const duplicate_start = if (attrs.len == 2)
-                            findDuplicateAttributePair(input, attrs)
-                        else if (attrs.len > 2)
-                            findDuplicateAttribute(input, attrs)
-                        else
-                            null;
+                        const duplicate_start = try attribute_names.duplicate(self.doc.allocator, input, attr_start, attr_end);
                         if (duplicate_start) |duplicate| {
                             self.i = duplicate;
                             return error.DuplicateAttribute;
@@ -586,7 +452,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key);
+                    self.current_parent = element_idx;
                     return;
                 }
 
@@ -595,13 +461,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         const input = self.input;
                         try self.validateDeferredDtdAttributeReferences(input, attr_start, attr_end);
-                        const attrs = self.parse_attrs.items;
-                        const duplicate_start = if (attrs.len == 2)
-                            findDuplicateAttributePair(input, attrs)
-                        else if (attrs.len > 2)
-                            findDuplicateAttribute(input, attrs)
-                        else
-                            null;
+                        const duplicate_start = try attribute_names.duplicate(self.doc.allocator, input, attr_start, attr_end);
                         if (duplicate_start) |duplicate| {
                             self.i = duplicate;
                             return error.DuplicateAttribute;
@@ -712,18 +572,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
 
                 if (comptime validated) {
-                    const attr_len = self.parse_attrs.items.len;
-                    if (attr_len == self.parse_attrs.capacity) {
-                        @branchHint(.unlikely);
-                        self.parse_attrs.ensureTotalCapacityPrecise(
-                            self.doc.allocator,
-                            attr_len +| attr_len / 2 +| @as(usize, 8),
-                        ) catch return error.OutOfMemory;
-                    }
-                    self.parse_attrs.addOneAssumeCapacity().* = .{
-                        .name = .{ .start = @intCast(attr_name_start), .end = @intCast(attr_name_end) },
-                        .value = .{ .start = @intCast(value_start), .end = @intCast(value_end) },
-                    };
+                    attribute_names.note(self.input, .{ .start = @intCast(attr_name_start), .end = @intCast(attr_name_end) });
                 }
             }
 
@@ -731,6 +580,27 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn parseClosingTag(noalias self: *Self) ParseError!void {
+            // The open node already supplies a validated name and its length.
+            // Match the normal close directly; do not tokenize that name twice.
+            const close_start = self.i + 2;
+            if (self.current_parent != 0) {
+                const name = self.nodes.items[@intCast(self.current_parent)].name_or_text.slice(self.input);
+                if (name.len < self.input.len - close_start) {
+                    const close_end = close_start + name.len;
+                    if (self.input[close_end] == '>' and
+                        std.mem.eql(u8, name, self.input[close_start..close_end]))
+                    {
+                        self.i = close_end + 1;
+                        self.closeCurrentNode();
+                        return;
+                    }
+                }
+            }
+            return self.parseClosingTagSlow();
+        }
+
+        noinline fn parseClosingTagSlow(noalias self: *Self) ParseError!void {
+            @branchHint(.cold);
             self.i += 2; // </
 
             if (self.i < self.input.len and tables.isWhitespace(self.input[self.i])) {
@@ -776,36 +646,29 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.i = gt + 1;
             }
 
-            if (self.stackLen() <= 1) {
+            if (self.current_parent == 0) {
                 if (validated) return error.InvalidClosingTagName;
                 return;
             }
 
             const close_name = self.input[close_start..close_end];
-            const top = self.parse_stack.items[self.parse_stack.items.len - 1];
-            if (self.openElemMatchesClose(top, close_name, close_scan.key)) {
+            if (self.openNodeMatchesClose(self.current_parent, close_name, close_scan.key)) {
                 @branchHint(.likely);
-                self.finishNode(self.popStack());
+                self.closeCurrentNode();
                 return;
             }
             if (validated) return error.InvalidClosingTagName;
 
-            // Permissive XML recovery mirrors zhtml's malformed-close strategy:
-            // search only after the hot top-match misses, pop through an exact
-            // case-sensitive opener when found, otherwise ignore the close.
-            var pos = self.parse_stack.items.len - 1;
-            var found: ?usize = null;
-            while (pos > 0) {
-                pos -= 1;
-                if (pos == 0) break;
-                if (self.openElemMatchesClose(self.parse_stack.items[pos], close_name, close_scan.key)) {
-                    found = pos;
-                    break;
+            // The node parent chain is already the exact open-element stack.
+            // Recover only on mismatch; no duplicate stack or heap spill exists.
+            var ancestor = self.nodes.items[@intCast(self.current_parent)].parent;
+            while (ancestor != 0) {
+                if (self.openNodeMatchesClose(ancestor, close_name, close_scan.key)) {
+                    const parent = self.nodes.items[@intCast(ancestor)].parent;
+                    while (self.current_parent != parent) self.closeCurrentNode();
+                    return;
                 }
-            }
-            const found_pos = found orelse return;
-            while (self.parse_stack.items.len > found_pos) {
-                self.finishNode(self.popStack());
+                ancestor = self.nodes.items[@intCast(ancestor)].parent;
             }
         }
 
@@ -887,7 +750,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const decl = xml_target;
             const kind: NodeType = if (decl) .declaration else .pi;
 
-            const parent_idx = self.topIndex();
+            const parent_idx = self.current_parent;
             _ = try self.appendMiscNodeTo(
                 parent_idx,
                 kind,
@@ -909,7 +772,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (!opts.include_misc_nodes) return;
 
-                const parent_idx = self.topIndex();
+                const parent_idx = self.current_parent;
                 _ = try self.appendMiscNodeTo(
                     parent_idx,
                     .comment,
@@ -937,10 +800,10 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 self.i = end + 3;
 
                 if (comptime validated) {
-                    if (self.topIndex() == 0) return error.InvalidDocumentContent;
+                    if (self.current_parent == 0) return error.InvalidDocumentContent;
                 }
 
-                const parent_idx = self.topIndex();
+                const parent_idx = self.current_parent;
                 if (comptime opts.include_misc_nodes) {
                     _ = try self.appendMiscNodeTo(
                         parent_idx,
@@ -957,7 +820,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (scanner.isDoctype(self.input, self.i)) {
                 if (comptime validated) {
                     if (!scanner.isDoctypeExact(self.input, self.i)) return error.ExpectedGt;
-                    if (self.topIndex() != 0 or self.validation_flags.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
+                    if (self.current_parent != 0 or self.validation_flags.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
                 }
                 const j = scanner.findDoctypeEnd(self.input, self.i + 9) orelse {
                     if (validated) return error.UnexpectedEndOfData;
@@ -988,7 +851,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
                 if (!opts.include_misc_nodes) return;
 
-                const parent_idx = self.topIndex();
+                const parent_idx = self.current_parent;
                 _ = try self.appendMiscNodeTo(
                     parent_idx,
                     .doctype,
@@ -1021,12 +884,27 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             if (comptime opts.store_last_child) self.nodes.items[@intCast(parent_idx)].last_child = idx;
         }
 
-        inline fn ensureNodeCapacity(noalias self: *Self, needed: usize) ParseError!void {
+        inline fn deinitNodes(noalias self: *Self) void {
+            if (self.nodes.capacity > SmallInitialNodeCapacity) self.nodes.deinit(self.doc.allocator);
+        }
+
+        noinline fn growNodes(noalias self: *Self, needed: usize) ParseError!void {
+            @branchHint(.cold);
             const len = self.nodes.items.len;
-            if (self.nodes.capacity - len < needed) {
-                @branchHint(.unlikely);
-                const target = @max(len + needed, len +| len / 2 +| 8);
+            const target = @max(len + needed, len +| len / 2 +| 8);
+            if (self.nodes.capacity == SmallInitialNodeCapacity) {
+                var heap = std.ArrayListUnmanaged(RawNode).initCapacity(self.doc.allocator, target) catch return error.OutOfMemory;
+                heap.appendSliceAssumeCapacity(self.nodes.items);
+                self.nodes = heap;
+            } else {
                 self.nodes.ensureTotalCapacityPrecise(self.doc.allocator, target) catch return error.OutOfMemory;
+            }
+        }
+
+        inline fn ensureNodeCapacity(noalias self: *Self, needed: usize) ParseError!void {
+            if (self.nodes.capacity - self.nodes.items.len < needed) {
+                @branchHint(.unlikely);
+                try self.growNodes(needed);
             }
         }
 
@@ -1073,52 +951,18 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return idx;
         }
 
-        noinline fn growParseStack(noalias self: *Self) ParseError!void {
-            @branchHint(.cold);
-            if (self.parse_stack.capacity <= InitialParseStackCapacity) {
-                var heap = std.ArrayListUnmanaged(OpenElem).initCapacity(
-                    self.doc.allocator,
-                    self.parse_stack.capacity * 2,
-                ) catch return error.OutOfMemory;
-                heap.appendSliceAssumeCapacity(self.parse_stack.items);
-                self.parse_stack = heap;
-                return;
-            }
-            self.parse_stack.ensureUnusedCapacity(self.doc.allocator, 1) catch return error.OutOfMemory;
+        inline fn closeCurrentNode(noalias self: *Self) void {
+            const idx = self.current_parent;
+            self.current_parent = self.nodes.items[@intCast(idx)].parent;
+            self.finishNode(idx);
         }
 
-        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64) ParseError!void {
-            if (self.parse_stack.items.len == self.parse_stack.capacity) {
-                @branchHint(.unlikely);
-                try self.growParseStack();
-            }
-            self.parse_stack.appendAssumeCapacity(.{ .tag_key = if (OpenTagKey == u64) tag_key else @bitCast(tag_key), .idx = idx });
-        }
-
-        inline fn popStack(noalias self: *Self) IndexInt {
-            return self.parse_stack.pop().?.idx;
-        }
-
-        inline fn stackLen(self: *const Self) usize {
-            return self.parse_stack.items.len;
-        }
-
-        inline fn topIndex(self: *const Self) IndexInt {
-            return self.parse_stack.items[self.parse_stack.items.len - 1].idx;
-        }
-
-        inline fn openElemMatchesClose(noalias self: *const Self, open: OpenElem, close_name: []const u8, close_key: u64) bool {
-            const open_tag_key: u64 = if (OpenTagKey == u64) open.tag_key else @bitCast(open.tag_key);
-            if (open_tag_key != close_key) return false;
-            if (close_name.len < 8) return true;
-            const open_span = self.nodes.items[@intCast(open.idx)].name_or_text;
+        inline fn openNodeMatchesClose(noalias self: *const Self, idx: IndexInt, close_name: []const u8, close_key: u64) bool {
+            const open_span = self.nodes.items[@intCast(idx)].name_or_text;
             if (open_span.len() != close_name.len) return false;
-            if (close_name.len == 8) return true;
-            return std.mem.eql(u8, open_span.slice(self.input)[8..], close_name[8..]);
-        }
-
-        inline fn deinitParseStack(noalias self: *Self) void {
-            if (self.parse_stack.capacity > InitialParseStackCapacity) self.parse_stack.deinit(self.doc.allocator);
+            const open_name = open_span.slice(self.input);
+            if (scanner.prefixKey(open_name) != close_key) return false;
+            return close_name.len <= 8 or std.mem.eql(u8, open_name[8..], close_name[8..]);
         }
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
@@ -1337,7 +1181,8 @@ test "permissive parser erases validation-only state" {
     const PermissiveParser = Parser(.{}, PermissiveDocument);
     const ValidatedParser = Parser(.{ .validate_well_formedness = true }, ValidatedDocument);
 
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "parse_attrs"));
+    try std.testing.expect(!@hasField(PermissiveParser, "parse_attrs"));
+    try std.testing.expect(!@hasField(ValidatedParser, "parse_attrs"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "validation_flags"));
     inline for (.{ "root_seen", "standalone_yes", "require_declared_entities" }) |field| {
         try std.testing.expect(!@hasField(PermissiveParser, field));
@@ -1348,11 +1193,12 @@ test "permissive parser erases validation-only state" {
     try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value"));
     try std.testing.expectEqual(document.Span, @FieldType(ValidatedParser, "doctype_value"));
-    try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
-    try std.testing.expect(!@hasField(PermissiveParser, "parse_stack_heap_owned"));
-    try std.testing.expectEqual(if (@sizeOf(IndexInt) <= 4) @as(usize, 12) else 16, @sizeOf(PermissiveParser.OpenElem));
-    try std.testing.expectEqual(if (@sizeOf(IndexInt) <= 4) [2]u32 else u64, @FieldType(PermissiveParser.OpenElem, "tag_key"));
-    try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
+    inline for (.{ "parse_stack", "parse_stack_inline", "parse_stack_heap_owned" }) |field| {
+        try std.testing.expect(!@hasField(PermissiveParser, field));
+        try std.testing.expect(!@hasField(ValidatedParser, field));
+    }
+    // Erased fields can fit entirely in alignment padding, notably with u16.
+    try std.testing.expect(@sizeOf(PermissiveParser) <= @sizeOf(ValidatedParser));
 }
 
 test "permissive generated DOM recovers malformed close structure" {
@@ -1413,7 +1259,7 @@ test "open-element key matching preserves exact name lengths" {
     try std.testing.expectEqual(@as(IndexInt, 1), recovered_doc.nodes[3].parent);
 }
 
-test "open-element stack spills beyond inline capacity" {
+test "node parent chain handles deep nesting without an open-element stack" {
     const options: ParseOptions = .{};
     var source: std.ArrayList(u8) = .empty;
     defer source.deinit(std.testing.allocator);
@@ -1563,4 +1409,61 @@ test "validated start tags accept mixed XML whitespace between attributes" {
     try std.testing.expectEqualStrings("a", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());
     try std.testing.expectEqualStrings("b", (attrs.next() orelse return error.TestUnexpectedResult).nameSlice());
     try std.testing.expect(attrs.next() == null);
+}
+
+test "small node-only documents allocate only their finished nodes" {
+    inline for (.{ false, true }) |validated| {
+        const options: ParseOptions = .{ .validate_well_formedness = validated };
+        var source = "<root id='value' lang='en'><a>text</a><b/></root>".*;
+        const Doc = options.Document();
+        var storage: [5 * @sizeOf(Doc.RawNode)]u8 align(@alignOf(Doc.RawNode)) = undefined;
+        var fba = std.heap.FixedBufferAllocator.init(&storage);
+        var doc = try options.parse(fba.allocator(), &source);
+        defer doc.deinit();
+        try std.testing.expectEqual(@as(usize, 5), doc.nodes.len);
+        try std.testing.expectEqualStrings("value", doc.nodeAt(1).?.getAttributeValueRaw("id").?);
+    }
+}
+
+test "inline node storage spills safely and releases every failed allocation" {
+    const Check = struct {
+        fn run(allocator: std.mem.Allocator) !void {
+            const options: ParseOptions = .{ .validate_well_formedness = true };
+            var source = ("<r>" ++ "<a>value</a>" ** 90 ++ "</r>").*;
+            var doc = try options.parse(allocator, &source);
+            defer doc.deinit();
+            try std.testing.expectEqual(@as(usize, 182), doc.nodes.len);
+            try std.testing.expectEqual(@as(IndexInt, 181), doc.nodes[1].subtree_end);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
+}
+
+test "node-only parsing rejects quoted raw greater-than instead of corrupting the tree" {
+    var source = "<r a='left>right'/>".*;
+    const fast: ParseOptions = .{};
+    try std.testing.expectError(error.UnexpectedEndOfData, fast.parse(std.testing.allocator, &source));
+    const full: ParseOptions = .{ .validate_well_formedness = true };
+    var doc = try full.parse(std.testing.allocator, &source);
+    defer doc.deinit();
+    try std.testing.expectEqualStrings("left>right", doc.nodeAt(1).?.getAttributeValueRaw("a").?);
+}
+
+test "direct closing match preserves whitespace mismatch and partial tails" {
+    const options: ParseOptions = .{ .validate_well_formedness = true };
+    inline for (.{ "<r><n></n></r>", "<r><abcdefghX></abcdefghX></r>", "<r><n></n \t\r\n></r>" }) |text| {
+        var input = text.*;
+        var doc = try options.parse(std.testing.allocator, &input);
+        defer doc.deinit();
+        try std.testing.expectEqual(@as(usize, 3), doc.nodes.len);
+        try std.testing.expectEqual(@as(IndexInt, 2), doc.nodes[1].subtree_end);
+    }
+    inline for (.{ "<r><abcdefghX></abcdefghY></r>", "<r><n></nX></r>" }) |text| {
+        var input = text.*;
+        try std.testing.expectError(error.InvalidClosingTagName, options.parse(std.testing.allocator, &input));
+    }
+    inline for (.{ "<r></", "<r></r", "<r><abcdefghX></abcdefgh" }) |text| {
+        var input = text.*;
+        try std.testing.expectError(error.UnexpectedEndOfData, options.parse(std.testing.allocator, &input));
+    }
 }
