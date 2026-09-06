@@ -1125,7 +1125,7 @@ fn benchmarkOneFixture(io: std.Io, alloc: std.mem.Allocator, args: []const []con
     }
     try benchmarkFixtureSet(io, alloc, fixtures[index..][0..1], parsers, &rows, null, index);
     var buffer: [4096]u8 = undefined;
-    var stdout = std.Io.File.stdout().writer(io, &buffer);
+    var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
     try stdout.interface.print("{f}\n", .{std.json.fmt(rows.items, .{})});
     try stdout.interface.flush();
 }
@@ -2340,7 +2340,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
-    var stdout_writer = std.Io.File.stdout().writer(io, &stdout_buffer);
+    var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
     const stdout = &stdout_writer.interface;
     try stdout.writeAll("\n");
     try stdout.writeAll(terminal);
