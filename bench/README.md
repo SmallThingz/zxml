@@ -43,7 +43,7 @@ Results are written to:
 - `bench/results/latest.json`
 - `bench/results/latest.md`
 
-Headline DOM benchmarks instantiate the actual generated parser types: `permissive` is `ParseOptions{}` and `validated` sets only `validate_well_formedness = true`. Misc-node storage is not silently enabled. The benchmark workflow follows zhtml. zxml keeps input/setup outside the timed region and repeatedly reuses the same generated `Document`, retaining node capacity between parses; streaming likewise reuses its generated parser state. External runners use their native repeat-parse lifecycle. zxml runners are
+Headline DOM benchmarks instantiate the actual generated parser types: `permissive` is `ParseOptions{}` and `validated` sets only `validate_well_formedness = true`. Misc-node storage is not silently enabled. The benchmark workflow follows zhtml. zxml keeps input/setup outside the timed region and constructs and frees a fresh generated `Document` in every timed iteration. Parser scratch and node growth are included; finished node capacity is not retained between DOM parses. Streaming reuses its generated parser state. An optimization barrier keeps each completed DOM observable before destruction. External runners use their native repeat-parse lifecycle. zxml runners are
 built with `ReleaseFast -Dcpu=native`; C++ runners use `-O3 -DNDEBUG -march=native`.
 The harness uses a system `c++` driver when available and falls back to `zig c++`
 on minimal hosts. Each generated report records the kernel, architecture, CPU model,

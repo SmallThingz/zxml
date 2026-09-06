@@ -78,7 +78,7 @@ Useful options:
 Run an owned command only after a quiet window and monitor for mid-run contamination:
 
 ```sh
-guarded-run --abort-on-busy -- taskset -c 8 ./benchmark args...
+guarded-run --abort-on-busy -- taskset -c 6 ./benchmark args...
 ```
 
 Behavior:
