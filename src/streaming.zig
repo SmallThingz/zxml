@@ -164,7 +164,6 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_pending: bool = false,
             restore_stack_len: RestoreIndex = 0,
             restore_skip_stack_len: RestoreIndex = 0,
-            restore_generation: u64 = 0,
             root_seen: ValidationBool = if (validated) false else {},
             standalone_yes: ValidationBool = if (validated) false else {},
             doctype_value: ValidationSpan = if (validated) .{} else {},
@@ -301,7 +300,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     .stack_len = self.stackLen(),
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
-                    .stack_generation = if (self.restore_pending) self.restore_generation else self.stack_generation,
+                    .stack_generation = self.stack_generation,
                     .root_seen = if (validated) self.root_seen else {},
                     .standalone_yes = if (validated) self.standalone_yes else {},
                     .doctype_value = if (validated) self.doctype_value else {},
@@ -333,7 +332,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     return;
                 }
                 if (self.restore_pending and
-                    state.stack_generation == self.restore_generation and
+                    state.stack_generation == self.stack_generation and
                     state.stack_len == @as(usize, @intCast(self.restore_stack_len)) and
                     state.skip_stack_len == @as(usize, @intCast(self.restore_skip_stack_len)))
                 {
@@ -342,7 +341,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.restore_pending = true;
                 self.restore_stack_len = @intCast(@min(state.stack_len, common.MaxLen));
                 self.restore_skip_stack_len = @intCast(@min(state.skip_stack_len, common.MaxLen));
-                self.restore_generation = state.stack_generation;
+                self.stack_generation = state.stack_generation;
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
@@ -2663,6 +2662,8 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "restore_skip_stack_len"));
     try std.testing.expect(!@hasDecl(PermissiveParser, "Checkpoint"));
     try std.testing.expect(!@hasDecl(ValidatedParser, "Checkpoint"));
+    try std.testing.expect(!@hasField(PermissiveParser, "restore_generation"));
+    try std.testing.expect(!@hasField(ValidatedParser, "restore_generation"));
     // Total parser size has no fixed ordering because validated restore lengths use IndexInt.
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
@@ -3940,6 +3941,35 @@ test "streaming public save restore preserves closing-tag stack across divergent
 
     parser.restore(state);
     try std.testing.expect(try parser.parseAvailable("<a><a></a></a>", &ctx, Ctx.onNode));
+    try parser.finish();
+}
+
+test "streaming save while restore is pending preserves logical state" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try std.testing.expect(try parser.parseAvailable("<r><a>", &ctx, Ctx.onNode));
+    const state = parser.save();
+    try std.testing.expect(try parser.parseAvailable("<r><a></a><b>", &ctx, Ctx.onNode));
+
+    parser.restore(state);
+    try std.testing.expect(parser.restore_pending);
+    const pending = parser.save();
+    try std.testing.expectEqual(state.offset, pending.offset);
+    try std.testing.expectEqual(state.stack_len, pending.stack_len);
+    try std.testing.expectEqual(state.skip_stack_len, pending.skip_stack_len);
+    try std.testing.expectEqual(state.stack_generation, pending.stack_generation);
+
+    try std.testing.expect(try parser.parseAvailable("<r><a></a></r>", &ctx, Ctx.onNode));
     try parser.finish();
 }
 
