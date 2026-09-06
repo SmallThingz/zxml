@@ -178,7 +178,7 @@ DTD/entity expansion is disabled by default. With `expand_dtd_entities = true`, 
 
 ## Invalid XML Policy
 
-The default generated parser is permissive but bounded. Ordinary close tags match the top of a 32-entry inline open-element stack. On a mismatch it searches backward for a matching ancestor, implicitly closes intervening elements, ignores unmatched closing tags, and implicitly closes remaining elements at EOF. Deep nesting spills the parser-owned stack to heap without changing the persistent DOM layout.
+The default generated parser is permissive but bounded. Ordinary close tags match the top of a 24-entry inline open-element stack. On a mismatch it searches backward for a matching ancestor, implicitly closes intervening elements, ignores unmatched closing tags, and implicitly closes remaining elements at EOF. Deep nesting spills the parser-owned stack to heap without changing the persistent DOM layout.
 
 `validate_well_formedness = true` generates the validating path: malformed tag structure, invalid attribute grammar, duplicate attributes, document-level grammar violations, and invalid entity/reference forms are reported as parse errors. `validate_xml_characters = false` may be used with validation when the caller has already established whole-buffer XML character validity.
 

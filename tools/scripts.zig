@@ -21,7 +21,8 @@ const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
 const repeats: usize = 5;
-const benchmark_methodology_version: usize = 3;
+// Fresh generated DOM construction and destruction are included in every sample.
+const benchmark_methodology_version: usize = 4;
 const interleaved_build_seed: u64 = 23_063;
 
 const documentation_files = [_][]const u8{

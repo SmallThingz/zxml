@@ -33,6 +33,7 @@ fn runDomValidated(io: std.Io, alloc: std.mem.Allocator, input: []u8, iterations
     for (0..iterations) |_| {
         var doc = try dom_validated_options.parse(alloc, input);
         checksum +%= @as(u64, @intCast(doc.nodes.len));
+        std.mem.doNotOptimizeAway(&doc);
         doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
@@ -46,6 +47,7 @@ fn runDomValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []u8, ite
     for (0..iterations) |_| {
         var doc = try dom_validated_trusted_options.parse(alloc, input);
         checksum +%= @as(u64, @intCast(doc.nodes.len));
+        std.mem.doNotOptimizeAway(&doc);
         doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
@@ -59,6 +61,7 @@ fn runDomPermissive(io: std.Io, alloc: std.mem.Allocator, input: []u8, iteration
     for (0..iterations) |_| {
         var doc = try dom_permissive_options.parse(alloc, input);
         checksum +%= @as(u64, @intCast(doc.nodes.len));
+        std.mem.doNotOptimizeAway(&doc);
         doc.deinit();
     }
     const finish = std.Io.Clock.Timestamp.now(io, .awake);
