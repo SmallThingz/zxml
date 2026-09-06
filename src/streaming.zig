@@ -151,6 +151,11 @@ pub fn Types(comptime options: ParseOptions) type {
         const ValidationBool = if (validated) bool else void;
         const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
+        const ValidationFlags = if (validated) packed struct {
+            root_seen: bool = false,
+            standalone_yes: bool = false,
+            require_declared_entities: bool = true,
+        } else void;
         const RestoreIndex = if (validated) IndexInt else usize;
 
         pub const Parser = struct {
@@ -164,10 +169,8 @@ pub fn Types(comptime options: ParseOptions) type {
             restore_pending: bool = false,
             restore_stack_len: RestoreIndex = 0,
             restore_skip_stack_len: RestoreIndex = 0,
-            root_seen: ValidationBool = if (validated) false else {},
-            standalone_yes: ValidationBool = if (validated) false else {},
+            validation_flags: ValidationFlags = if (validated) .{} else {},
             doctype_value: ValidationSpan = if (validated) .{} else {},
-            require_declared_entities: ValidationBool = if (validated) true else {},
             xml_validated_offset: ValidationIndex = if (validated) 0 else {},
 
             const Self = @This();
@@ -200,10 +203,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.offset = 0;
                 self.needs_more = false;
                 if (comptime validated) {
-                    self.root_seen = false;
-                    self.standalone_yes = false;
+                    self.validation_flags.root_seen = false;
+                    self.validation_flags.standalone_yes = false;
                     self.doctype_value = .{};
-                    self.require_declared_entities = true;
+                    self.validation_flags.require_declared_entities = true;
                     self.xml_validated_offset = 0;
                 }
                 if (comptime validated and options.validate_xml_characters) {
@@ -272,7 +275,7 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 if (validated and self.stackLen() != 0) return error.UnexpectedEndOfData;
                 if (comptime validated) {
-                    if (!self.root_seen) return error.ExpectedDocumentElement;
+                    if (!self.validation_flags.root_seen) return error.ExpectedDocumentElement;
                 }
                 self.offset = i;
             }
@@ -282,10 +285,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.offset = 0;
                 self.needs_more = false;
                 if (comptime validated) {
-                    self.root_seen = false;
-                    self.standalone_yes = false;
+                    self.validation_flags.root_seen = false;
+                    self.validation_flags.standalone_yes = false;
                     self.doctype_value = .{};
-                    self.require_declared_entities = true;
+                    self.validation_flags.require_declared_entities = true;
                     self.xml_validated_offset = 0;
                 }
             }
@@ -301,10 +304,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     .skip_stack_len = self.skipStackLen(),
                     .needs_more = self.needs_more,
                     .stack_generation = self.stack_generation,
-                    .root_seen = if (validated) self.root_seen else {},
-                    .standalone_yes = if (validated) self.standalone_yes else {},
+                    .root_seen = if (validated) self.validation_flags.root_seen else {},
+                    .standalone_yes = if (validated) self.validation_flags.standalone_yes else {},
                     .doctype_value = if (validated) self.doctype_value else {},
-                    .require_declared_entities = if (validated) self.require_declared_entities else {},
+                    .require_declared_entities = if (validated) self.validation_flags.require_declared_entities else {},
                 };
             }
 
@@ -315,10 +318,10 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
                 if (comptime validated) {
-                    self.root_seen = state.root_seen;
-                    self.standalone_yes = state.standalone_yes;
+                    self.validation_flags.root_seen = state.root_seen;
+                    self.validation_flags.standalone_yes = state.standalone_yes;
                     self.doctype_value = state.doctype_value;
-                    self.require_declared_entities = state.require_declared_entities;
+                    self.validation_flags.require_declared_entities = state.require_declared_entities;
                     // A restored continuation may diverge immediately after the
                     // saved parse offset, so revalidate from that byte onward.
                     self.xml_validated_offset = @intCast(@min(state.offset, common.MaxLen));
@@ -417,7 +420,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (self.needs_more) return error.UnexpectedEndOfData;
                 if (validated and (self.stackLen() != 0 or self.skipStackLen() != 0)) return error.UnexpectedEndOfData;
                 if (comptime validated) {
-                    if (!self.root_seen) return error.ExpectedDocumentElement;
+                    if (!self.validation_flags.root_seen) return error.ExpectedDocumentElement;
                 }
             }
 
@@ -610,7 +613,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                 }
 
-                try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.require_declared_entities, null);
+                try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.validation_flags.require_declared_entities, null);
             }
 
             inline fn validateAttributeValueSpecials(self: *const Self, input: []const u8, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
@@ -635,7 +638,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 std.debug.assert(start <= end and end <= input.len);
                 if (containsForbiddenCdataClose(input, start, end, has_close_bracket)) return error.InvalidCharacterData;
                 if (has_ampersand) {
-                    try document.validateXmlReferencesAlloc(self.allocator, input[start..end], incremental and end == input.len, self.doctypeValue(input), self.require_declared_entities);
+                    try document.validateXmlReferencesAlloc(self.allocator, input[start..end], incremental and end == input.len, self.doctypeValue(input), self.validation_flags.require_declared_entities);
                 }
             }
 
@@ -841,8 +844,8 @@ pub fn Types(comptime options: ParseOptions) type {
 
                 if (comptime validated) {
                     if (self.stackLen() == 0) {
-                        if (self.root_seen) return error.MultipleDocumentElements;
-                        self.root_seen = true;
+                        if (self.validation_flags.root_seen) return error.MultipleDocumentElements;
+                        self.validation_flags.root_seen = true;
                     }
                 }
 
@@ -1009,7 +1012,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (comptime validated) {
                     if (xml_target) {
                         const declaration = try document.validateXmlDeclaration(input[value_start..end]);
-                        self.standalone_yes = declaration.standalone_yes;
+                        self.validation_flags.standalone_yes = declaration.standalone_yes;
                     }
                 }
                 if (include_misc_nodes) {
@@ -1071,7 +1074,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (scanner.isDoctype(input, start)) {
                     if (comptime validated) {
                         if (!scanner.isDoctypeExact(input, start)) return error.ExpectedGt;
-                        if (self.stackLen() != 0 or self.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
+                        if (self.stackLen() != 0 or self.validation_flags.root_seen or self.doctypeSeen()) return error.InvalidDoctype;
                     }
                     const end = scanner.findDoctypeEnd(input, start + 9) orelse {
                         if (validated or incremental) return error.UnexpectedEndOfData;
@@ -1080,7 +1083,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (comptime validated) {
                         const value_start = start + 9;
                         const info = try document.validateDoctypeAlloc(self.allocator, input[value_start..end]);
-                        const require_declared_entities = self.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
+                        const require_declared_entities = self.validation_flags.standalone_yes or (!info.has_external_id and !info.has_parameter_entity_references);
                         try document.validateDoctypeEntityConstraintsAlloc(
                             self.allocator,
                             input[value_start..end],
@@ -1088,7 +1091,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             null,
                         );
                         self.doctype_value = .{ .start = @intCast(value_start), .end = @intCast(end) };
-                        self.require_declared_entities = require_declared_entities;
+                        self.validation_flags.require_declared_entities = require_declared_entities;
                         if (comptime !incremental) {
                             // Full-stream parsing may borrow unused element-stack
                             // capacity for a root-attribute DTD index. Reserve here,
@@ -1255,7 +1258,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 validated,
                                 if (comptime validated) self.allocator else null,
                                 self.doctypeValue(input),
-                                if (comptime validated) self.require_declared_entities else false,
+                                if (comptime validated) self.validation_flags.require_declared_entities else false,
                             ) catch |err| switch (err) {
                                 error.UnexpectedEndOfData => if (incremental)
                                     return .{ .next = lt, .needs_more = true }
@@ -2633,10 +2636,8 @@ test "permissive streaming parser erases validation-only state" {
     const ValidatedState = ValidatedParser.State;
 
     inline for (&.{
-        "root_seen",
-        "standalone_yes",
+        "validation_flags",
         "doctype_value",
-        "require_declared_entities",
         "xml_validated_offset",
     }) |field| {
         try std.testing.expectEqual(void, @FieldType(PermissiveParser, field));
@@ -2649,6 +2650,11 @@ test "permissive streaming parser erases validation-only state" {
     }) |field| {
         try std.testing.expectEqual(void, @FieldType(PermissiveState, field));
     }
+    inline for (&.{ "root_seen", "standalone_yes", "require_declared_entities" }) |field| {
+        try std.testing.expect(!@hasField(PermissiveParser, field));
+        try std.testing.expect(!@hasField(ValidatedParser, field));
+    }
+    try std.testing.expectEqual(@as(usize, 1), @sizeOf(@FieldType(ValidatedParser, "validation_flags")));
     try std.testing.expect(!@hasField(PermissiveParser, "doctype_seen"));
     try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
     try std.testing.expect(!@hasField(PermissiveState, "doctype_seen"));
@@ -2689,10 +2695,10 @@ test "streaming incremental EOF leaves the current token uncommitted" {
         try std.testing.expect(!try parser.parseAvailable(partial, &ctx, Ctx.onNode));
         try std.testing.expectEqual(@as(usize, 0), parser.offset);
         try std.testing.expectEqual(@as(usize, 0), parser.stackLen());
-        try std.testing.expect(!parser.root_seen);
-        try std.testing.expect(!parser.standalone_yes);
+        try std.testing.expect(!parser.validation_flags.root_seen);
+        try std.testing.expect(!parser.validation_flags.standalone_yes);
         try std.testing.expect(!parser.doctypeSeen());
-        try std.testing.expect(parser.require_declared_entities);
+        try std.testing.expect(parser.validation_flags.require_declared_entities);
     }
 
     var parser = T.Parser.init(std.testing.allocator);
@@ -2701,7 +2707,7 @@ test "streaming incremental EOF leaves the current token uncommitted" {
     try std.testing.expect(!try parser.parseAvailable("<r></r", &ctx, Ctx.onNode));
     try std.testing.expectEqual(@as(usize, 3), parser.offset);
     try std.testing.expectEqual(@as(usize, 1), parser.stackLen());
-    try std.testing.expect(parser.root_seen);
+    try std.testing.expect(parser.validation_flags.root_seen);
 }
 
 test "validated streaming restore bounds private validation cursor" {
