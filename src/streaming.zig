@@ -151,6 +151,7 @@ pub fn Types(comptime options: ParseOptions) type {
         const ValidationBool = if (validated) bool else void;
         const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
+        const RestoreIndex = if (validated) IndexInt else usize;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -161,8 +162,8 @@ pub fn Types(comptime options: ParseOptions) type {
             state_tracking: bool = false,
             stack_generation: u64 = 0,
             restore_pending: bool = false,
-            restore_stack_len: usize = 0,
-            restore_skip_stack_len: usize = 0,
+            restore_stack_len: RestoreIndex = 0,
+            restore_skip_stack_len: RestoreIndex = 0,
             restore_generation: u64 = 0,
             root_seen: ValidationBool = if (validated) false else {},
             standalone_yes: ValidationBool = if (validated) false else {},
@@ -333,14 +334,14 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (self.restore_pending and
                     state.stack_generation == self.restore_generation and
-                    state.stack_len == self.restore_stack_len and
-                    state.skip_stack_len == self.restore_skip_stack_len)
+                    state.stack_len == @as(usize, @intCast(self.restore_stack_len)) and
+                    state.skip_stack_len == @as(usize, @intCast(self.restore_skip_stack_len)))
                 {
                     return;
                 }
                 self.restore_pending = true;
-                self.restore_stack_len = state.stack_len;
-                self.restore_skip_stack_len = state.skip_stack_len;
+                self.restore_stack_len = @intCast(@min(state.stack_len, common.MaxLen));
+                self.restore_skip_stack_len = @intCast(@min(state.skip_stack_len, common.MaxLen));
                 self.restore_generation = state.stack_generation;
             }
 
@@ -1343,8 +1344,8 @@ pub fn Types(comptime options: ParseOptions) type {
             fn materializeRestoredStacks(self: *Self, input: []const u8) ParseError!void {
                 if (!self.restore_pending) return;
 
-                const expected_main = self.restore_stack_len;
-                const expected_skip = self.restore_skip_stack_len;
+                const expected_main: usize = @intCast(self.restore_stack_len);
+                const expected_skip: usize = @intCast(self.restore_skip_stack_len);
                 const expected_total = std.math.add(usize, expected_main, expected_skip) catch return error.InputTooLarge;
 
                 const RebuildCtx = struct {
@@ -1373,11 +1374,11 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn stackLen(self: *const Self) usize {
-                return if (self.restore_pending) self.restore_stack_len else self.stack.items.len;
+                return if (self.restore_pending) @intCast(self.restore_stack_len) else self.stack.items.len;
             }
 
             inline fn skipStackLen(self: *const Self) usize {
-                return if (self.restore_pending) self.restore_skip_stack_len else self.skip_stack.items.len;
+                return if (self.restore_pending) @intCast(self.restore_skip_stack_len) else self.skip_stack.items.len;
             }
 
             inline fn noteStackMutation(self: *Self) void {
@@ -2656,9 +2657,13 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
+    try std.testing.expectEqual(usize, @FieldType(PermissiveParser, "restore_stack_len"));
+    try std.testing.expectEqual(usize, @FieldType(PermissiveParser, "restore_skip_stack_len"));
+    try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "restore_stack_len"));
+    try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "restore_skip_stack_len"));
     try std.testing.expect(!@hasDecl(PermissiveParser, "Checkpoint"));
     try std.testing.expect(!@hasDecl(ValidatedParser, "Checkpoint"));
-    try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
+    // Total parser size has no fixed ordering because validated restore lengths use IndexInt.
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
 }
@@ -2716,6 +2721,29 @@ test "validated streaming restore bounds private validation cursor" {
         parser.restore(state);
         var ctx: Ctx = .{};
         try std.testing.expectError(error.UnexpectedEndOfData, parser.parseAvailable("<r/>", &ctx, Ctx.onNode));
+    }
+}
+
+test "streaming restore bounds private stack lengths" {
+    if (comptime common.MaxLen < std.math.maxInt(usize)) {
+        const opts: ParseOptions = .{ .validate_well_formedness = true };
+        const ParserType = Types(opts).Parser;
+        const Event = Types(opts).Node;
+        const Ctx = struct {
+            fn onNode(_: *@This(), _: *const Event) bool {
+                return true;
+            }
+        };
+
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var state = parser.save();
+        state.stack_generation +%= 1;
+        state.stack_len = common.MaxLen + 1;
+        state.skip_stack_len = common.MaxLen + 1;
+        parser.restore(state);
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.InvalidClosingTagName, parser.parseAvailable("<r/>", &ctx, Ctx.onNode));
     }
 }
 
