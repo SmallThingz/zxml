@@ -190,7 +190,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 offset: usize,
                 stack_len: usize,
                 skip_stack_len: usize,
-                needs_more: bool,
                 root_seen: ValidationBool,
                 standalone_yes: ValidationBool,
                 doctype_value: ValidationSpan,
@@ -360,7 +359,6 @@ pub fn Types(comptime options: ParseOptions) type {
                     .offset = self.offset,
                     .stack_len = self.stackLen(),
                     .skip_stack_len = self.skipStackLen(),
-                    .needs_more = self.needs_more,
                     .root_seen = if (validated) self.root_seen else {},
                     .standalone_yes = if (validated) self.standalone_yes else {},
                     .doctype_value = if (validated) self.doctype_value else {},
@@ -370,7 +368,6 @@ pub fn Types(comptime options: ParseOptions) type {
 
             inline fn restoreCheckpoint(self: *Self, state: Checkpoint) void {
                 self.offset = state.offset;
-                self.needs_more = state.needs_more;
                 if (comptime validated) {
                     self.root_seen = state.root_seen;
                     self.standalone_yes = state.standalone_yes;
@@ -2694,6 +2691,8 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
+    try std.testing.expect(!@hasField(PermissiveParser.Checkpoint, "needs_more"));
+    try std.testing.expect(!@hasField(ValidatedParser.Checkpoint, "needs_more"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
