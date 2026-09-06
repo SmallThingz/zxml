@@ -151,7 +151,6 @@ pub fn Types(comptime options: ParseOptions) type {
         const ValidationBool = if (validated) bool else void;
         const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
-        const CheckpointLen = if (std.debug.runtime_safety) usize else void;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -181,15 +180,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 skip_stack_len: usize,
                 needs_more: bool,
                 stack_generation: u64,
-                root_seen: ValidationBool,
-                standalone_yes: ValidationBool,
-                doctype_value: ValidationSpan,
-                require_declared_entities: ValidationBool,
-            };
-
-            const Checkpoint = struct {
-                stack_len: CheckpointLen,
-                skip_stack_len: CheckpointLen,
                 root_seen: ValidationBool,
                 standalone_yes: ValidationBool,
                 doctype_value: ValidationSpan,
@@ -354,31 +344,6 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.restore_generation = state.stack_generation;
             }
 
-            inline fn checkpoint(self: *const Self) Checkpoint {
-                return .{
-                    .stack_len = if (std.debug.runtime_safety) self.stackLen() else {},
-                    .skip_stack_len = if (std.debug.runtime_safety) self.skipStackLen() else {},
-                    .root_seen = if (validated) self.root_seen else {},
-                    .standalone_yes = if (validated) self.standalone_yes else {},
-                    .doctype_value = if (validated) self.doctype_value else {},
-                    .require_declared_entities = if (validated) self.require_declared_entities else {},
-                };
-            }
-
-            inline fn restoreCheckpoint(self: *Self, state: Checkpoint) void {
-                if (comptime validated) {
-                    self.root_seen = state.root_seen;
-                    self.standalone_yes = state.standalone_yes;
-                    self.doctype_value = state.doctype_value;
-                    self.require_declared_entities = state.require_declared_entities;
-                }
-                std.debug.assert(!self.restore_pending);
-                if (comptime std.debug.runtime_safety) {
-                    std.debug.assert(state.stack_len == self.stack.items.len);
-                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
-                }
-            }
-
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
                 if (self.offset > input.len) return error.UnexpectedEndOfData;
@@ -430,10 +395,10 @@ pub fn Types(comptime options: ParseOptions) type {
                             continue;
                         }
                     }
-                    const saved = self.checkpoint();
+                    // Token parsers commit persistent state only after the token boundary is complete,
+                    // so incremental EOF leaves nothing to roll back.
                     const next = self.parseOne(parse_input, self.offset, ctx, callback, true) catch |err| switch (err) {
                         error.UnexpectedEndOfData => {
-                            self.restoreCheckpoint(saved);
                             self.needs_more = true;
                             return false;
                         },
@@ -2691,18 +2656,46 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
-    try std.testing.expect(!@hasField(PermissiveParser.Checkpoint, "needs_more"));
-    try std.testing.expect(!@hasField(ValidatedParser.Checkpoint, "needs_more"));
-    try std.testing.expect(!@hasField(PermissiveParser.Checkpoint, "offset"));
-    try std.testing.expect(!@hasField(ValidatedParser.Checkpoint, "offset"));
-    const ExpectedCheckpointLen = if (std.debug.runtime_safety) usize else void;
-    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(PermissiveParser.Checkpoint, "stack_len"));
-    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(ValidatedParser.Checkpoint, "stack_len"));
-    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(PermissiveParser.Checkpoint, "skip_stack_len"));
-    try std.testing.expectEqual(ExpectedCheckpointLen, @FieldType(ValidatedParser.Checkpoint, "skip_stack_len"));
+    try std.testing.expect(!@hasDecl(PermissiveParser, "Checkpoint"));
+    try std.testing.expect(!@hasDecl(ValidatedParser, "Checkpoint"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
+}
+
+test "streaming incremental EOF leaves the current token uncommitted" {
+    const T = Types(.{ .validate_well_formedness = true });
+    const Event = T.Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+
+    inline for (.{
+        "<root",
+        "<?xml version='1.0' standalone='yes'",
+        "<!DOCTYPE r [<!ENTITY a 'A'>",
+    }) |partial| {
+        var parser = T.Parser.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expect(!try parser.parseAvailable(partial, &ctx, Ctx.onNode));
+        try std.testing.expectEqual(@as(usize, 0), parser.offset);
+        try std.testing.expectEqual(@as(usize, 0), parser.stackLen());
+        try std.testing.expect(!parser.root_seen);
+        try std.testing.expect(!parser.standalone_yes);
+        try std.testing.expect(!parser.doctypeSeen());
+        try std.testing.expect(parser.require_declared_entities);
+    }
+
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try std.testing.expect(!try parser.parseAvailable("<r></r", &ctx, Ctx.onNode));
+    try std.testing.expectEqual(@as(usize, 3), parser.offset);
+    try std.testing.expectEqual(@as(usize, 1), parser.stackLen());
+    try std.testing.expect(parser.root_seen);
 }
 
 test "validated streaming restore bounds private validation cursor" {
