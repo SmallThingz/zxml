@@ -150,7 +150,6 @@ pub fn Types(comptime options: ParseOptions) type {
         const validated = options.validate_well_formedness;
         const ValidationBool = if (validated) bool else void;
         const ValidationUsize = if (validated) usize else void;
-        const ValidationU64 = if (validated) u64 else void;
 
         pub const Parser = struct {
             allocator: Allocator,
@@ -171,7 +170,6 @@ pub fn Types(comptime options: ParseOptions) type {
             doctype_value_end: ValidationUsize = if (validated) 0 else {},
             require_declared_entities: ValidationBool = if (validated) true else {},
             xml_validated_offset: ValidationUsize = if (validated) 0 else {},
-            attribute_name_filter: ValidationU64 = if (validated) 0 else {},
 
             const Self = @This();
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
@@ -725,6 +723,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 var attr_count: usize = 0;
                 var first_attr_start: usize = 0;
                 var first_attr_end: usize = 0;
+                var attribute_name_filter: u64 = 0;
                 var self_closing = false;
                 var closed = false;
 
@@ -812,8 +811,8 @@ pub fn Types(comptime options: ParseOptions) type {
                                 first_attr_end = attr_i;
                             }
                         } else {
-                            if (attr_count == 2) self.attribute_name_filter = initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
-                            addAttributeNameFilter(&self.attribute_name_filter, input[attr_name_start..attr_i]);
+                            if (attr_count == 2) attribute_name_filter = initAttributeNameFilter(input, attr_start, first_attr_start, first_attr_end);
+                            addAttributeNameFilter(&attribute_name_filter, input[attr_name_start..attr_i]);
                         }
                         attr_count += 1;
                     }
@@ -883,7 +882,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (!closed) return error.UnexpectedEndOfData;
                 if (comptime validated) {
-                    if (attr_count > 2 and self.attribute_name_filter & attribute_filter_collision != 0) {
+                    if (attr_count > 2 and attribute_name_filter & attribute_filter_collision != 0) {
                         try validateUniqueAttributesRaw(input, attr_start, attr_end);
                     }
                 }
@@ -2690,7 +2689,6 @@ test "permissive streaming parser erases validation-only state" {
         "doctype_value_end",
         "require_declared_entities",
         "xml_validated_offset",
-        "attribute_name_filter",
     }) |field| {
         try std.testing.expectEqual(void, @FieldType(PermissiveParser, field));
     }
