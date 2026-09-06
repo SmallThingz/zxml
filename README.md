@@ -21,13 +21,9 @@ Low-latency XML parsing for Zig with comptime-generated DOM/streaming types, sou
 
 <!-- README_AUTO_SUMMARY:START -->
 
-The checked-in benchmark snapshot predates the generated permissive/validated architecture and is intentionally not presented as current performance. Regenerate it with `zig build bench-compare` after a clean benchmark run.
+No passing performance snapshot is published. The current version-4 stable measurements pass data-integrity checks but fail 3 of 37 external-parser guardrails, and both headline throughput objectives remain unmet. See the [measurement and validation report](bench/VALIDATION.md) and [full results](bench/results/latest.md).
 
-Headline zxml modes are now:
-
-- `ours-permissive`: the actual default generated DOM (`ParseOptions{}`).
-- `ours-validated`: `validate_well_formedness = true`.
-- `stream-permissive` / `stream-validated`: matching generated streaming policies.
+Headline DOM modes are `ours-permissive` (`ParseOptions{}`) and `ours-validated` (`validate_well_formedness = true`); `stream-permissive` and `stream-validated` are the separate streaming lanes.
 
 <!-- README_AUTO_SUMMARY:END -->
 

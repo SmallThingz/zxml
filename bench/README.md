@@ -72,7 +72,7 @@ benchmark tables and remain available only in `bench/results/latest.json`.
 
 <!-- BENCH_README_AUTO_SNAPSHOT:START -->
 
-The checked-in benchmark snapshot predates the generated permissive/validated DOM architecture and has been intentionally removed. Run `zig build bench-compare -- --profile stable` in a clean host window to publish a compatible snapshot.
+Current version-4 measurements are available in [latest results](results/latest.md) and [rewrite validation](VALIDATION.md). The stable external gate passed 34/37 fixtures; neither headline throughput objective was reached. Numeric publication remains withheld until the unchanged gates pass.
 
 <!-- BENCH_README_AUTO_SNAPSHOT:END -->
 
