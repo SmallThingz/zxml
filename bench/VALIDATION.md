@@ -1,86 +1,81 @@
-# Generated-parser rewrite validation
+# Node-only parser validation
 
-Measured: 2026-09-06T22:58:08+10:00. Compiler: Zig 0.16.0. Methodology: version 4.
+Code revision: `b3f365aeba812fd8e3ca9962d7aa7d6153921f61`. Measured: 2026-09-07T01:18:19+10:00. Zig 0.16.0; methodology version 4.
 
-**The throughput objectives are not met. The architectural rewrite is implemented and correctness-validated, but performance acceptance is still open.**
+**The external-parser guardrail now passes 37/37 fixtures. The original >3 GiB/s validated and >5 GiB/s permissive mean-throughput objectives remain unmet.**
 
-## Measured baseline
+## Complete stable measurements
 
-Independent, fully guarded fixture windows on CPU6. This is not one continuous quiet interval.
+The unchanged stable profile completed in independently guarded CPU6 fixture windows: 220 headline parser/fixture rows plus two validated-only DTD rows, with five samples each, totaling 1,110 positive timed samples. This was not one continuous quiet interval. Each retained fixture includes guarded calibration and all five interleaved sample rounds; contaminated attempts were discarded whole.
 
-The complete stable corpus contains 37 headline fixtures plus one validated-only DTD fixture: 222 parser/fixture rows and 1,110 positive timed samples. Every DOM iteration constructs and frees a fresh document, including parser scratch and node growth. Streaming retains its distinct reusable-parser lifecycle.
+Every timed DOM iteration constructs and frees a fresh observable document. Scratch, growth and final node ownership are included. Streaming retains its distinct reusable-parser lifecycle. No exclusions, thresholds or external binaries were changed.
 
-All rates below are GiB/s. These are arithmetic means of per-fixture median throughputs, not pooled bytes/time rates. The generated JSON stores decimal MB/s; conversion divides by 1073.741824. Validated/permissive fixture counts are 36/37 overall, 14/15 real, and 22/22 synthetic.
+The following rates are arithmetic means of per-fixture median throughputs in GiB/s, not pooled bytes/time rates. JSON stores decimal MB/s; conversion divides by 1073.741824. Validated/permissive counts are 36/37 overall, 14/15 real and 22/22 synthetic. Separate stable snapshots are not a full paired speedup estimate.
 
-| DOM policy | All applicable fixtures | Real | Synthetic | Objective |
-|---|---:|---:|---:|---:|
-| Validated | 1.401 | 2.043 | 0.992 | >3 |
-| Permissive | 2.619 | 3.592 | 1.956 | >5 |
+| DOM policy | Previous overall | Current overall | Current real | Current synthetic | Objective |
+|---|---:|---:|---:|---:|---:|
+| Validated | 1.401 | 1.505 | 2.225 | 1.047 | >3 |
+| Permissive | 2.619 | 3.279 | 4.130 | 2.698 | >5 |
 
-External guardrail: **34/37 passed**. The unchanged requirement is `ours-permissive >= max(pugixml, rapidxml)` on every fixture.
+The previous snapshot is committed at `2450c4f`. Current generated data is in [latest results](results/latest.md) and `results/latest.json`.
 
-| Failing fixture | ours-permissive MB/s | Best external | Best external MB/s | ours/external |
+The unchanged external gate is `ours-permissive >= max(pugixml, rapidxml)` on every headline fixture: **37/37 pass**, up from 34/37. Validated-only DTD pathology checks pass 2/2 and remain outside headline means and external gates.
+
+| Previously failing fixture | Current ours-permissive MB/s | Best external | Best external MB/s | ours/external |
 |---|---:|---|---:|---:|
-| character.xml | 1944.32 | rapidxml | 2143.18 | 0.907 |
-| transitions.xml | 1928.89 | rapidxml | 2235.63 | 0.863 |
-| synthetic_deep_tree.xml | 1214.39 | pugixml | 1332.92 | 0.911 |
+| character.xml | 2981.11 | rapidxml | 2127.43 | 1.401 |
+| transitions.xml | 3235.15 | rapidxml | 2267.66 | 1.427 |
+| synthetic_deep_tree.xml | 1416.82 | pugixml | 1323.12 | 1.071 |
 
-Validated-only DTD pathology checks: 2/2 passed. These remain outside headline means and external gates. Excluded throughput-inflating fixtures were not restored. No thresholds were lowered and no timing checkpoints were resumed.
+## Implemented architecture and compatibility
 
-The generated [latest results](results/latest.md) and `results/latest.json` now contain version-4 measurements, not relabeled historical version-3 data. Numeric README leaderboards remain withheld because the stable gate failed.
+Default u32 nodes remain 16 bytes. Existing node parent links replace the separate DOM open-element stack. Neither DOM policy builds an attribute-record array. Attributes remain source-backed and lazy. Validated parsing uses small name/filter state, exact source rescanning, and a temporary exact-name set for uncommon large collision cases, not stored attribute/value records.
 
-## Correctness and accepted changes
+Small documents use inline nodes and allocate their finished node slice once; spill and allocation-failure paths are covered. Bulk quote scans, exact common closing tags and mixed UTF-8 windows avoid repeated work. Streaming restoration identities and incremental DTD ownership fixes remain intact.
 
-| Check | Evidence/result |
+The default permissive fast path can reject literal `>` inside a quoted attribute value. Use `&gt;` or `validate_well_formedness = true` for those inputs. Validated mode retains full handling. The rejection fraction was not measured over an independent representative population; this is not a 0.5% rejection-rate claim.
+
+A producer/consumer regression was reproduced before commit: serialization could emit that newly unsupported spelling after lazy attribute materialization. Both raw and decoded attribute writers now escape `>`, preserving existing entity references appropriately. Eight roundtrip combinations cover mutable/immutable source, raw/encoded input and queried/unqueried attributes.
+
+## Completed final-source correctness validation
+
+| Check | Result |
 |---|---|
-| Full Debug, ReleaseFast, u16, u64 and usize matrix | 200 passed, 0 failed, 2 skipped per root suite at `0850f4e` |
-| Repository conformance | 112/112 passed in that completed matrix |
-| Final ReleaseFast ship-check after restoring rejected candidates | Exit 0; root 200/0/2; public API, examples, docs and tool tests passed |
-| Benchmark tool tests after the redirected-output fix | 15/15 passed |
-| Redirected-output regression | Before: only 5/30 sample lines survived; after: all 30/30 survived |
+| Full Debug, ReleaseFast, u16, u64, usize matrix | Root 207 passed, 0 failed, 2 skipped per configuration; all child exit codes successful |
+| Native CPU ReleaseSafe root suite | 207 passed, 2 skipped |
+| Repository conformance | 112/112 passed |
+| Ship-check, public API, examples, documentation | Passed; public API includes the roundtrip regression |
+| 32-bit Linux public API with u64 indexes, ReleaseSafe | 3/3 passed |
+| Final-source corpus equivalence against `2450c4f` | 38 fixtures × four option profiles; exact nodes and serialized output or matching rejection |
+| Final-source malformed-input stress | 12,000 deterministic inputs; 512 KiB arena per attempt; passed |
+| Serializer roundtrip runtime | Linux x86_64, Windows x86_64 via Wine and macOS x86_64 via Darwin compatibility runtime; explicit completion markers |
 
-The parser runtime was not changed by the three continuation commits:
+Earlier checks of this parser implementation also passed Linux x86/x86_64 runtime smoke and compile checks for aarch64 Linux/Windows/macOS, ARM Linux, RISC-V, big-endian PowerPC64 and FreeBSD. Those additional architectures were compile-only, not native runtime validation. The serializer-only follow-up was rechecked on the three runtimes above.
 
-- `048d5e6`: retain UTF-8 boundary/control regression tests after rejecting the optimization that motivated them.
-- `0850f4e`: collect complete fixtures in independent quiet windows, retry only contamination, and reject incomplete/failed child results. Collection mode is explicit in JSON and Markdown.
-- `c7a718b`: use streaming console writers so redirected stdout does not overwrite earlier stderr diagnostics.
+## Supplementary paired comparison: incomplete
 
-The earlier saved-state identity and incremental DTD fixes (`d62a706`), Darwin/32-bit portability repairs (`e92a48c`), fresh-document observability (`d332155`), and prebuilt-runner support (`82c37f5`) remain intact.
+22 complete paired cases were retained, all in the permissive DOM lane. The retained subset has successful guard evidence, positive samples and independently checked ABBA/BAAB ratios. None of those completed cases exceeded a 1.02 candidate/baseline time ratio.
 
-## Rejected performance candidates
+The larger supplementary matrix of 146 headline cases plus two DTD cases did not finish. A subsequent bounded 1,200-second attempt could not acquire another quiet window; no incomplete or contaminated batch was accepted. This subset does not prove absence of regressions across all DOM and streaming workloads. The complete stable measurements above are separate evidence. Instruction counts were not converted into elapsed throughput.
 
-- Unicode prefix-mask changes reduced retired instructions but failed elapsed acceptance. The completed 146-pair comparison included roughly 1.72x DOM time on `weekly_utf8.xml` and 1.85x streaming time on `synthetic_unicode_names.xml`; the implementation was reverted.
-- Small-document density reservation regressed instructions by more than 2% on 20 validated and eight permissive fixtures. Its correctness matrix passed, but clean elapsed improvement was not established; it was reverted.
-- Scalar start-tag offset returns reduced permissive instructions by 2.69% geometrically, but elapsed screens showed no repeatable gain on the failing character/deep-tree fixtures, wide spreads, and a noisy 2.19% median increase on `tree.xml`. Collection then stopped on contamination/quiet timeouts. This candidate was not promoted; all three source files were restored exactly.
+## Executable provenance
 
-Instruction counts are directional evidence, not elapsed speedups. No unaccepted candidate is included in the measured final runtime.
+Baseline runners remain frozen from `82c37f5652f607e1734e90f40534740af42d8c3e`. After the serializer-only repair, the final-source rebuild and measured node-only binaries have identical entry points, all allocated non-note sections, and full stripped executable bytes. Differences are non-executable metadata; original measured files retain their exact hashes.
 
-Continuous whole-profile attempts did not establish a clean continuous run. Contaminated whole runs were discarded in full, including the 22:59 attempt; the accepted data here comes only from complete independently guarded fixture windows. This distinction is not a claim that the throughput objectives were reached.
-
-## Provenance and inherited portability evidence
-
-Frozen runner revision: `82c37f5652f607e1734e90f40534740af42d8c3e`. Measurement harness revision: `c7a718b3dde8de8f28bd18276b79460807478d6a`. Later parser-source changes are tests only. The frozen native runners use ReleaseFast/native CPU settings; external C++ runners use `-O3 -DNDEBUG -march=native`.
-
-| Runner | SHA-256 |
+| Measured runner | SHA-256 |
 |---|---|
-| `pugixml_runner` | `a6e4ebcaf96aefa85871498028edb51063364fa3e8c9a6b95728ceeee353d4af` |
-| `rapidxml_runner` | `39c5c4b00d8592c371d37679b571ccc257bee0b1364e559088fa7455d8c98ecb` |
-| `zxml-bench` | `43379bad9c22d6844cebafb2f8f35431181fb755df034c1e979d8e4723a9857f` |
-| `zxml-stream-bench` | `a196b4e86cd4f49e17e7046b0c0ffc20699cd06a7c4e3946308b895ad852b0f4` |
+| `zxml-bench` | `81a7a57e4ef1a51e3b87510bbf680921b9359c90c3bddc338690aa2914379453` |
+| `zxml-stream-bench` | `f10156225327625c4024b2339def23567c10fb5ea73ecee8435fc2964acfc65c` |
 
-Accepted collection evidence: `.zig-cache/perf/finish-20260906/verified-guarded-baseline/`. Source, fixtures, runner binaries and harness hashes were checked before/after collection. All 222 row identities, 1,110 samples, medians and throughput-unit calculations were checked independently.
+## Evidence index
 
-The earlier `final-audit/` evidence records 12,000 deterministic malformed inputs, 48,000 DOM attempts and 48,000 streaming-entry-point attempts with a 512 KiB arena per attempt; 32-bit Linux u64-index public API tests passed 2/2. That audit also recorded Linux x86_64/x86 runtime smoke and Windows/macOS x86_64 compatibility-runtime smoke. This closeout did not re-establish those cross-OS completion markers. Additional aarch64 Linux/Windows/macOS, ARM, RISC-V, big-endian PowerPC64 and FreeBSD lanes were compile-only, not native runtime validation.
+Current evidence is under `.zig-cache/perf/complete-20260907/`:
 
-The initial `final-audit/cross-summary.log` is pre-fix evidence, not the final portability result. Use the later logs/artifacts and portability commit instead.
+- `stable/verified-summary.json`, `stable/results/`, `stable/stderr.log` and manifests: complete stable collection, 38 successful fixture guards, independently checked row identities, samples, medians and units.
+- `final-gates/summary.log`: complete final-source correctness matrix.
+- `serializer/after.log`, `serializer/final-checks.log` and target runtime logs: roundtrip repair and completion markers.
+- `serializer/executable-equivalence.json`: exact measured executables versus final-source rebuild.
+- `final-extra/corpus-equivalence.log`, `final-extra/bounded-stress.log`: final-source oracle and stress checks.
+- `paired/partial-summary.json`, original paired records/guard receipts, and `paired-batched-final.log`: completed subset and explicit bounded collection failure.
 
-## Evidence index and remaining work
-
-- Accepted data/provenance and guard logs: `.zig-cache/perf/finish-20260906/verified-guarded-baseline/`.
-- Completed all-index correctness matrix: `.zig-cache/perf/finish-20260906/final-gates/summary.log`.
-- Final restored-runtime ship-check: `.zig-cache/perf/finish-20260906/closeout/ship.log` and `ship-exit.txt`.
-- Console regression before/after and focused tests: `.zig-cache/perf/finish-20260906/console-order/`.
-- Rejected Unicode elapsed comparison: `.zig-cache/perf/finish-20260906/elapsed/`.
-- Rejected density and return-interface candidates: `.zig-cache/perf/finish-20260906/small-reserve/` and `tag-end-offset/`.
-
-Remaining performance work is explicit: reach both throughput objectives and pass every external-parser guardrail without changing lifecycle, corpus exclusions or thresholds. The verified failing measurements are a baseline, not completion of those objectives. No parser experiment remains in the tracked tree.
+The original absolute throughput objectives and full supplementary paired coverage remain open. No experimental parser variant is retained beyond the committed implementation. No push is authorized by this work.

@@ -10,6 +10,8 @@ Low-latency XML parsing for Zig with comptime-generated DOM/streaming types, sou
 - Comptime-generated `Document`, `RawNode`, `Node`, attribute, and streaming parser types.
 - Destructive `[]u8` parsing by default; immutable `[]const u8` parsing with `non_destructive = true`.
 - Compact default DOM nodes: `parent + subtree_end + name_or_text` (16 bytes with the default `u32` index width).
+- Node-only DOM construction: no separate open-element stack and no attribute-record array.
+- Small documents stage nodes inline and allocate only the finished node slice; larger documents retain density-based reservation and safe growth.
 - Optional last-child / previous-sibling / misc-node metadata physically disappears when disabled.
 - Attributes are discovered lazily from source and compacted once in destructive documents.
 - Text entity decoding is materialized lazily in source when it fits; immutable or expanding cases fall back to owned results.
@@ -21,11 +23,29 @@ Low-latency XML parsing for Zig with comptime-generated DOM/streaming types, sou
 
 <!-- README_AUTO_SUMMARY:START -->
 
-No passing performance snapshot is published. The current version-4 stable measurements pass data-integrity checks but fail 3 of 37 external-parser guardrails, and both headline throughput objectives remain unmet. See the [measurement and validation report](bench/VALIDATION.md) and [full results](bench/results/latest.md).
+Source: `bench/results/latest.json` (`stable` profile).
 
-Headline DOM modes are `ours-permissive` (`ParseOptions{}`) and `ours-validated` (`validate_well_formedness = true`); `stream-permissive` and `stream-validated` are the separate streaming lanes.
+Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450H` using Zig `0.16.0`.
 
+### Parse Throughput (Average Across Fixtures)
+
+```text
+ours-permissive   │████████████████████│ 3520.30 MB/s (100.00%)
+stream-permissive │███████████████████░│ 3336.91 MB/s (94.79%)
+ours-validated    │█████████░░░░░░░░░░░│ 1616.20 MB/s (45.91%)
+stream-validated  │█████████░░░░░░░░░░░│ 1595.09 MB/s (45.31%)
+rapidxml          │██████░░░░░░░░░░░░░░│ 1138.79 MB/s (32.35%)
+pugixml           │██████░░░░░░░░░░░░░░│ 1109.99 MB/s (31.53%)
+```
+
+### Stable Gate Snapshot
+
+| Profile | Passed | Rule |
+|---|---:|---|
+| `stable` | 37/37 | `ours-permissive >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
+
+A passing external-parser gate does not establish the original absolute throughput objectives; the validation report tracks both.
 
 Current code-validation and benchmark status: [rewrite validation](bench/VALIDATION.md).
 
@@ -176,7 +196,9 @@ DTD/entity expansion is disabled by default. With `expand_dtd_entities = true`, 
 
 ## Invalid XML Policy
 
-The default generated parser is permissive but bounded. Ordinary close tags match the top of a 24-entry inline open-element stack. On a mismatch it searches backward for a matching ancestor, implicitly closes intervening elements, ignores unmatched closing tags, and implicitly closes remaining elements at EOF. Deep nesting spills the parser-owned stack to heap without changing the persistent DOM layout.
+The default generated parser is permissive but bounded. The DOM follows existing node parent links rather than building a separate open-element stack. Ordinary closing tags compare directly with the current parent. Mismatches use the parent chain to recover a matching ancestor; unmatched closes are ignored and remaining elements close implicitly at EOF.
+
+The permissive DOM may reject a raw `>` inside a quoted attribute value, for example `<r value="a>b"/>`. Use `&gt;` in that value or select `validate_well_formedness = true` for the complete quoted-value grammar. This restriction is explicit; accepted fast-path tags keep the correct boundaries. No claim is made that the restricted syntax occurs in any particular percentage of XML documents.
 
 `validate_well_formedness = true` generates the validating path: malformed tag structure, invalid attribute grammar, duplicate attributes, document-level grammar violations, and invalid entity/reference forms are reported as parse errors. `validate_xml_characters = false` may be used with validation when the caller has already established whole-buffer XML character validity.
 
