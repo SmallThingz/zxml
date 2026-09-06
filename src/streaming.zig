@@ -149,7 +149,7 @@ pub fn Types(comptime options: ParseOptions) type {
         const Allocator = std.mem.Allocator;
         const validated = options.validate_well_formedness;
         const ValidationBool = if (validated) bool else void;
-        const ValidationUsize = if (validated) usize else void;
+        const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
 
         pub const Parser = struct {
@@ -168,7 +168,7 @@ pub fn Types(comptime options: ParseOptions) type {
             standalone_yes: ValidationBool = if (validated) false else {},
             doctype_value: ValidationSpan = if (validated) .{} else {},
             require_declared_entities: ValidationBool = if (validated) true else {},
-            xml_validated_offset: ValidationUsize = if (validated) 0 else {},
+            xml_validated_offset: ValidationIndex = if (validated) 0 else {},
 
             const Self = @This();
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
@@ -219,7 +219,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 if (comptime validated and options.validate_xml_characters) {
                     try document.validateXmlCharactersStreaming(input);
-                    self.xml_validated_offset = input.len;
+                    self.xml_validated_offset = @intCast(input.len);
                 }
                 try self.reserveForInput(input.len);
 
@@ -332,7 +332,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     self.require_declared_entities = state.require_declared_entities;
                     // A restored continuation may diverge immediately after the
                     // saved parse offset, so revalidate from that byte onward.
-                    self.xml_validated_offset = state.offset;
+                    self.xml_validated_offset = @intCast(@min(state.offset, common.MaxLen));
                 }
                 self.state_tracking = true;
 
@@ -389,13 +389,15 @@ pub fn Types(comptime options: ParseOptions) type {
                 var parse_input = input;
                 var trailing_partial_utf8 = false;
                 if (comptime validated) {
-                    if (self.xml_validated_offset > input.len) return error.UnexpectedEndOfData;
-                    const suffix = input[self.xml_validated_offset..];
+                    const validated_offset: usize = @intCast(self.xml_validated_offset);
+                    if (validated_offset > input.len) return error.UnexpectedEndOfData;
+                    const suffix = input[validated_offset..];
                     const valid_suffix_len = try document.xmlValidPrefixLenStreaming(suffix);
-                    self.xml_validated_offset += valid_suffix_len;
+                    const validated_end = validated_offset + valid_suffix_len;
+                    self.xml_validated_offset = @intCast(validated_end);
                     if (valid_suffix_len != suffix.len) {
                         trailing_partial_utf8 = true;
-                        parse_input = input[0..self.xml_validated_offset];
+                        parse_input = input[0..validated_end];
                     }
                 }
 
@@ -2691,9 +2693,31 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expect(!@hasField(ValidatedState, "doctype_seen"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
+    try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
     // u16 validation fields can fit entirely in existing State padding.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
+}
+
+test "validated streaming restore bounds private validation cursor" {
+    if (comptime common.MaxLen < std.math.maxInt(usize)) {
+        const opts: ParseOptions = .{ .validate_well_formedness = true };
+        const ParserType = Types(opts).Parser;
+        const Event = Types(opts).Node;
+        const Ctx = struct {
+            fn onNode(_: *@This(), _: *const Event) bool {
+                return true;
+            }
+        };
+
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var state = parser.save();
+        state.offset = common.MaxLen + 1;
+        parser.restore(state);
+        var ctx: Ctx = .{};
+        try std.testing.expectError(error.UnexpectedEndOfData, parser.parseAvailable("<r/>", &ctx, Ctx.onNode));
+    }
 }
 
 test "streaming parser self-test: order attributes and depths" {
