@@ -345,7 +345,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.restore_pending = true;
                 self.restore_stack_len = @intCast(state.stack_len);
                 self.restore_skip_stack_len = @intCast(state.skip_stack_len);
-                self.stack_generation = state.stack_generation;
+                // Restoring an older branch must not recycle a generation still
+                // held by another saved state. Give the new logical stack a fresh ID.
+                self.noteStackMutation();
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
@@ -619,14 +621,17 @@ pub fn Types(comptime options: ParseOptions) type {
                 try document.validateXmlAttributeReferencesAlloc(self.allocator, value, doctype, self.validation_flags.require_declared_entities, null);
             }
 
-            inline fn validateAttributeValueSpecials(self: *const Self, input: []const u8, value: []const u8, has_lt: bool, has_ampersand: bool) ParseError!void {
+            inline fn validateAttributeValueSpecials(self: *const Self, input: []const u8, value: []const u8, has_lt: bool, has_ampersand: bool, comptime incremental: bool) ParseError!void {
                 if (has_lt) return error.InvalidAttributeValue;
-                if (has_ampersand) try self.coldOperation(.validate_attribute_references, input, value);
-            }
-
-            inline fn validateAttributeValue(self: *const Self, input: []const u8, value: []const u8) ParseError!void {
-                const specials = scanner.bytePairPresence(value, '<', '&');
-                try self.validateAttributeValueSpecials(input, value, specials.first, specials.second);
+                if (has_ampersand) {
+                    if (comptime incremental) {
+                        // Incremental tokens never prepare the full-parse scratch
+                        // index. The persistent offset can still be zero here.
+                        try document.validateXmlAttributeReferencesAlloc(self.allocator, value, self.doctypeValue(input), self.validation_flags.require_declared_entities, null);
+                    } else {
+                        try self.coldOperation(.validate_attribute_references, input, value);
+                    }
+                }
             }
 
             inline fn validateCharacterDataSpecials(
@@ -784,7 +789,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                     if (incremental) return error.UnexpectedEndOfData;
                                     return error.ExpectedQuote;
                                 }
-                                try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand);
+                                try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand, incremental);
                                 i = scan.end + 1;
                             } else {
                                 const quote_pos = scanner.findByte(input, attr_i + 2, quote) orelse {
@@ -819,7 +824,7 @@ pub fn Types(comptime options: ParseOptions) type {
                                 if (incremental) return error.UnexpectedEndOfData;
                                 return error.ExpectedQuote;
                             }
-                            try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand);
+                            try self.validateAttributeValueSpecials(input, input[value_start..scan.end], scan.has_lt, scan.has_ampersand, incremental);
                             i = scan.end + 1;
                         } else {
                             const quote_pos = scanner.findByte(input, attr_i + 1, quote) orelse {
@@ -3938,7 +3943,8 @@ test "streaming save while restore is pending preserves logical state" {
     try std.testing.expectEqual(state.offset, pending.offset);
     try std.testing.expectEqual(state.stack_len, pending.stack_len);
     try std.testing.expectEqual(state.skip_stack_len, pending.skip_stack_len);
-    try std.testing.expectEqual(state.stack_generation, pending.stack_generation);
+    try std.testing.expect(pending.stack_generation != state.stack_generation);
+    parser.restore(pending);
 
     try std.testing.expect(try parser.parseAvailable("<r><a></a></r>", &ctx, Ctx.onNode));
     try parser.finish();
@@ -4551,4 +4557,50 @@ test "streaming validated validates DOCTYPE grammar" {
         "<!DOCTYPE r [<!ELEMENT \xC3\xA9l\xC3\xA9ment EMPTY>]><r/>",
     };
     for (valid) |source| try parser.parse(source, &ctx, Ctx.onNode);
+}
+
+test "streaming restore does not reuse generations across saved branches" {
+    inline for (.{ false, true }) |validated_mode| {
+        const T = Types(.{ .validate_well_formedness = validated_mode });
+        const Ctx = struct {
+            skip: bool,
+            fn onNode(self: *@This(), node: *const T.Node) bool {
+                return !(self.skip and node.kind == .element and std.mem.eql(u8, node.nameSlice(), "a"));
+            }
+        };
+        for ([_]bool{ false, true }) |skip| {
+            var parser = T.Parser.init(std.testing.allocator);
+            defer parser.deinit();
+            var ctx: Ctx = .{ .skip = skip };
+            const source = "<r><a></a></r>";
+            try std.testing.expect(try parser.parseAvailable(source[0..3], &ctx, Ctx.onNode));
+            const root = parser.save();
+            try std.testing.expect(try parser.parseAvailable(source[0..6], &ctx, Ctx.onNode));
+            const child = parser.save();
+            parser.restore(root);
+            try std.testing.expect(try parser.parseAvailable(source[0..3], &ctx, Ctx.onNode));
+            parser.restore(child);
+            try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+            try parser.finish();
+        }
+    }
+}
+
+test "streaming incremental DTD validation cannot reuse full-parse scratch" {
+    const T = Types(.{ .validate_well_formedness = true });
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const T.Node) bool {
+            return true;
+        }
+    };
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse("<!DOCTYPE r [<!ENTITY good 'ok'>]><r a='&good;'/>", &ctx, Ctx.onNode);
+    parser.clear();
+    try std.testing.expectError(error.InvalidAttributeValue, parser.parseAvailable(
+        "<!DOCTYPE r [<!ENTITY good '<'>]><r a='&good;'/>",
+        &ctx,
+        Ctx.onNode,
+    ));
 }
