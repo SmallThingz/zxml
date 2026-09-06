@@ -266,6 +266,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     const validated = opts.validate_well_formedness;
     const ValidationAttrs = if (validated) std.ArrayListUnmanaged(document.RawAttribute) else void;
     const ValidationSpan = if (validated) document.Span else void;
+    const OpenTagKey = if (@sizeOf(IndexInt) <= @sizeOf(u32)) [2]u32 else u64;
     const ValidationFlags = if (validated) packed struct {
         root_seen: bool = false,
         standalone_yes: bool = false,
@@ -286,7 +287,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const Self = @This();
         const RawNode = DocType.RawNode;
         const OpenElem = struct {
-            tag_key: u64 = 0,
+            tag_key: OpenTagKey = if (OpenTagKey == u64) 0 else .{ 0, 0 },
             idx: IndexInt,
         };
 
@@ -1091,7 +1092,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 @branchHint(.unlikely);
                 try self.growParseStack();
             }
-            self.parse_stack.appendAssumeCapacity(.{ .tag_key = tag_key, .idx = idx });
+            self.parse_stack.appendAssumeCapacity(.{ .tag_key = if (OpenTagKey == u64) tag_key else @bitCast(tag_key), .idx = idx });
         }
 
         inline fn popStack(noalias self: *Self) IndexInt {
@@ -1107,7 +1108,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn openElemMatchesClose(noalias self: *const Self, open: OpenElem, close_name: []const u8, close_key: u64) bool {
-            if (open.tag_key != close_key) return false;
+            const open_tag_key: u64 = if (OpenTagKey == u64) open.tag_key else @bitCast(open.tag_key);
+            if (open_tag_key != close_key) return false;
             if (close_name.len < 8) return true;
             const open_span = self.nodes.items[open.idx].name_or_text;
             if (open_span.len() != close_name.len) return false;
@@ -1348,7 +1350,8 @@ test "permissive parser erases validation-only state" {
     try std.testing.expectEqual(document.Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
     try std.testing.expect(!@hasField(PermissiveParser, "parse_stack_heap_owned"));
-    try std.testing.expectEqual(@as(usize, 16), @sizeOf(PermissiveParser.OpenElem));
+    try std.testing.expectEqual(if (@sizeOf(IndexInt) <= 4) @as(usize, 12) else 16, @sizeOf(PermissiveParser.OpenElem));
+    try std.testing.expectEqual(if (@sizeOf(IndexInt) <= 4) [2]u32 else u64, @FieldType(PermissiveParser.OpenElem, "tag_key"));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
 }
 
