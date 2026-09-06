@@ -287,9 +287,8 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const Self = @This();
         const RawNode = DocType.RawNode;
         const OpenElem = struct {
-            idx: IndexInt,
             tag_key: u64 = 0,
-            tag_len: IndexInt = 0,
+            idx: IndexInt,
         };
 
         const expand_dtd_entities = opts.expand_dtd_entities;
@@ -495,7 +494,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key, name_end - name_start);
+                    try self.pushStack(element_idx, name_scan.key);
                     return;
                 }
             } else {
@@ -510,7 +509,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key, name_end - name_start);
+                    try self.pushStack(element_idx, name_scan.key);
                     return;
                 }
             }
@@ -551,7 +550,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (comptime validated) {
                     if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                 }
-                try self.pushStack(element_idx, name_scan.key, name_end - name_start);
+                try self.pushStack(element_idx, name_scan.key);
                 return;
             }
             self.parse_attrs.items.len = 0;
@@ -587,7 +586,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                     if (comptime validated) {
                         if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
                     }
-                    try self.pushStack(element_idx, name_scan.key, name_end - name_start);
+                    try self.pushStack(element_idx, name_scan.key);
                     return;
                 }
 
@@ -1091,12 +1090,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             self.parse_stack.ensureUnusedCapacity(self.doc.allocator, 1) catch return error.OutOfMemory;
         }
 
-        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64, tag_len: usize) ParseError!void {
+        inline fn pushStack(noalias self: *Self, idx: IndexInt, tag_key: u64) ParseError!void {
             if (self.parse_stack.items.len == self.parse_stack.capacity) {
                 @branchHint(.unlikely);
                 try self.growParseStack();
             }
-            self.parse_stack.appendAssumeCapacity(.{ .idx = idx, .tag_key = tag_key, .tag_len = @intCast(tag_len) });
+            self.parse_stack.appendAssumeCapacity(.{ .tag_key = tag_key, .idx = idx });
         }
 
         inline fn popStack(noalias self: *Self) IndexInt {
@@ -1112,9 +1111,11 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn openElemMatchesClose(noalias self: *const Self, open: OpenElem, close_name: []const u8, close_key: u64) bool {
+            if (open.tag_key != close_key) return false;
+            if (close_name.len < 8) return true;
             const open_span = self.nodes.items[open.idx].name_or_text;
-            if (open.tag_len != close_name.len or open.tag_key != close_key) return false;
-            if (close_name.len <= 8) return true;
+            if (open_span.len() != close_name.len) return false;
+            if (close_name.len == 8) return true;
             return std.mem.eql(u8, open_span.slice(self.input)[8..], close_name[8..]);
         }
 
@@ -1340,6 +1341,8 @@ test "permissive parser erases validation-only state" {
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_start"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_end"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "require_declared_entities"));
+    try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
+    try std.testing.expectEqual(@as(usize, 16), @sizeOf(PermissiveParser.OpenElem));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
 }
 
@@ -1371,6 +1374,34 @@ test "validated generated DOM rejects malformed close structure" {
     try std.testing.expectError(error.InvalidClosingTagName, options.parse(std.testing.allocator, &mismatch));
     var eof = "<a>".*;
     try std.testing.expectError(error.UnexpectedEndOfData, options.parse(std.testing.allocator, &eof));
+}
+
+test "open-element key matching preserves exact name lengths" {
+    const validated: ParseOptions = .{ .validate_well_formedness = true };
+
+    var seven = "<abcdefg></abcdefg>".*;
+    var seven_doc = try validated.parse(std.testing.allocator, &seven);
+    seven_doc.deinit();
+
+    var eight = "<abcdefgh></abcdefgh>".*;
+    var eight_doc = try validated.parse(std.testing.allocator, &eight);
+    eight_doc.deinit();
+
+    var prefix_shorter = "<abcdefghX></abcdefgh>".*;
+    try std.testing.expectError(error.InvalidClosingTagName, validated.parse(std.testing.allocator, &prefix_shorter));
+
+    var prefix_longer = "<abcdefgh></abcdefghX>".*;
+    try std.testing.expectError(error.InvalidClosingTagName, validated.parse(std.testing.allocator, &prefix_longer));
+
+    var different_tail = "<abcdefghX></abcdefghY>".*;
+    try std.testing.expectError(error.InvalidClosingTagName, validated.parse(std.testing.allocator, &different_tail));
+
+    const permissive: ParseOptions = .{};
+    var recovered = "<abcdefghX><child/></abcdefgh><tail/></abcdefghX>".*;
+    var recovered_doc = try permissive.parse(std.testing.allocator, &recovered);
+    defer recovered_doc.deinit();
+    try std.testing.expectEqual(@as(usize, 4), recovered_doc.nodes.len);
+    try std.testing.expectEqual(@as(IndexInt, 1), recovered_doc.nodes[3].parent);
 }
 
 test "open-element stack spills beyond inline capacity" {
