@@ -3011,3 +3011,44 @@ test "expanding DTD text uses owned fallback without partial source decode" {
     try std.testing.expectEqualStrings("EXPANDED", value.value);
     try std.testing.expectEqualSlices(u8, before_raw, text.valueRawSlice());
 }
+
+test "XML character vector exits preserve every UTF-8 prefix boundary" {
+    var input: [256]u8 = undefined;
+    const text = "\t\né漢😀 ASCII é漢😀\r\n";
+    for (0..97) |padding| {
+        @memset(input[0..padding], 'x');
+        @memcpy(input[padding..][0..text.len], text);
+        const source = input[0 .. padding + text.len];
+        for (0..source.len + 1) |split| {
+            var expected = split;
+            while (!std.unicode.utf8ValidateSlice(source[0..expected])) : (expected -= 1) {}
+            try std.testing.expectEqual(expected, try xmlValidPrefixLen(source[0..split]));
+            try std.testing.expectEqual(expected, try xmlValidPrefixLenStreaming(source[0..split]));
+        }
+        try validateXmlCharacters(source);
+        try validateXmlCharactersStreaming(source);
+    }
+}
+
+test "XML character vector exits never skip invalid controls or encodings" {
+    const malformed = [_][]const u8{
+        "\x00",     "\x01",         "\x0b",         "\x0c",         "\x1f",         "\x80",             "\xbf",             "\xc0\x80",         "\xc1\xbf",
+        "\xc2\x7f", "\xe0\x9f\x80", "\xed\xa0\x80", "\xef\xbf\xbe", "\xef\xbf\xbf", "\xf0\x8f\xbf\xbf", "\xf4\x90\x80\x80", "\xf5\x80\x80\x80", "\xff",
+    };
+    var input: [256]u8 = undefined;
+    for (0..97) |padding| {
+        for (malformed) |invalid| {
+            for ([_][]const u8{ "", "é漢😀" }) |prefix| {
+                @memcpy(input[0..prefix.len], prefix);
+                @memset(input[prefix.len..][0..padding], 'x');
+                const offset = prefix.len + padding;
+                @memcpy(input[offset..][0..invalid.len], invalid);
+                const tail = "é ASCII 漢😀";
+                @memcpy(input[offset + invalid.len ..][0..tail.len], tail);
+                const source = input[0 .. offset + invalid.len + tail.len];
+                try std.testing.expectError(error.InvalidXmlCharacter, xmlValidPrefixLen(source));
+                try std.testing.expectError(error.InvalidXmlCharacter, xmlValidPrefixLenStreaming(source));
+            }
+        }
+    }
+}
