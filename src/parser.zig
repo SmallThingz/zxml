@@ -266,7 +266,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     const validated = opts.validate_well_formedness;
     const ValidationAttrs = if (validated) std.ArrayListUnmanaged(document.RawAttribute) else void;
     const ValidationBool = if (validated) bool else void;
-    const ValidationUsize = if (validated) usize else void;
+    const ValidationSpan = if (validated) document.Span else void;
 
     return struct {
         doc: *DocType,
@@ -278,8 +278,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         parse_attrs: ValidationAttrs = if (validated) .empty else {},
         root_seen: ValidationBool = if (validated) false else {},
         standalone_yes: ValidationBool = if (validated) false else {},
-        doctype_value_start: ValidationUsize = if (validated) 0 else {},
-        doctype_value_end: ValidationUsize = if (validated) 0 else {},
+        doctype_value: ValidationSpan = if (validated) .{} else {},
         require_declared_entities: ValidationBool = if (validated) true else {},
 
         const Self = @This();
@@ -974,8 +973,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         require_declared_entities,
                         null,
                     );
-                    self.doctype_value_start = value_start;
-                    self.doctype_value_end = value_end;
+                    self.doctype_value = .{ .start = @intCast(value_start), .end = @intCast(value_end) };
                     self.require_declared_entities = require_declared_entities;
                     self.standalone_yes = false;
                 }
@@ -1280,7 +1278,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 try document.validateDoctypeEntityConstraintsAlloc(
                     self.doc.allocator,
-                    input[self.doctype_value_start..self.doctype_value_end],
+                    self.doctype_value.slice(input),
                     self.require_declared_entities,
                     &validation,
                 );
@@ -1319,12 +1317,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         inline fn doctypeSeen(self: *const Self) bool {
             if (comptime !validated) return false;
-            return self.doctype_value_end != 0;
+            return self.doctype_value.end != 0;
         }
 
         inline fn doctypeValue(self: *const Self) ?[]const u8 {
             if (!self.doctypeSeen()) return null;
-            return self.input[self.doctype_value_start..self.doctype_value_end];
+            return self.doctype_value.slice(self.input);
         }
     };
 }
@@ -1340,8 +1338,8 @@ test "permissive parser erases validation-only state" {
     try std.testing.expect(!@hasField(PermissiveParser, "doctype_seen"));
     try std.testing.expect(!@hasField(ValidatedParser, "doctype_seen"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "standalone_yes"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_start"));
-    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_end"));
+    try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value"));
+    try std.testing.expectEqual(document.Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "require_declared_entities"));
     try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
     try std.testing.expect(!@hasField(PermissiveParser, "parse_stack_heap_owned"));
