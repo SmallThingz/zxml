@@ -275,7 +275,6 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         nodes: std.ArrayListUnmanaged(RawNode) = .empty,
         parse_stack: std.ArrayListUnmanaged(OpenElem) = .empty,
         parse_stack_inline: [InitialParseStackCapacity]OpenElem = undefined,
-        parse_stack_heap_owned: bool = false,
         parse_attrs: ValidationAttrs = if (validated) .empty else {},
         root_seen: ValidationBool = if (validated) false else {},
         doctype_seen: ValidationBool = if (validated) false else {},
@@ -1077,14 +1076,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         noinline fn growParseStack(noalias self: *Self) ParseError!void {
             @branchHint(.cold);
-            if (!self.parse_stack_heap_owned) {
+            if (self.parse_stack.capacity <= InitialParseStackCapacity) {
                 var heap = std.ArrayListUnmanaged(OpenElem).initCapacity(
                     self.doc.allocator,
                     self.parse_stack.capacity * 2,
                 ) catch return error.OutOfMemory;
                 heap.appendSliceAssumeCapacity(self.parse_stack.items);
                 self.parse_stack = heap;
-                self.parse_stack_heap_owned = true;
                 return;
             }
             self.parse_stack.ensureUnusedCapacity(self.doc.allocator, 1) catch return error.OutOfMemory;
@@ -1120,7 +1118,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         inline fn deinitParseStack(noalias self: *Self) void {
-            if (self.parse_stack_heap_owned) self.parse_stack.deinit(self.doc.allocator);
+            if (self.parse_stack.capacity > InitialParseStackCapacity) self.parse_stack.deinit(self.doc.allocator);
         }
 
         inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
@@ -1342,6 +1340,7 @@ test "permissive parser erases validation-only state" {
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "doctype_value_end"));
     try std.testing.expectEqual(void, @FieldType(PermissiveParser, "require_declared_entities"));
     try std.testing.expect(!@hasField(PermissiveParser.OpenElem, "tag_len"));
+    try std.testing.expect(!@hasField(PermissiveParser, "parse_stack_heap_owned"));
     try std.testing.expectEqual(@as(usize, 16), @sizeOf(PermissiveParser.OpenElem));
     try std.testing.expect(@sizeOf(PermissiveParser) < @sizeOf(ValidatedParser));
 }
