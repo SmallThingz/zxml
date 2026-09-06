@@ -156,13 +156,14 @@ pub fn Types(comptime options: ParseOptions) type {
             standalone_yes: bool = false,
             require_declared_entities: bool = true,
         } else void;
-        const RestoreIndex = if (validated) IndexInt else usize;
+        const StateIndex = if (@sizeOf(IndexInt) <= @sizeOf(usize)) IndexInt else usize;
+        const RestoreIndex = if (validated) StateIndex else usize;
 
         pub const Parser = struct {
             allocator: Allocator,
             stack: Stack = .empty,
             skip_stack: Stack = .empty,
-            offset: usize = 0,
+            offset: StateIndex = 0,
             needs_more: bool = false,
             state_tracking: bool = false,
             stack_generation: u64 = 0,
@@ -178,9 +179,9 @@ pub fn Types(comptime options: ParseOptions) type {
             const include_misc_nodes = options.include_misc_nodes;
 
             pub const State = struct {
-                offset: usize,
-                stack_len: usize,
-                skip_stack_len: usize,
+                offset: StateIndex,
+                stack_len: StateIndex,
+                skip_stack_len: StateIndex,
                 needs_more: bool,
                 stack_generation: u64,
                 root_seen: ValidationBool,
@@ -215,7 +216,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 try self.reserveForInput(input.len);
 
-                var i: usize = self.offset;
+                var i: usize = @intCast(self.offset);
                 while (i < input.len) {
                     if (input[i] != '<') {
                         if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
@@ -277,7 +278,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (comptime validated) {
                     if (!self.validation_flags.root_seen) return error.ExpectedDocumentElement;
                 }
-                self.offset = i;
+                self.offset = @intCast(i);
             }
 
             pub fn clear(self: *Self) void {
@@ -300,8 +301,8 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.state_tracking = true;
                 return .{
                     .offset = self.offset,
-                    .stack_len = self.stackLen(),
-                    .skip_stack_len = self.skipStackLen(),
+                    .stack_len = @intCast(self.stackLen()),
+                    .skip_stack_len = @intCast(self.skipStackLen()),
                     .needs_more = self.needs_more,
                     .stack_generation = self.stack_generation,
                     .root_seen = if (validated) self.validation_flags.root_seen else {},
@@ -324,32 +325,34 @@ pub fn Types(comptime options: ParseOptions) type {
                     self.validation_flags.require_declared_entities = state.require_declared_entities;
                     // A restored continuation may diverge immediately after the
                     // saved parse offset, so revalidate from that byte onward.
-                    self.xml_validated_offset = @intCast(@min(state.offset, common.MaxLen));
+                    self.xml_validated_offset = @intCast(state.offset);
                 }
                 self.state_tracking = true;
 
                 if (!self.restore_pending and state.stack_generation == self.stack_generation) {
                     // No stack mutation happened since this state was saved.
-                    std.debug.assert(state.stack_len == self.stack.items.len);
-                    std.debug.assert(state.skip_stack_len == self.skip_stack.items.len);
+                    std.debug.assert(state.stack_len == @as(StateIndex, @intCast(self.stack.items.len)));
+                    std.debug.assert(state.skip_stack_len == @as(StateIndex, @intCast(self.skip_stack.items.len)));
                     return;
                 }
                 if (self.restore_pending and
                     state.stack_generation == self.stack_generation and
-                    state.stack_len == @as(usize, @intCast(self.restore_stack_len)) and
-                    state.skip_stack_len == @as(usize, @intCast(self.restore_skip_stack_len)))
+                    @as(usize, @intCast(state.stack_len)) == @as(usize, @intCast(self.restore_stack_len)) and
+                    @as(usize, @intCast(state.skip_stack_len)) == @as(usize, @intCast(self.restore_skip_stack_len)))
                 {
                     return;
                 }
                 self.restore_pending = true;
-                self.restore_stack_len = @intCast(@min(state.stack_len, common.MaxLen));
-                self.restore_skip_stack_len = @intCast(@min(state.skip_stack_len, common.MaxLen));
+                self.restore_stack_len = @intCast(state.stack_len);
+                self.restore_skip_stack_len = @intCast(state.skip_stack_len);
                 self.stack_generation = state.stack_generation;
             }
 
             pub fn parseAvailable(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
-                if (self.offset > input.len) return error.UnexpectedEndOfData;
+                var offset: usize = @intCast(self.offset);
+                if (offset > input.len) return error.UnexpectedEndOfData;
+                defer self.offset = @intCast(offset);
 
                 var parse_input = input;
                 var trailing_partial_utf8 = false;
@@ -370,18 +373,18 @@ pub fn Types(comptime options: ParseOptions) type {
                 try self.reserveForInput(input.len);
                 self.needs_more = false;
 
-                while (self.offset < parse_input.len) {
+                while (offset < parse_input.len) {
                     if (self.skipStackLen() != 0) {
-                        const progress = try self.walkSkipped(parse_input, self.offset, true);
-                        self.offset = progress.next;
+                        const progress = try self.walkSkipped(parse_input, offset, true);
+                        offset = progress.next;
                         if (progress.needs_more) {
                             self.needs_more = true;
                             return false;
                         }
                         continue;
                     }
-                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[parse_input[self.offset]]) {
-                        const next = scanner.skipWhitespace(parse_input, self.offset);
+                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[parse_input[offset]]) {
+                        const next = scanner.skipWhitespace(parse_input, offset);
                         if (next >= parse_input.len) {
                             // Keep a trailing whitespace run pending: a later
                             // cumulative chunk may extend this same text node
@@ -394,20 +397,20 @@ pub fn Types(comptime options: ParseOptions) type {
                             return true;
                         }
                         if (parse_input[next] == '<') {
-                            self.offset = next;
+                            offset = next;
                             continue;
                         }
                     }
                     // Token parsers commit persistent state only after the token boundary is complete,
                     // so incremental EOF leaves nothing to roll back.
-                    const next = self.parseOne(parse_input, self.offset, ctx, callback, true) catch |err| switch (err) {
+                    const next = self.parseOne(parse_input, offset, ctx, callback, true) catch |err| switch (err) {
                         error.UnexpectedEndOfData => {
                             self.needs_more = true;
                             return false;
                         },
                         else => |e| return e,
                     };
-                    self.offset = next;
+                    offset = next;
                 }
                 if (trailing_partial_utf8) {
                     self.needs_more = true;
@@ -1359,7 +1362,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 var rebuilt = Self.init(self.allocator);
                 defer rebuilt.deinit();
                 var rebuild_ctx: RebuildCtx = .{};
-                _ = try rebuilt.parseAvailable(input[0..self.offset], &rebuild_ctx, RebuildCtx.onNode);
+                _ = try rebuilt.parseAvailable(input[0..@as(usize, @intCast(self.offset))], &rebuild_ctx, RebuildCtx.onNode);
 
                 if (rebuilt.stack.items.len != expected_total or rebuilt.skip_stack.items.len != 0) {
                     return error.InvalidClosingTagName;
@@ -2634,6 +2637,7 @@ test "permissive streaming parser erases validation-only state" {
     const ValidatedParser = Types(.{ .validate_well_formedness = true }).Parser;
     const PermissiveState = PermissiveParser.State;
     const ValidatedState = ValidatedParser.State;
+    const ExpectedStateIndex = if (@sizeOf(IndexInt) <= @sizeOf(usize)) IndexInt else usize;
 
     inline for (&.{
         "validation_flags",
@@ -2662,16 +2666,21 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
+    inline for (.{ "offset", "stack_len", "skip_stack_len" }) |field| {
+        try std.testing.expectEqual(ExpectedStateIndex, @FieldType(PermissiveState, field));
+        try std.testing.expectEqual(ExpectedStateIndex, @FieldType(ValidatedState, field));
+    }
+    try std.testing.expectEqual(ExpectedStateIndex, @FieldType(PermissiveParser, "offset"));
+    try std.testing.expectEqual(ExpectedStateIndex, @FieldType(ValidatedParser, "offset"));
     try std.testing.expectEqual(usize, @FieldType(PermissiveParser, "restore_stack_len"));
     try std.testing.expectEqual(usize, @FieldType(PermissiveParser, "restore_skip_stack_len"));
-    try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "restore_stack_len"));
-    try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "restore_skip_stack_len"));
+    try std.testing.expectEqual(ExpectedStateIndex, @FieldType(ValidatedParser, "restore_stack_len"));
+    try std.testing.expectEqual(ExpectedStateIndex, @FieldType(ValidatedParser, "restore_skip_stack_len"));
     try std.testing.expect(!@hasDecl(PermissiveParser, "Checkpoint"));
     try std.testing.expect(!@hasDecl(ValidatedParser, "Checkpoint"));
     try std.testing.expect(!@hasField(PermissiveParser, "restore_generation"));
     try std.testing.expect(!@hasField(ValidatedParser, "restore_generation"));
-    // Total parser size has no fixed ordering because validated restore lengths use IndexInt.
-    // u16 validation fields can fit entirely in existing State padding.
+    // Validation-only fields may add storage depending on the configured index width.
     try std.testing.expect(@sizeOf(PermissiveState) <= @sizeOf(ValidatedState));
 }
 
@@ -2693,7 +2702,7 @@ test "streaming incremental EOF leaves the current token uncommitted" {
         defer parser.deinit();
         var ctx: Ctx = .{};
         try std.testing.expect(!try parser.parseAvailable(partial, &ctx, Ctx.onNode));
-        try std.testing.expectEqual(@as(usize, 0), parser.offset);
+        try std.testing.expectEqual(@as(@FieldType(T.Parser, "offset"), 0), parser.offset);
         try std.testing.expectEqual(@as(usize, 0), parser.stackLen());
         try std.testing.expect(!parser.validation_flags.root_seen);
         try std.testing.expect(!parser.validation_flags.standalone_yes);
@@ -2705,53 +2714,9 @@ test "streaming incremental EOF leaves the current token uncommitted" {
     defer parser.deinit();
     var ctx: Ctx = .{};
     try std.testing.expect(!try parser.parseAvailable("<r></r", &ctx, Ctx.onNode));
-    try std.testing.expectEqual(@as(usize, 3), parser.offset);
+    try std.testing.expectEqual(@as(@FieldType(T.Parser, "offset"), 3), parser.offset);
     try std.testing.expectEqual(@as(usize, 1), parser.stackLen());
     try std.testing.expect(parser.validation_flags.root_seen);
-}
-
-test "validated streaming restore bounds private validation cursor" {
-    if (comptime common.MaxLen < std.math.maxInt(usize)) {
-        const opts: ParseOptions = .{ .validate_well_formedness = true };
-        const ParserType = Types(opts).Parser;
-        const Event = Types(opts).Node;
-        const Ctx = struct {
-            fn onNode(_: *@This(), _: *const Event) bool {
-                return true;
-            }
-        };
-
-        var parser = ParserType.init(std.testing.allocator);
-        defer parser.deinit();
-        var state = parser.save();
-        state.offset = common.MaxLen + 1;
-        parser.restore(state);
-        var ctx: Ctx = .{};
-        try std.testing.expectError(error.UnexpectedEndOfData, parser.parseAvailable("<r/>", &ctx, Ctx.onNode));
-    }
-}
-
-test "streaming restore bounds private stack lengths" {
-    if (comptime common.MaxLen < std.math.maxInt(usize)) {
-        const opts: ParseOptions = .{ .validate_well_formedness = true };
-        const ParserType = Types(opts).Parser;
-        const Event = Types(opts).Node;
-        const Ctx = struct {
-            fn onNode(_: *@This(), _: *const Event) bool {
-                return true;
-            }
-        };
-
-        var parser = ParserType.init(std.testing.allocator);
-        defer parser.deinit();
-        var state = parser.save();
-        state.stack_generation +%= 1;
-        state.stack_len = common.MaxLen + 1;
-        state.skip_stack_len = common.MaxLen + 1;
-        parser.restore(state);
-        var ctx: Ctx = .{};
-        try std.testing.expectError(error.InvalidClosingTagName, parser.parseAvailable("<r/>", &ctx, Ctx.onNode));
-    }
 }
 
 test "streaming parser self-test: order attributes and depths" {
