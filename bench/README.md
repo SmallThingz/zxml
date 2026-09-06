@@ -30,7 +30,7 @@ zig build conformance
 # direct tool invocation after setup, when needed
 zig build tools -- run-benchmarks --profile quick
 zig build tools -- run-benchmarks --profile stable
-zig build tools -- run-benchmarks --profile stable --resume
+zig-out/bin/zxml-tools run-benchmarks --profile stable --no-build --guard-fixtures
 ```
 
 `run-benchmarks` also updates:
@@ -51,10 +51,17 @@ The harness uses a system `c++` driver when available and falls back to `zig c++
 on minimal hosts. Each generated report records the kernel, architecture, CPU model,
 frequency-scaling state, advertised CPU MHz range, Zig version, and C++ driver.
 
-For noisy/shared machines, `--resume` checkpoints only fully completed stable
-fixtures in `bench/results/stable.resume.json`. Restarting the same source revision
-and benchmark environment skips those completed fixtures; the checkpoint is removed
-automatically after the complete stable gate and README publication succeed.
+On a shared Linux host, `--no-build --guard-fixtures` collects each fixture in an
+independent clean window using `host-quiet`, `guarded-run`, and CPU6 via `taskset`.
+The guard covers calibration and all five interleaved sample rounds for every
+applicable parser. Exit 75 discards that entire fixture attempt and retries it;
+other failures stop collection. Parser/fixture coverage, lifecycle, exclusions,
+and performance gates are unchanged. JSON records `guarded_fixtures: true`, and
+Markdown identifies this collection mode. This is not one continuous quiet run.
+
+Guarded collection neither reads nor writes timing checkpoints and cannot be
+combined with `--resume` or runner compilation. The older `--resume` option is
+not a contamination guard: never reuse a checkpoint from a contaminated run.
 
 Fixture setup rejects extremely opaque feeds. `synthetic_long_text.xml` remains
 a generated diagnostic-only fixture and is excluded from quick/stable profiles.

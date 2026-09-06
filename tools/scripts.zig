@@ -1030,8 +1030,9 @@ fn benchmarkFixtureSet(
     parsers: []const []const u8,
     results: *std.ArrayList(ParseResult),
     resume_context: ?BenchmarkResumeContext,
+    first_fixture_index: usize,
 ) !void {
-    for (fixtures, 0..) |fx, fixture_index| {
+    for (fixtures, first_fixture_index..) |fx, fixture_index| {
         if (resume_context != null and fixtureResultsComplete(results.items, parsers, fx)) {
             std.debug.print("resume skip: fixture={s}\n", .{fx.name});
             continue;
@@ -1084,6 +1085,105 @@ fn benchmarkFixtureSet(
             try results.append(alloc, result);
         }
         if (resume_context) |context| try writeStableResumeCheckpoint(io, alloc, context, results.items);
+    }
+}
+
+// Each child owns one complete fixture, including calibration and all parser
+// samples. Only a successful guard can transfer its rows to the parent. A busy
+// child is discarded in full; no on-disk checkpoint is read or written.
+fn guardedExitSucceeded(code: u8) !bool {
+    return switch (code) {
+        0 => true,
+        75 => false,
+        else => error.ChildProcessFailed,
+    };
+}
+
+fn validateGuardedFixtureRows(rows: []const ParseResult, parsers: []const []const u8, fixture: FixtureCase) !void {
+    var expected: usize = 0;
+    for (parsers) |parser| expected += @intFromBool(parserAppliesToFixture(parser, fixture));
+    if (rows.len != expected or !fixtureResultsComplete(rows, parsers, fixture)) return error.IncompleteGuardedFixture;
+    for (rows) |row| {
+        if (!std.mem.eql(u8, row.fixture, fixture.name) or row.is_real != fixture.is_real or
+            row.iterations == 0 or row.samples_ns.len != repeats) return error.IncompleteGuardedFixture;
+        for (row.samples_ns) |sample| if (sample == 0) return error.IncompleteGuardedFixture;
+    }
+}
+
+fn benchmarkOneFixture(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len != 3) return error.InvalidArguments;
+    const profile = try getProfile(args[0]);
+    const lane = std.meta.stringToEnum(enum { main, regression }, args[1]) orelse return error.InvalidArguments;
+    const fixtures = if (lane == .regression) &validated_regression_fixtures else profile.fixtures;
+    const parsers = if (lane == .regression) &validated_regression_parsers else &parse_parsers;
+    const index = std.fmt.parseInt(usize, args[2], 10) catch return error.InvalidArguments;
+    if (index >= fixtures.len) return error.InvalidArguments;
+    var rows = std.ArrayList(ParseResult).empty;
+    defer {
+        for (rows.items) |*row| freeParseResult(alloc, row);
+        rows.deinit(alloc);
+    }
+    try benchmarkFixtureSet(io, alloc, fixtures[index..][0..1], parsers, &rows, null, index);
+    var buffer: [4096]u8 = undefined;
+    var stdout = std.Io.File.stdout().writer(io, &buffer);
+    try stdout.interface.print("{f}\n", .{std.json.fmt(rows.items, .{})});
+    try stdout.interface.flush();
+}
+
+fn benchmarkGuardedFixtureSet(
+    io: std.Io,
+    alloc: std.mem.Allocator,
+    executable: []const u8,
+    profile: Profile,
+    regression: bool,
+    results: *std.ArrayList(ParseResult),
+) !void {
+    const fixtures = if (regression) &validated_regression_fixtures else profile.fixtures;
+    const parsers = if (regression) &validated_regression_parsers else &parse_parsers;
+    for (fixtures, 0..) |fixture, index| {
+        const index_text = try std.fmt.allocPrint(alloc, "{d}", .{index});
+        defer alloc.free(index_text);
+        var accepted = false;
+        for (0..16) |attempt| {
+            try common.runInherit(io, alloc, &.{ "host-quiet", "--wait", "--quiet-for", "2" }, REPO_ROOT);
+            const child = try std.process.run(alloc, io, .{
+                .argv = &.{ "guarded-run", "--no-wait", "--abort-on-busy", "--", "taskset", "-c", "6", executable, "_benchmark-fixture", profile.name, if (regression) "regression" else "main", index_text },
+                .cwd = .{ .path = REPO_ROOT },
+                .expand_arg0 = .expand,
+                .stdout_limit = .limited(128 * 1024),
+                .stderr_limit = .limited(2 * 1024 * 1024),
+            });
+            defer alloc.free(child.stdout);
+            defer alloc.free(child.stderr);
+            std.debug.print("{s}", .{child.stderr});
+            const success = switch (child.term) {
+                .exited => |code| try guardedExitSucceeded(code),
+                else => return error.ChildProcessFailed,
+            };
+            if (!success) {
+                std.debug.print("discarded entire fixture {s}, attempt {d}: {s}\n", .{ fixture.name, attempt + 1, child.stdout });
+                continue;
+            }
+            var decoded = try std.json.parseFromSlice([]ParseResult, alloc, child.stdout, .{});
+            defer decoded.deinit();
+            try validateGuardedFixtureRows(decoded.value, parsers, fixture);
+            const path = try std.fs.path.join(alloc, &.{ FIXTURES_DIR, fixture.name });
+            defer alloc.free(path);
+            const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+            for (decoded.value) |row| {
+                const samples = try alloc.dupe(u64, row.samples_ns);
+                var owned = finishParseBench(alloc, row.parser, fixture, stat.size, row.iterations, samples) catch |err| {
+                    alloc.free(samples);
+                    return err;
+                };
+                errdefer freeParseResult(alloc, &owned);
+                try results.append(alloc, owned);
+            }
+            std.debug.print("GUARDED_FIXTURE_OK fixture={s} rows={d}\n", .{ fixture.name, decoded.value.len });
+            accepted = true;
+            break;
+        }
+        if (!accepted) return error.ContaminatedBenchmark;
     }
 }
 
@@ -1627,6 +1727,7 @@ fn writeMarkdown(
     alloc: std.mem.Allocator,
     environment: BenchmarkEnvironment,
     profile_name: []const u8,
+    guard_fixtures: bool,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
@@ -1637,6 +1738,10 @@ fn writeMarkdown(
     const w = &out.writer;
 
     try w.print("# ZXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
+    try w.print("Collection: {s}\n\n", .{if (guard_fixtures)
+        "independently guarded fixture windows on CPU6, not one continuous quiet interval. Every retained fixture passed its complete calibration/sample guard."
+    else
+        "whole profile; external contamination guarding is controlled by the caller."});
     try writeBenchmarkEnvironmentTable(w, "##", environment);
 
     try w.writeAll("## Parse Throughput\n\n");
@@ -2037,6 +2142,7 @@ fn writeJson(
     alloc: std.mem.Allocator,
     environment: BenchmarkEnvironment,
     profile_name: []const u8,
+    guard_fixtures: bool,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
@@ -2048,8 +2154,8 @@ fn writeJson(
     const w = &out.writer;
 
     try w.print(
-        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"environment\": {f},\n  \"parse_results\": [\n",
-        .{ common.nowUnix(io), profile_name, benchmark_methodology_version, std.json.fmt(environment, .{}) },
+        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"environment\": {f},\n  \"guarded_fixtures\": {s},\n  \"parse_results\": [\n",
+        .{ common.nowUnix(io), profile_name, benchmark_methodology_version, std.json.fmt(environment, .{}), if (guard_fixtures) "true" else "false" },
     );
     for (parse_results, 0..) |r, i| {
         try w.print(
@@ -2131,11 +2237,12 @@ fn writeJson(
     return out.toOwnedSlice();
 }
 
-fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
+fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, args: []const []const u8) !void {
     var profile_name: []const u8 = "quick";
     var write_baseline = false;
     var resume_stable = false;
     var skip_build = false;
+    var guard_fixtures = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2150,11 +2257,14 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
             resume_stable = true;
         } else if (std.mem.eql(u8, arg, "--no-build")) {
             skip_build = true;
+        } else if (std.mem.eql(u8, arg, "--guard-fixtures")) {
+            guard_fixtures = true;
         } else {
             return error.InvalidArguments;
         }
     }
 
+    if (guard_fixtures and (!skip_build or resume_stable)) return error.InvalidArguments;
     const profile = try getProfile(profile_name);
     if (resume_stable and !std.mem.eql(u8, profile.name, "stable")) return error.InvalidArguments;
     const environment = try collectBenchmarkEnvironment(io, alloc);
@@ -2179,7 +2289,11 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         try loadStableResumeCheckpoint(io, alloc, source_head.?, environment, &parse_results);
         resume_context = .{ .source_head = source_head.?, .environment = &environment };
     }
-    try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results, resume_context);
+    if (guard_fixtures) {
+        try benchmarkGuardedFixtureSet(io, alloc, executable, profile, false, &parse_results);
+    } else {
+        try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results, resume_context, 0);
+    }
 
     var validated_regression_results = std.ArrayList(ParseResult).empty;
     defer {
@@ -2189,7 +2303,11 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     var validated_regression_checks: []ValidatedRegressionCheck = try alloc.alloc(ValidatedRegressionCheck, 0);
     defer alloc.free(validated_regression_checks);
     if (std.mem.eql(u8, profile.name, "stable")) {
-        try benchmarkFixtureSet(io, alloc, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null);
+        if (guard_fixtures) {
+            try benchmarkGuardedFixtureSet(io, alloc, executable, profile, true, &validated_regression_results);
+        } else {
+            try benchmarkFixtureSet(io, alloc, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null, 0);
+        }
         alloc.free(validated_regression_checks);
         validated_regression_checks = try evaluateValidatedRegressionChecks(alloc, parse_results.items, validated_regression_results.items);
     }
@@ -2199,7 +2317,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
     const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
+    const md = try writeMarkdown(io, alloc, environment, profile.name, guard_fixtures, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
     defer alloc.free(md);
     try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
 
@@ -2211,6 +2329,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8)
         alloc,
         environment,
         profile.name,
+        guard_fixtures,
         parse_results.items,
         gate_rows,
         stream_comparison_rows,
@@ -2546,7 +2665,7 @@ fn usage() void {
         \\usage:
         \\  zxml-tools setup-parsers
         \\  zxml-tools setup-fixtures [--refresh]
-        \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--write-baseline]
+        \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--write-baseline] [--no-build] [--guard-fixtures]
         \\  zxml-tools compare-worktrees <base> <candidate> [--profile smoke|quick|stable] [--repeats N] [--core-a N] [--core-b N] [--seed N] [--out path]
         \\  zxml-tools run-conformance [--suite path]...
         \\  zxml-tools docs-check
@@ -2593,7 +2712,12 @@ pub fn main(init: std.process.Init) !void {
     }
 
     if (std.mem.eql(u8, cmd, "run-benchmarks")) {
-        try runBenchmarks(init.io, alloc, args.items[2..]);
+        try runBenchmarks(init.io, alloc, args.items[0], args.items[2..]);
+        return;
+    }
+
+    if (std.mem.eql(u8, cmd, "_benchmark-fixture")) {
+        try benchmarkOneFixture(init.io, alloc, args.items[2..]);
         return;
     }
 
@@ -2680,4 +2804,37 @@ test "documented command validator accepts build and tool commands" {
         error.DocumentationCheckFailed,
         validateDocumentedCommands(source, "README.md", "`zig build missing-step`"),
     );
+}
+
+test "fixture guards reject failed children and retry only contamination" {
+    try std.testing.expect(try guardedExitSucceeded(0));
+    try std.testing.expect(!try guardedExitSucceeded(75));
+    try std.testing.expectError(error.ChildProcessFailed, guardedExitSucceeded(1));
+    try std.testing.expectError(error.ChildProcessFailed, guardedExitSucceeded(255));
+}
+
+test "guarded fixture transfer requires complete positive samples" {
+    const fixture: FixtureCase = .{ .name = "case.xml", .iterations = 1, .is_real = true };
+    const parsers = &[_][]const u8{"ours-permissive"};
+    var samples = [_]u64{ 10, 11, 12, 13, 14 };
+    var row: ParseResult = .{ .parser = parsers[0], .fixture = fixture.name, .is_real = true, .iterations = 1, .samples_ns = &samples, .median_ns = 12, .throughput_mb_s = 1 };
+    try validateGuardedFixtureRows(&.{row}, parsers, fixture);
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{}, parsers, fixture));
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{ row, row }, parsers, fixture));
+    row.iterations = 0;
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+    row.iterations = 1;
+    row.samples_ns = samples[0..4];
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+    row.samples_ns = &samples;
+    samples[0] = 0;
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+}
+
+test "guarded fixture collection cannot build or resume timing checkpoints" {
+    const io = std.testing.io;
+    const alloc = std.testing.allocator;
+    try std.testing.expectError(error.InvalidArguments, runBenchmarks(io, alloc, "unused", &.{"--guard-fixtures"}));
+    try std.testing.expectError(error.InvalidArguments, runBenchmarks(io, alloc, "unused", &.{ "--guard-fixtures", "--no-build", "--resume" }));
+    try std.testing.expectError(error.InvalidArguments, benchmarkOneFixture(io, alloc, &.{ "stable", "main", "999" }));
 }
