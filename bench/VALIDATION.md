@@ -4,22 +4,22 @@ Compiler: Zig 0.16.0. Published benchmark data: `bench/results/latest.{json,md}`
 
 ## Stable throughput
 
-Methodology v5 reports **MiB/s** (`bytes / 1,048,576 / seconds`). The accepted stable run used `--guard-fixtures`; every fixture was measured in its own quiet CPU6 window and any contaminated fixture attempt was discarded in full. All 37 headline fixtures and both validated-only pathology fixtures completed, and the benchmark command exited 0.
+Methodology v6 reports **MiB/s** (`bytes / 1,048,576 / seconds`) and separates high-amplification synthetic fast-path workloads from the headline corpus. The accepted stable run used `--guard-fixtures`; every fixture was measured in its own quiet CPU6 window and any contaminated fixture attempt was discarded in full. All **24 headline fixtures**, **13 synthetic-regression fixtures**, and both validated-only pathology fixtures completed, and the benchmark command exited 0.
 
 | Parser | Fixtures | Mean MiB/s | Mean GiB/s | Target | Result |
 |---|---:|---:|---:|---:|---|
-| DOM permissive | 37 | **4963.01** | **4.847** | >5 GiB/s | **FAIL** |
-| DOM validated | 36 | **3434.82** | **3.354** | >3 GiB/s | **PASS** |
-| Streaming permissive | 37 | **10244.76** | **10.005** | — | **PASS** |
-| Streaming validated | 36 | **8495.97** | **8.297** | — | **PASS** |
-| pugixml | 37 | 1020.56 | 0.997 | — | — |
-| rapidxml | 37 | 1044.55 | 1.020 | — | — |
+| DOM permissive | 24 | **3799.40** | **3.710** | >5 GiB/s | **FAIL** |
+| DOM validated | 23 | **2037.12** | **1.989** | >3 GiB/s | **FAIL** |
+| Streaming permissive | 24 | **4692.70** | **4.583** | — | — |
+| Streaming validated | 23 | **2751.82** | **2.687** | — | — |
+| pugixml | 24 | 1312.83 | 1.282 | — | — |
+| rapidxml | 24 | 1401.49 | 1.369 | — | — |
 
-The external permissive gate passes **37/37** (`ours-permissive >= max(pugixml, rapidxml)`), with the narrowest margin **1.433x** on `tree.xml`.
+The headline external permissive gate passes **24/24** (`ours-permissive >= max(pugixml, rapidxml)`). The separate synthetic-regression gate passes **13/13**. Those 13 fixtures remain mandatory regression coverage but do not contribute to headline arithmetic means.
 
-Streaming is now substantially faster than DOM on the same stable corpus. Full-buffer streaming uses repeat-document event emission, bulk permissive start-tag scanning, SIMD text scanning, common validated-attribute scanning, and reusable-parser setup reductions. Incremental `parseAvailable`, save/restore, and incomplete-token semantics remain on the transactional parser path. A 74-case corpus oracle (37 fixtures × permissive/validated) matched the previous streaming event/error fingerprints exactly.
+Streaming remains faster than DOM on the 24-fixture headline corpus. Full-buffer streaming uses repeat-document event emission, bulk permissive start-tag scanning, SIMD text scanning, common validated-attribute scanning, and reusable-parser setup reductions. Incremental `parseAvailable`, save/restore, and incomplete-token semantics remain on the transactional parser path. The earlier 74-case corpus oracle (37 fixtures × permissive/validated) matched the previous streaming event/error fingerprints exactly; the 13 moved fixtures remain exercised in the synthetic-regression lane.
 
-DOM permissive remains **0.153 GiB/s (3.1%)** below the >5 GiB/s objective. The final exact-repeat optimization replaces short-branch `std.mem.eql` periodicity checks with a wide exact shifted-equality loop. It checks every byte and reduced full-corpus retired instructions without changing accepted syntax.
+After removing the 13 high-amplification synthetic fixtures from the headline mean, DOM permissive is **3.710 GiB/s** and DOM validated is **1.989 GiB/s**. Both original absolute DOM targets therefore fail on the stricter 24-fixture headline corpus. The final exact-repeat optimization replaces short-branch `std.mem.eql` periodicity checks with a wide exact shifted-equality loop. It checks every byte and reduced full-corpus retired instructions without changing accepted syntax.
 
 ## Validated pathology gate
 
@@ -27,8 +27,8 @@ The threshold remains 1.25x. `synthetic_entities_reference.xml` is deliberately 
 
 | Parser | Pathology/reference | Required | Result |
 |---|---:|---:|---|
-| DOM validated | **2.890x** | >=1.25x | PASS |
-| Streaming validated | **2.827x** | >=1.25x | PASS |
+| DOM validated | **3.070x** | >=1.25x | PASS |
+| Streaming validated | **2.923x** | >=1.25x | PASS |
 
 ## Correctness
 

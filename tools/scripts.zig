@@ -43,7 +43,7 @@ const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
 // Fresh generated DOM construction and destruction are included in every sample.
-const benchmark_methodology_version: usize = 5;
+const benchmark_methodology_version: usize = 6;
 const interleaved_build_seed: u64 = 23_063;
 
 const documentation_files = [_][]const u8{
@@ -194,28 +194,33 @@ const stable_fixtures = [_]FixtureCase{
     .{ .name = "xgconsole.xml", .iterations = 320, .is_real = true },
     .{ .name = "weekly_utf8.xml", .iterations = 220, .is_real = true },
     .{ .name = "pugixml_large.xml", .iterations = 40, .is_real = true },
-    .{ .name = "synthetic_flat_attrs.xml", .iterations = 280, .is_real = false },
     .{ .name = "synthetic_deep_tree.xml", .iterations = 320, .is_real = false },
-    .{ .name = "synthetic_entities.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_cdata_mix.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_wide_siblings.xml", .iterations = 260, .is_real = false },
-    .{ .name = "synthetic_namespace_mix.xml", .iterations = 220, .is_real = false },
-    .{ .name = "synthetic_long_names.xml", .iterations = 220, .is_real = false },
-    .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 220, .is_real = false },
     .{ .name = "synthetic_mixed_content.xml", .iterations = 220, .is_real = false },
     .{ .name = "synthetic_small_records.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_tiny_empty.xml", .iterations = 360, .is_real = false },
     .{ .name = "synthetic_tiny_text.xml", .iterations = 340, .is_real = false },
+    .{ .name = "synthetic_pretty_indented.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_crlf_pretty.xml", .iterations = 200, .is_real = false },
+};
+
+// High-amplification synthetic workloads remain mandatory regression coverage,
+// but do not contribute to headline means or headline external-parser gates.
+const synthetic_regression_fixtures = [_]FixtureCase{
+    .{ .name = "synthetic_token_whitespace_mix.xml", .iterations = 200, .is_real = false },
+    .{ .name = "synthetic_attr_count_mix.xml", .iterations = 160, .is_real = false },
     .{ .name = "synthetic_one_attr.xml", .iterations = 300, .is_real = false },
     .{ .name = "synthetic_two_attr.xml", .iterations = 280, .is_real = false },
     .{ .name = "synthetic_attrs4.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_attrs8.xml", .iterations = 200, .is_real = false },
     .{ .name = "synthetic_single_quotes.xml", .iterations = 240, .is_real = false },
     .{ .name = "synthetic_unicode_names.xml", .iterations = 180, .is_real = false },
-    .{ .name = "synthetic_pretty_indented.xml", .iterations = 200, .is_real = false },
-    .{ .name = "synthetic_crlf_pretty.xml", .iterations = 200, .is_real = false },
-    .{ .name = "synthetic_token_whitespace_mix.xml", .iterations = 200, .is_real = false },
-    .{ .name = "synthetic_attr_count_mix.xml", .iterations = 160, .is_real = false },
+    .{ .name = "synthetic_self_closing_swarm.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_long_names.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_namespace_mix.xml", .iterations = 220, .is_real = false },
+    .{ .name = "synthetic_entities.xml", .iterations = 240, .is_real = false },
+    .{ .name = "synthetic_flat_attrs.xml", .iterations = 280, .is_real = false },
 };
 
 // Pathological workloads do not belong in headline averages or external gates.
@@ -1217,9 +1222,13 @@ fn validateGuardedFixtureRows(rows: []const ParseResult, protocol: BenchmarkProt
 fn benchmarkOneFixture(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len != 3) return error.InvalidArguments;
     const profile = try getProfile(args[0]);
-    const lane = std.meta.stringToEnum(enum { main, regression }, args[1]) orelse return error.InvalidArguments;
-    const fixtures = if (lane == .regression) &validated_regression_fixtures else profile.fixtures;
-    const parsers = if (lane == .regression) &validated_regression_parsers else &parse_parsers;
+    const lane = std.meta.stringToEnum(enum { main, synthetic_regression, validated_regression }, args[1]) orelse return error.InvalidArguments;
+    const fixtures = switch (lane) {
+        .main => profile.fixtures,
+        .synthetic_regression => &synthetic_regression_fixtures,
+        .validated_regression => &validated_regression_fixtures,
+    };
+    const parsers = if (lane == .validated_regression) &validated_regression_parsers else &parse_parsers;
     const index = std.fmt.parseInt(usize, args[2], 10) catch return error.InvalidArguments;
     if (index >= fixtures.len) return error.InvalidArguments;
     var rows = std.ArrayList(ParseResult).empty;
@@ -1234,16 +1243,22 @@ fn benchmarkOneFixture(io: std.Io, alloc: std.mem.Allocator, args: []const []con
     try stdout.interface.flush();
 }
 
+const BenchmarkLane = enum { main, synthetic_regression, validated_regression };
+
 fn benchmarkGuardedFixtureSet(
     io: std.Io,
     alloc: std.mem.Allocator,
     executable: []const u8,
     profile: Profile,
-    regression: bool,
+    lane: BenchmarkLane,
     results: *std.ArrayList(ParseResult),
 ) !void {
-    const fixtures = if (regression) &validated_regression_fixtures else profile.fixtures;
-    const parsers = if (regression) &validated_regression_parsers else &parse_parsers;
+    const fixtures = switch (lane) {
+        .main => profile.fixtures,
+        .synthetic_regression => &synthetic_regression_fixtures,
+        .validated_regression => &validated_regression_fixtures,
+    };
+    const parsers = if (lane == .validated_regression) &validated_regression_parsers else &parse_parsers;
     for (fixtures, 0..) |fixture, index| {
         const index_text = try std.fmt.allocPrint(alloc, "{d}", .{index});
         defer alloc.free(index_text);
@@ -1251,7 +1266,7 @@ fn benchmarkGuardedFixtureSet(
         for (0..16) |attempt| {
             try common.runInherit(io, alloc, &.{ "host-quiet", "--wait", "--quiet-for", "2" }, REPO_ROOT);
             const child = try std.process.run(alloc, io, .{
-                .argv = &.{ "guarded-run", "--no-wait", "--abort-on-busy", "--", "taskset", "-c", "6", executable, "_benchmark-fixture", profile.name, if (regression) "regression" else "main", index_text },
+                .argv = &.{ "guarded-run", "--no-wait", "--abort-on-busy", "--", "taskset", "-c", "6", executable, "_benchmark-fixture", profile.name, @tagName(lane), index_text },
                 .cwd = .{ .path = REPO_ROOT },
                 .expand_arg0 = .expand,
                 .stdout_limit = .limited(128 * 1024),
@@ -1705,6 +1720,8 @@ fn renderBenchReadmeSnapshot(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    synthetic_regression_results: []const ParseResult,
+    synthetic_regression_gates: []const GateRow,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
     errdefer out.deinit();
@@ -1715,6 +1732,13 @@ fn renderBenchReadmeSnapshot(
     try writeBenchmarkEnvironmentTable(w, "###", environment);
     try w.writeAll("### Parse Throughput Comparison (MiB/s)\n\n");
     try writeFullParseThroughputTable(w, alloc, parse_results);
+    if (synthetic_regression_results.len != 0) {
+        try w.writeAll("\n### Synthetic Regression Fixtures (Excluded From Headline Means)\n\n");
+        try writeFullParseThroughputTable(w, alloc, synthetic_regression_results);
+        var synthetic_passed: usize = 0;
+        for (synthetic_regression_gates) |g| synthetic_passed += @intFromBool(g.pass);
+        try w.print("\nSynthetic regression gate: **{d}/{d} PASS, {d} FAIL**.\n", .{ synthetic_passed, synthetic_regression_gates.len, synthetic_regression_gates.len - synthetic_passed });
+    }
     try w.writeAll("\n### External Parser Gates\n\n");
     try w.writeAll("| Fixture | ours-permissive | best external | ours/best-ext | Result |\n");
     try w.writeAll("|---|---:|---|---:|---|\n");
@@ -1766,12 +1790,14 @@ fn updateBenchmarkReadmes(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    synthetic_regression_results: []const ParseResult,
+    synthetic_regression_gates: []const GateRow,
 ) !void {
     const root_summary = try renderReadmeAutoSummary(alloc, environment, profile_name, parse_results, gate_rows, stream_comparison_rows);
     defer alloc.free(root_summary);
     try updateFileSection(io, alloc, "README.md", ReadmeSummaryStartMarker, ReadmeSummaryEndMarker, root_summary);
 
-    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, environment, profile_name, parse_results, gate_rows, stream_comparison_rows);
+    const bench_snapshot = try renderBenchReadmeSnapshot(alloc, environment, profile_name, parse_results, gate_rows, stream_comparison_rows, synthetic_regression_results, synthetic_regression_gates);
     defer alloc.free(bench_snapshot);
     try updateFileSection(io, alloc, "bench/README.md", BenchReadmeSnapshotStartMarker, BenchReadmeSnapshotEndMarker, bench_snapshot);
 }
@@ -1825,6 +1851,8 @@ fn writeMarkdown(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    synthetic_regression_results: []const ParseResult,
+    synthetic_regression_gates: []const GateRow,
     validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -1845,6 +1873,14 @@ fn writeMarkdown(
     for (parse_results) |r| {
         const median_ms = @as(f64, @floatFromInt(r.median_ns)) / 1_000_000.0;
         try w.print("| {s} | {s} | {d:.2} | {d:.2} | {d} |\n", .{ r.fixture, r.parser, r.throughput_mib_s, median_ms, r.iterations });
+    }
+
+    if (synthetic_regression_results.len != 0) {
+        try w.writeAll("\n## Synthetic Regression Fixtures\n\nThese fixtures are mandatory regression coverage but are excluded from headline averages and headline external gates.\n\n");
+        try writeFullParseThroughputTable(w, alloc, synthetic_regression_results);
+        var synthetic_passed: usize = 0;
+        for (synthetic_regression_gates) |g| synthetic_passed += @intFromBool(g.pass);
+        try w.print("\nSynthetic regression gate: {d}/{d} PASS, {d} FAIL.\n", .{ synthetic_passed, synthetic_regression_gates.len, synthetic_regression_gates.len - synthetic_passed });
     }
 
     if (gate_rows.len != 0) {
@@ -1920,6 +1956,8 @@ fn writeTerminalReport(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    synthetic_regression_results: []const ParseResult,
+    synthetic_regression_gates: []const GateRow,
     validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
     var out: std.Io.Writer.Allocating = .init(alloc);
@@ -2187,6 +2225,12 @@ fn writeTerminalReport(
         try writeTableBorder(w, &widths);
     }
 
+    if (synthetic_regression_results.len != 0) {
+        var synthetic_passed: usize = 0;
+        for (synthetic_regression_gates) |g| synthetic_passed += @intFromBool(g.pass);
+        try w.print("\nSynthetic Regression Checks: {d}/{d} passed ({d} fixtures; excluded from headline means)\n", .{ synthetic_passed, synthetic_regression_gates.len, synthetic_regression_fixtures.len });
+    }
+
     if (validated_regression_checks.len != 0) {
         const passed = validatedRegressionPassCount(validated_regression_checks);
         try w.print("\nValidated Pathology Regression Checks: {d}/{d} passed\n", .{ passed, validated_regression_checks.len });
@@ -2242,6 +2286,8 @@ fn writeJson(
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
     stream_comparison_rows: []const StreamComparisonRow,
+    synthetic_regression_results: []const ParseResult,
+    synthetic_regression_gates: []const GateRow,
     validated_regression_results: []const ParseResult,
     validated_regression_checks: []const ValidatedRegressionCheck,
 ) ![]u8 {
@@ -2297,6 +2343,25 @@ fn writeJson(
                 g.validated_ratio,
                 if (i + 1 == stream_comparison_rows.len) "" else ",",
             },
+        );
+    }
+    try w.writeAll("  ],\n  \"synthetic_regression_results\": [\n");
+    for (synthetic_regression_results, 0..) |r, i| {
+        try w.print(
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mib_s\":{d:.6},\"samples_ns\":[",
+            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mib_s },
+        );
+        for (r.samples_ns, 0..) |sample, sample_index| {
+            if (sample_index != 0) try w.writeByte(',');
+            try w.print("{d}", .{sample});
+        }
+        try w.print("]}}{s}\n", .{if (i + 1 == synthetic_regression_results.len) "" else ","});
+    }
+    try w.writeAll("  ],\n  \"synthetic_regression_gates\": [\n");
+    for (synthetic_regression_gates, 0..) |g, i| {
+        try w.print(
+            "    {{\"fixture\":\"{s}\",\"ours_permissive_mib_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mib_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            .{ g.fixture, g.ours_permissive_mib_s, g.best_external_parser, g.best_external_mib_s, g.external_ratio, if (g.pass) "true" else "false", if (i + 1 == synthetic_regression_gates.len) "" else "," },
         );
     }
     try w.writeAll("  ],\n  \"validated_regression_results\": [\n");
@@ -2386,9 +2451,27 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         resume_context = .{ .source_head = source_head.?, .environment = &environment };
     }
     if (guard_fixtures) {
-        try benchmarkGuardedFixtureSet(io, alloc, executable, profile, false, &parse_results);
+        try benchmarkGuardedFixtureSet(io, alloc, executable, profile, .main, &parse_results);
     } else {
         try benchmarkFixtureSet(io, alloc, profile.protocol, profile.fixtures, &parse_parsers, &parse_results, resume_context, 0);
+    }
+
+    var synthetic_regression_results = std.ArrayList(ParseResult).empty;
+    defer {
+        for (synthetic_regression_results.items) |*r| freeParseResult(alloc, r);
+        synthetic_regression_results.deinit(alloc);
+    }
+    var synthetic_regression_gates: []GateRow = try alloc.alloc(GateRow, 0);
+    defer freeGateRows(alloc, synthetic_regression_gates);
+    if (std.mem.eql(u8, profile.name, "stable") or std.mem.eql(u8, profile.name, "full")) {
+        if (guard_fixtures) {
+            try benchmarkGuardedFixtureSet(io, alloc, executable, profile, .synthetic_regression, &synthetic_regression_results);
+        } else {
+            try benchmarkFixtureSet(io, alloc, profile.protocol, &synthetic_regression_fixtures, &parse_parsers, &synthetic_regression_results, null, 0);
+        }
+        alloc.free(synthetic_regression_gates);
+        const synthetic_profile = Profile{ .name = "synthetic-regression", .fixtures = &synthetic_regression_fixtures, .protocol = profile.protocol };
+        synthetic_regression_gates = try evaluateGateRows(alloc, synthetic_profile, synthetic_regression_results.items);
     }
 
     var validated_regression_results = std.ArrayList(ParseResult).empty;
@@ -2400,7 +2483,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     defer alloc.free(validated_regression_checks);
     if (std.mem.eql(u8, profile.name, "stable") or std.mem.eql(u8, profile.name, "full")) {
         if (guard_fixtures) {
-            try benchmarkGuardedFixtureSet(io, alloc, executable, profile, true, &validated_regression_results);
+            try benchmarkGuardedFixtureSet(io, alloc, executable, profile, .validated_regression, &validated_regression_results);
         } else {
             try benchmarkFixtureSet(io, alloc, profile.protocol, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null, 0);
         }
@@ -2414,13 +2497,13 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
     const result_stem = if (std.mem.eql(u8, profile.name, "full")) "full" else "latest";
-    const md = try writeMarkdown(io, alloc, environment, profile.name, profile.protocol, guard_fixtures, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
+    const md = try writeMarkdown(io, alloc, environment, profile.name, profile.protocol, guard_fixtures, parse_results.items, gate_rows, stream_comparison_rows, synthetic_regression_results.items, synthetic_regression_gates, validated_regression_checks);
     defer alloc.free(md);
     const md_path = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/{s}.md", .{result_stem});
     defer alloc.free(md_path);
     try common.writeFile(io, md_path, md);
 
-    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
+    const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, synthetic_regression_results.items, synthetic_regression_gates, validated_regression_checks);
     defer alloc.free(terminal);
 
     const json = try writeJson(
@@ -2433,6 +2516,8 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         parse_results.items,
         gate_rows,
         stream_comparison_rows,
+        synthetic_regression_results.items,
+        synthetic_regression_gates,
         validated_regression_results.items,
         validated_regression_checks,
     );
@@ -2460,6 +2545,12 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
                 );
             }
         }
+        for (synthetic_regression_gates) |g| {
+            if (!g.pass) {
+                failed = true;
+                std.debug.print("synthetic regression gate fail: {s} ratio={d:.3}\n", .{ g.fixture, g.external_ratio });
+            }
+        }
         for (validated_regression_checks) |check| {
             if (!check.pass) {
                 failed = true;
@@ -2477,10 +2568,15 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         for (gate_rows) |g| passed += @intFromBool(g.pass);
         var regression_passed: usize = 0;
         for (validated_regression_checks) |check| regression_passed += @intFromBool(check.pass);
-        std.debug.print("Benchmark Result: external {d}/{d} PASS, {d} FAIL; validated regression {d}/{d} PASS, {d} FAIL\n", .{
+        var synthetic_passed: usize = 0;
+        for (synthetic_regression_gates) |g| synthetic_passed += @intFromBool(g.pass);
+        std.debug.print("Benchmark Result: headline external {d}/{d} PASS, {d} FAIL; synthetic regression {d}/{d} PASS, {d} FAIL; validated pathology {d}/{d} PASS, {d} FAIL\n", .{
             passed,
             gate_rows.len,
             gate_rows.len - passed,
+            synthetic_passed,
+            synthetic_regression_gates.len,
+            synthetic_regression_gates.len - synthetic_passed,
             regression_passed,
             validated_regression_checks.len,
             validated_regression_checks.len - regression_passed,
@@ -2498,7 +2594,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     // are useful diagnostics even for a failed run. Publish only after every
     // stable gate has succeeded.
     if (std.mem.eql(u8, profile.name, "stable") and !failed) {
-        try updateBenchmarkReadmes(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
+        try updateBenchmarkReadmes(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows, synthetic_regression_results.items, synthetic_regression_gates);
         if (resume_stable and common.fileExists(io, STABLE_RESUME_PATH)) {
             try std.Io.Dir.cwd().deleteFile(io, STABLE_RESUME_PATH);
         }
@@ -2913,11 +3009,30 @@ test "doctype entity pathology uses a non-repeating validated-only reference" {
     for (validated_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "validated") != null);
 }
 
-test "unicode text throughput fixture stays out while unicode names remain" {
-    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures, .protocol = full_protocol }, Profile{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol } }) |profile| {
-        try std.testing.expect(!profileHasFixture(profile, "synthetic_unicode_text.xml"));
+test "headline and synthetic regression fixture sets are disjoint and complete" {
+    try std.testing.expectEqual(@as(usize, 24), stable_fixtures.len);
+    try std.testing.expectEqual(@as(usize, 13), synthetic_regression_fixtures.len);
+    for (synthetic_regression_fixtures) |special| {
+        try std.testing.expect(!profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol }, special.name));
     }
-    try std.testing.expect(profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol }, "synthetic_unicode_names.xml"));
+    inline for (.{
+        "synthetic_token_whitespace_mix.xml",
+        "synthetic_attr_count_mix.xml",
+        "synthetic_one_attr.xml",
+        "synthetic_two_attr.xml",
+        "synthetic_attrs4.xml",
+        "synthetic_attrs8.xml",
+        "synthetic_single_quotes.xml",
+        "synthetic_unicode_names.xml",
+        "synthetic_self_closing_swarm.xml",
+        "synthetic_long_names.xml",
+        "synthetic_namespace_mix.xml",
+        "synthetic_entities.xml",
+        "synthetic_flat_attrs.xml",
+    }) |name| {
+        try std.testing.expect(profileHasFixture(.{ .name = "synthetic-regression", .fixtures = &synthetic_regression_fixtures, .protocol = stable_protocol }, name));
+    }
+    try std.testing.expect(!profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol }, "synthetic_unicode_text.xml"));
 }
 
 test "documented command validator accepts build and tool commands" {

@@ -88,19 +88,19 @@ Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-stream-permissive │████████████████████│ 10244.76 MiB/s (100.00%)
-stream-validated  │█████████████████░░░│ 8495.97 MiB/s (82.93%)
-ours-permissive   │██████████░░░░░░░░░░│ 4963.01 MiB/s (48.44%)
-ours-validated    │███████░░░░░░░░░░░░░│ 3434.82 MiB/s (33.53%)
-rapidxml          │██░░░░░░░░░░░░░░░░░░│ 1044.55 MiB/s (10.20%)
-pugixml           │██░░░░░░░░░░░░░░░░░░│ 1020.56 MiB/s (9.96%)
+stream-permissive │████████████████████│ 4692.70 MiB/s (100.00%)
+ours-permissive   │████████████████░░░░│ 3799.40 MiB/s (80.96%)
+stream-validated  │████████████░░░░░░░░│ 2751.82 MiB/s (58.64%)
+ours-validated    │█████████░░░░░░░░░░░│ 2037.12 MiB/s (43.41%)
+rapidxml          │██████░░░░░░░░░░░░░░│ 1401.49 MiB/s (29.87%)
+pugixml           │██████░░░░░░░░░░░░░░│ 1312.83 MiB/s (27.98%)
 ```
 
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
 |---|---:|---|
-| `stable` | 37/37 | `ours-permissive >= max(pugixml, rapidxml)` |
+| `stable` | 24/24 | `ours-permissive >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 The full per-fixture table, methodology, and benchmark commands are in [`bench/README.md`](./bench/README.md).
