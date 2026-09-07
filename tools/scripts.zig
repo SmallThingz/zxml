@@ -43,7 +43,7 @@ const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
 // Fresh generated DOM construction and destruction are included in every sample.
-const benchmark_methodology_version: usize = 4;
+const benchmark_methodology_version: usize = 5;
 const interleaved_build_seed: u64 = 23_063;
 
 const documentation_files = [_][]const u8{
@@ -126,7 +126,7 @@ const BenchmarkResumeRow = struct {
     iterations: usize,
     samples_ns: []const u64,
     median_ns: u64,
-    throughput_mb_s: f64,
+    throughput_mib_s: f64,
 };
 
 const BenchmarkResumeState = struct {
@@ -235,17 +235,17 @@ const ParseResult = struct {
     /// spread without rerunning the benchmark.
     samples_ns: []u64,
     median_ns: u64,
-    throughput_mb_s: f64,
+    throughput_mib_s: f64,
 };
 
 const GateRow = struct {
     fixture: []const u8,
     is_real: bool,
-    ours_permissive_mb_s: f64,
-    pugixml_mb_s: f64,
-    rapidxml_mb_s: f64,
+    ours_permissive_mib_s: f64,
+    pugixml_mib_s: f64,
+    rapidxml_mib_s: f64,
     best_external_parser: []const u8,
-    best_external_mb_s: f64,
+    best_external_mib_s: f64,
     /// Ratio against the faster external DOM parser for this fixture.
     external_ratio: f64,
     pass: bool,
@@ -254,11 +254,11 @@ const GateRow = struct {
 const StreamComparisonRow = struct {
     fixture: []const u8,
     is_real: bool,
-    dom_permissive_mb_s: f64,
-    stream_permissive_mb_s: f64,
+    dom_permissive_mib_s: f64,
+    stream_permissive_mib_s: f64,
     permissive_ratio: f64,
-    dom_validated_mb_s: f64,
-    stream_validated_mb_s: f64,
+    dom_validated_mib_s: f64,
+    stream_validated_mib_s: f64,
     validated_ratio: f64,
 };
 
@@ -266,8 +266,8 @@ const ValidatedRegressionCheck = struct {
     parser: []const u8,
     fixture: []const u8,
     reference_fixture: []const u8,
-    throughput_mb_s: f64,
-    reference_mb_s: f64,
+    throughput_mib_s: f64,
+    reference_mib_s: f64,
     reference_ratio: f64,
     pass: bool,
 };
@@ -934,6 +934,18 @@ fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixt
     return common.parseExactU64(out);
 }
 
+fn throughputMiBPerSecond(bytes: u64, iterations: usize, elapsed_ns: u64) f64 {
+    if (elapsed_ns == 0) return 0.0;
+    const bytes_total = @as(f64, @floatFromInt(bytes)) * @as(f64, @floatFromInt(iterations));
+    return (bytes_total / (1024.0 * 1024.0)) / (@as(f64, @floatFromInt(elapsed_ns)) / 1_000_000_000.0);
+}
+
+test "benchmark throughput uses binary mebibytes" {
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), throughputMiBPerSecond(1024 * 1024, 1, 1_000_000_000), 0.000001);
+    try std.testing.expectApproxEqAbs(@as(f64, 2.0), throughputMiBPerSecond(512 * 1024, 4, 1_000_000_000), 0.000001);
+    try std.testing.expectEqual(@as(f64, 0.0), throughputMiBPerSecond(1024 * 1024, 1, 0));
+}
+
 fn finishParseBench(
     alloc: std.mem.Allocator,
     parser_name: []const u8,
@@ -943,8 +955,7 @@ fn finishParseBench(
     samples: []u64,
 ) !ParseResult {
     const median = try common.medianU64(alloc, samples);
-    const bytes_total = @as(f64, @floatFromInt(fixture_size)) * @as(f64, @floatFromInt(calibrated_iterations));
-    const throughput = if (median == 0) 0.0 else (bytes_total / 1_000_000.0) / (@as(f64, @floatFromInt(median)) / 1_000_000_000.0);
+    const throughput = throughputMiBPerSecond(fixture_size, calibrated_iterations, median);
 
     const parser_name_copy = try alloc.dupe(u8, parser_name);
     errdefer alloc.free(parser_name_copy);
@@ -958,7 +969,7 @@ fn finishParseBench(
         .iterations = calibrated_iterations,
         .samples_ns = samples,
         .median_ns = median,
-        .throughput_mb_s = throughput,
+        .throughput_mib_s = throughput,
     };
 }
 
@@ -1055,8 +1066,8 @@ fn writeStableResumeCheckpoint(
             try w.print("{d}", .{sample});
         }
         try w.print(
-            "],\"median_ns\":{d},\"throughput_mb_s\":{d:.9}}}{s}\n",
-            .{ row.median_ns, row.throughput_mb_s, if (row_index + 1 == rows.len) "" else "," },
+            "],\"median_ns\":{d},\"throughput_mib_s\":{d:.9}}}{s}\n",
+            .{ row.median_ns, row.throughput_mib_s, if (row_index + 1 == rows.len) "" else "," },
         );
     }
     try w.writeAll("  ]\n}\n");
@@ -1104,7 +1115,7 @@ fn loadStableResumeCheckpoint(
             .iterations = row.iterations,
             .samples_ns = samples,
             .median_ns = row.median_ns,
-            .throughput_mb_s = row.throughput_mb_s,
+            .throughput_mib_s = row.throughput_mib_s,
         });
     }
     std.debug.print("resumed {d} stable benchmark result row(s)\n", .{state.parse_results.len});
@@ -1288,7 +1299,7 @@ fn freeParseResult(alloc: std.mem.Allocator, row: *ParseResult) void {
 
 fn findThroughput(rows: []const ParseResult, parser_name: []const u8, fixture: []const u8) ?f64 {
     for (rows) |r| {
-        if (std.mem.eql(u8, r.parser, parser_name) and std.mem.eql(u8, r.fixture, fixture)) return r.throughput_mb_s;
+        if (std.mem.eql(u8, r.parser, parser_name) and std.mem.eql(u8, r.fixture, fixture)) return r.throughput_mib_s;
     }
     return null;
 }
@@ -1312,8 +1323,8 @@ fn evaluateValidatedRegressionChecks(
                 .parser = parser_name,
                 .fixture = fixture.name,
                 .reference_fixture = validated_regression_reference_fixture,
-                .throughput_mb_s = throughput,
-                .reference_mb_s = reference,
+                .throughput_mib_s = throughput,
+                .reference_mib_s = reference,
                 .reference_ratio = ratio,
                 .pass = ratio >= validated_regression_min_reference_ratio,
             });
@@ -1350,20 +1361,20 @@ fn evaluateGateRows(alloc: std.mem.Allocator, profile: Profile, rows: []const Pa
         const pugixml = findThroughput(rows, "pugixml", fx.name) orelse return error.MissingBenchmarkResult;
         const rapidxml = findThroughput(rows, "rapidxml", fx.name) orelse return error.MissingBenchmarkResult;
 
-        const best_external_mb_s: f64 = if (pugixml >= rapidxml) pugixml else rapidxml;
+        const best_external_mib_s: f64 = if (pugixml >= rapidxml) pugixml else rapidxml;
         const best_external_parser = if (pugixml >= rapidxml) "pugixml" else "rapidxml";
-        const ratio = if (best_external_mb_s == 0) 0 else ours / best_external_mb_s;
+        const ratio = if (best_external_mib_s == 0) 0 else ours / best_external_mib_s;
 
         const fixture = try alloc.dupe(u8, fx.name);
         errdefer alloc.free(fixture);
         try out.append(alloc, .{
             .fixture = fixture,
             .is_real = fx.is_real,
-            .ours_permissive_mb_s = ours,
-            .pugixml_mb_s = pugixml,
-            .rapidxml_mb_s = rapidxml,
+            .ours_permissive_mib_s = ours,
+            .pugixml_mib_s = pugixml,
+            .rapidxml_mib_s = rapidxml,
             .best_external_parser = best_external_parser,
-            .best_external_mb_s = best_external_mb_s,
+            .best_external_mib_s = best_external_mib_s,
             .external_ratio = ratio,
             .pass = ratio >= 1.0,
         });
@@ -1398,11 +1409,11 @@ fn evaluateStreamComparisonRows(alloc: std.mem.Allocator, profile: Profile, rows
         try out.append(alloc, .{
             .fixture = fixture,
             .is_real = fx.is_real,
-            .dom_permissive_mb_s = dom_permissive,
-            .stream_permissive_mb_s = stream_permissive,
+            .dom_permissive_mib_s = dom_permissive,
+            .stream_permissive_mib_s = stream_permissive,
             .permissive_ratio = permissive_ratio,
-            .dom_validated_mb_s = dom_validated,
-            .stream_validated_mb_s = stream_validated,
+            .dom_validated_mib_s = dom_validated,
+            .stream_validated_mib_s = stream_validated,
             .validated_ratio = validated_ratio,
         });
     }
@@ -1417,7 +1428,7 @@ fn freeStreamComparisonRows(alloc: std.mem.Allocator, rows: []StreamComparisonRo
 
 const AverageThroughputRow = struct {
     parser: []const u8,
-    avg_mb_s: f64,
+    avg_mib_s: f64,
 };
 
 fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const ParseResult) ![]AverageThroughputRow {
@@ -1430,19 +1441,19 @@ fn makeAverageThroughputRows(alloc: std.mem.Allocator, parse_results: []const Pa
         var count: usize = 0;
         for (parse_results) |r| {
             if (!std.mem.eql(u8, r.parser, parser_name)) continue;
-            sum += r.throughput_mb_s;
+            sum += r.throughput_mib_s;
             count += 1;
         }
         out[idx] = .{
             .parser = parser_name,
-            .avg_mb_s = if (count == 0) 0.0 else sum / @as(f64, @floatFromInt(count)),
+            .avg_mib_s = if (count == 0) 0.0 else sum / @as(f64, @floatFromInt(count)),
         };
     }
 
     var i: usize = 1;
     while (i < out.len) : (i += 1) {
         var j = i;
-        while (j > 0 and out[j - 1].avg_mb_s < out[j].avg_mb_s) : (j -= 1) {
+        while (j > 0 and out[j - 1].avg_mib_s < out[j].avg_mib_s) : (j -= 1) {
             std.mem.swap(AverageThroughputRow, &out[j - 1], &out[j]);
         }
     }
@@ -1463,9 +1474,9 @@ test "evaluateGateRows records best external parser" {
     var sample_b = [_]u64{1};
     var sample_c = [_]u64{1};
     const rows = [_]ParseResult{
-        .{ .parser = "ours-permissive", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_a, .median_ns = 1, .throughput_mb_s = 120.0 },
-        .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_b, .median_ns = 1, .throughput_mb_s = 110.0 },
-        .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_c, .median_ns = 1, .throughput_mb_s = 100.0 },
+        .{ .parser = "ours-permissive", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_a, .median_ns = 1, .throughput_mib_s = 120.0 },
+        .{ .parser = "pugixml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_b, .median_ns = 1, .throughput_mib_s = 110.0 },
+        .{ .parser = "rapidxml", .fixture = "x.xml", .is_real = true, .iterations = 1, .samples_ns = &sample_c, .median_ns = 1, .throughput_mib_s = 100.0 },
     };
 
     const gates = try evaluateGateRows(alloc, profile, &rows);
@@ -1617,7 +1628,7 @@ fn writeFullParseThroughputTable(w: anytype, alloc: std.mem.Allocator, parse_res
         inline for (.{ "ours-permissive", "ours-validated", "stream-permissive", "stream-validated", "pugixml", "rapidxml" }) |parser_name| {
             try w.writeAll(" | ");
             if (findParseResult(parse_results, parser_name, fixture_name)) |r| {
-                try w.print("{d:.2}", .{r.throughput_mb_s});
+                try w.print("{d:.2}", .{r.throughput_mib_s});
             } else try w.writeAll("-");
         }
         try w.writeAll(" |\n");
@@ -1647,15 +1658,15 @@ fn renderReadmeAutoSummary(
     var leader: f64 = 0.0;
     var max_name_len: usize = 0;
     for (averages) |row| {
-        leader = @max(leader, row.avg_mb_s);
+        leader = @max(leader, row.avg_mib_s);
         max_name_len = @max(max_name_len, row.parser.len);
     }
 
     for (averages) |row| {
-        const pct = if (leader > 0.0) (row.avg_mb_s / leader) * 100.0 else 0.0;
+        const pct = if (leader > 0.0) (row.avg_mib_s / leader) * 100.0 else 0.0;
         const width: usize = 20;
         const filled = if (leader > 0.0)
-            @min(width, @max(@as(usize, @intFromFloat(@round((row.avg_mb_s / leader) * @as(f64, @floatFromInt(width))))), @as(usize, 1)))
+            @min(width, @max(@as(usize, @intFromFloat(@round((row.avg_mib_s / leader) * @as(f64, @floatFromInt(width))))), @as(usize, 1)))
         else
             @as(usize, 0);
         try w.writeAll(row.parser);
@@ -1663,13 +1674,9 @@ fn renderReadmeAutoSummary(
         try w.writeAll(" │");
         for (0..filled) |_| try w.writeAll("█");
         for (0..(width - filled)) |_| try w.writeAll("░");
-        try w.print("│ {d:.2} MB/s ({d:.2}%)\n", .{ row.avg_mb_s, pct });
+        try w.print("│ {d:.2} MiB/s ({d:.2}%)\n", .{ row.avg_mib_s, pct });
     }
     try w.writeAll("```\n\n");
-
-    try w.writeAll("### Full Stable Fixture Numbers (MB/s)\n\n");
-    try writeFullParseThroughputTable(w, alloc, parse_results);
-    try w.writeAll("\n");
 
     try w.writeAll("### Stable Gate Snapshot\n\n");
     try w.writeAll("| Profile | Passed | Rule |\n");
@@ -1706,7 +1713,7 @@ fn renderBenchReadmeSnapshot(
     try w.print("Source: `bench/results/latest.json` (`{s}` profile).\n\n", .{profile_name});
     try w.writeAll("## Latest Benchmark Snapshot\n\n");
     try writeBenchmarkEnvironmentTable(w, "###", environment);
-    try w.writeAll("### Parse Throughput Comparison (MB/s)\n\n");
+    try w.writeAll("### Parse Throughput Comparison (MiB/s)\n\n");
     try writeFullParseThroughputTable(w, alloc, parse_results);
     try w.writeAll("\n### External Parser Gates\n\n");
     try w.writeAll("| Fixture | ours-permissive | best external | ours/best-ext | Result |\n");
@@ -1716,9 +1723,9 @@ fn renderBenchReadmeSnapshot(
             "| `{s}` | {d:.2} | `{s}` {d:.2} | {d:.3} | {s} |\n",
             .{
                 g.fixture,
-                g.ours_permissive_mb_s,
+                g.ours_permissive_mib_s,
                 g.best_external_parser,
-                g.best_external_mb_s,
+                g.best_external_mib_s,
                 g.external_ratio,
                 if (g.pass) "PASS" else "FAIL",
             },
@@ -1734,11 +1741,11 @@ fn renderBenchReadmeSnapshot(
                 "| `{s}` | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
-                    g.stream_permissive_mb_s,
-                    g.dom_permissive_mb_s,
+                    g.stream_permissive_mib_s,
+                    g.dom_permissive_mib_s,
                     g.permissive_ratio,
-                    g.stream_validated_mb_s,
-                    g.dom_validated_mb_s,
+                    g.stream_validated_mib_s,
+                    g.dom_validated_mib_s,
                     g.validated_ratio,
                 },
             );
@@ -1833,11 +1840,11 @@ fn writeMarkdown(
     try writeBenchmarkEnvironmentTable(w, "##", environment);
 
     try w.writeAll("## Parse Throughput\n\n");
-    try w.writeAll("| Fixture | Parser | Throughput (MB/s) | Median Time (ms) | Iterations |\n");
+    try w.writeAll("| Fixture | Parser | Throughput (MiB/s) | Median Time (ms) | Iterations |\n");
     try w.writeAll("|---|---|---:|---:|---:|\n");
     for (parse_results) |r| {
         const median_ms = @as(f64, @floatFromInt(r.median_ns)) / 1_000_000.0;
-        try w.print("| {s} | {s} | {d:.2} | {d:.2} | {d} |\n", .{ r.fixture, r.parser, r.throughput_mb_s, median_ms, r.iterations });
+        try w.print("| {s} | {s} | {d:.2} | {d:.2} | {d} |\n", .{ r.fixture, r.parser, r.throughput_mib_s, median_ms, r.iterations });
     }
 
     if (gate_rows.len != 0) {
@@ -1849,11 +1856,11 @@ fn writeMarkdown(
                 "| {s} | {d:.2} | {d:.2} | {d:.2} | {s} {d:.2} | {d:.3} | {s} |\n",
                 .{
                     g.fixture,
-                    g.ours_permissive_mb_s,
-                    g.pugixml_mb_s,
-                    g.rapidxml_mb_s,
+                    g.ours_permissive_mib_s,
+                    g.pugixml_mib_s,
+                    g.rapidxml_mib_s,
                     g.best_external_parser,
-                    g.best_external_mb_s,
+                    g.best_external_mib_s,
                     g.external_ratio,
                     if (g.pass) "PASS" else "FAIL",
                 },
@@ -1870,11 +1877,11 @@ fn writeMarkdown(
                 "| {s} | {d:.2} | {d:.2} | {d:.3} | {d:.2} | {d:.2} | {d:.3} |\n",
                 .{
                     g.fixture,
-                    g.stream_permissive_mb_s,
-                    g.dom_permissive_mb_s,
+                    g.stream_permissive_mib_s,
+                    g.dom_permissive_mib_s,
                     g.permissive_ratio,
-                    g.stream_validated_mb_s,
-                    g.dom_validated_mb_s,
+                    g.stream_validated_mib_s,
+                    g.dom_validated_mib_s,
                     g.validated_ratio,
                 },
             );
@@ -1885,15 +1892,15 @@ fn writeMarkdown(
         const passed = validatedRegressionPassCount(validated_regression_checks);
         try w.print("\n## Validated Pathology Regression Checks\n\n{d}/{d} passed. These fixtures are excluded from headline averages and stable external gates.\n", .{ passed, validated_regression_checks.len });
         if (!validatedRegressionsAllPass(validated_regression_checks)) {
-            try w.writeAll("\n| Parser | Fixture | Throughput (MB/s) | Reference | Reference MB/s | Ratio | Result |\n");
+            try w.writeAll("\n| Parser | Fixture | Throughput (MiB/s) | Reference | Reference MiB/s | Ratio | Result |\n");
             try w.writeAll("|---|---|---:|---|---:|---:|---|\n");
             for (validated_regression_checks) |check| {
                 try w.print("| {s} | {s} | {d:.2} | {s} | {d:.2} | {d:.3} | {s} |\n", .{
                     check.parser,
                     check.fixture,
-                    check.throughput_mb_s,
+                    check.throughput_mib_s,
                     check.reference_fixture,
-                    check.reference_mb_s,
+                    check.reference_mib_s,
                     check.reference_ratio,
                     if (check.pass) "PASS" else "FAIL",
                 });
@@ -1940,7 +1947,7 @@ fn writeTerminalReport(
     const parse_headers = [_][]const u8{
         "Rank",
         "Parser",
-        "Throughput (MB/s)",
+        "Throughput (MiB/s)",
         "Median Time (ms)",
         "Iterations",
     };
@@ -1959,15 +1966,15 @@ fn writeTerminalReport(
         var i: usize = 1;
         while (i < fixture_rows.items.len) : (i += 1) {
             var j = i;
-            while (j > 0 and fixture_rows.items[j - 1].*.throughput_mb_s < fixture_rows.items[j].*.throughput_mb_s) : (j -= 1) {
+            while (j > 0 and fixture_rows.items[j - 1].*.throughput_mib_s < fixture_rows.items[j].*.throughput_mib_s) : (j -= 1) {
                 std.mem.swap(*const ParseResult, &fixture_rows.items[j - 1], &fixture_rows.items[j]);
             }
         }
 
         const fastest = fixture_rows.items[0].*;
         try w.print(
-            "\nFixture: {s} ({s})  Fastest: {s} @ {d:.2} MB/s\n",
-            .{ fixture_name, if (fastest.is_real) "real" else "synthetic", fastest.parser, fastest.throughput_mb_s },
+            "\nFixture: {s} ({s})  Fastest: {s} @ {d:.2} MiB/s\n",
+            .{ fixture_name, if (fastest.is_real) "real" else "synthetic", fastest.parser, fastest.throughput_mib_s },
         );
 
         var parse_widths = [_]usize{
@@ -1985,7 +1992,7 @@ fn writeTerminalReport(
             parse_widths[1] = maxUsize(parse_widths[1], rp.parser.len);
 
             var throughput_buf: [32]u8 = undefined;
-            const throughput = try std.fmt.bufPrint(&throughput_buf, "{d:.2}", .{rp.throughput_mb_s});
+            const throughput = try std.fmt.bufPrint(&throughput_buf, "{d:.2}", .{rp.throughput_mib_s});
             parse_widths[2] = maxUsize(parse_widths[2], throughput.len);
 
             var median_buf: [32]u8 = undefined;
@@ -2006,7 +2013,7 @@ fn writeTerminalReport(
             const rank = try std.fmt.bufPrint(&rank_buf, "{d}", .{idx + 1});
 
             var throughput_buf: [32]u8 = undefined;
-            const throughput = try std.fmt.bufPrint(&throughput_buf, "{d:.2}", .{rp.throughput_mb_s});
+            const throughput = try std.fmt.bufPrint(&throughput_buf, "{d:.2}", .{rp.throughput_mib_s});
 
             var median_buf: [32]u8 = undefined;
             const median_ms = @as(f64, @floatFromInt(rp.median_ns)) / 1_000_000.0;
@@ -2054,19 +2061,19 @@ fn writeTerminalReport(
             gate_widths[0] = maxUsize(gate_widths[0], g.fixture.len);
 
             var ours_buf: [32]u8 = undefined;
-            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mb_s});
+            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mib_s});
             gate_widths[1] = maxUsize(gate_widths[1], ours.len);
 
             var pugixml_buf: [32]u8 = undefined;
-            const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mb_s});
+            const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mib_s});
             gate_widths[2] = maxUsize(gate_widths[2], pugixml.len);
 
             var rapidxml_buf: [32]u8 = undefined;
-            const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mb_s});
+            const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mib_s});
             gate_widths[3] = maxUsize(gate_widths[3], rapidxml.len);
 
             var best_buf: [64]u8 = undefined;
-            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mb_s });
+            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mib_s });
             gate_widths[4] = maxUsize(gate_widths[4], best.len);
 
             var ratio_buf: [32]u8 = undefined;
@@ -2086,16 +2093,16 @@ fn writeTerminalReport(
             if (g.pass) pass_count += 1;
 
             var ours_buf: [32]u8 = undefined;
-            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mb_s});
+            const ours = try std.fmt.bufPrint(&ours_buf, "{d:.2}", .{g.ours_permissive_mib_s});
 
             var pugixml_buf: [32]u8 = undefined;
-            const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mb_s});
+            const pugixml = try std.fmt.bufPrint(&pugixml_buf, "{d:.2}", .{g.pugixml_mib_s});
 
             var rapidxml_buf: [32]u8 = undefined;
-            const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mb_s});
+            const rapidxml = try std.fmt.bufPrint(&rapidxml_buf, "{d:.2}", .{g.rapidxml_mib_s});
 
             var best_buf: [64]u8 = undefined;
-            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mb_s });
+            const best = try std.fmt.bufPrint(&best_buf, "{s} {d:.2}", .{ g.best_external_parser, g.best_external_mib_s });
 
             var ratio_buf: [32]u8 = undefined;
             const ratio = try std.fmt.bufPrint(&ratio_buf, "{d:.3}", .{g.external_ratio});
@@ -2140,7 +2147,7 @@ fn writeTerminalReport(
 
         for (stream_comparison_rows) |g| {
             widths[0] = maxUsize(widths[0], g.fixture.len);
-            inline for (&.{ g.stream_permissive_mb_s, g.dom_permissive_mb_s, g.permissive_ratio, g.stream_validated_mb_s, g.dom_validated_mb_s, g.validated_ratio }, 1..) |value, col| {
+            inline for (&.{ g.stream_permissive_mib_s, g.dom_permissive_mib_s, g.permissive_ratio, g.stream_validated_mib_s, g.dom_validated_mib_s, g.validated_ratio }, 1..) |value, col| {
                 var buf: [32]u8 = undefined;
                 const txt = if (col == 3 or col == 6)
                     try std.fmt.bufPrint(&buf, "{d:.3}", .{value})
@@ -2155,15 +2162,15 @@ fn writeTerminalReport(
         try writeTableBorder(w, &widths);
         for (stream_comparison_rows) |g| {
             var stream_permissive_buf: [32]u8 = undefined;
-            const stream_permissive = try std.fmt.bufPrint(&stream_permissive_buf, "{d:.2}", .{g.stream_permissive_mb_s});
+            const stream_permissive = try std.fmt.bufPrint(&stream_permissive_buf, "{d:.2}", .{g.stream_permissive_mib_s});
             var dom_permissive_buf: [32]u8 = undefined;
-            const dom_permissive = try std.fmt.bufPrint(&dom_permissive_buf, "{d:.2}", .{g.dom_permissive_mb_s});
+            const dom_permissive = try std.fmt.bufPrint(&dom_permissive_buf, "{d:.2}", .{g.dom_permissive_mib_s});
             var permissive_ratio_buf: [32]u8 = undefined;
             const permissive_ratio = try std.fmt.bufPrint(&permissive_ratio_buf, "{d:.3}", .{g.permissive_ratio});
             var stream_validated_buf: [32]u8 = undefined;
-            const stream_validated = try std.fmt.bufPrint(&stream_validated_buf, "{d:.2}", .{g.stream_validated_mb_s});
+            const stream_validated = try std.fmt.bufPrint(&stream_validated_buf, "{d:.2}", .{g.stream_validated_mib_s});
             var dom_validated_buf: [32]u8 = undefined;
-            const dom_validated = try std.fmt.bufPrint(&dom_validated_buf, "{d:.2}", .{g.dom_validated_mb_s});
+            const dom_validated = try std.fmt.bufPrint(&dom_validated_buf, "{d:.2}", .{g.dom_validated_mib_s});
             var validated_ratio_buf: [32]u8 = undefined;
             const validated_ratio = try std.fmt.bufPrint(&validated_ratio_buf, "{d:.3}", .{g.validated_ratio});
             const row = [_][]const u8{
@@ -2184,7 +2191,7 @@ fn writeTerminalReport(
         const passed = validatedRegressionPassCount(validated_regression_checks);
         try w.print("\nValidated Pathology Regression Checks: {d}/{d} passed\n", .{ passed, validated_regression_checks.len });
         if (!validatedRegressionsAllPass(validated_regression_checks)) {
-            const headers = [_][]const u8{ "Parser", "Fixture", "MB/s", "Reference", "Ref MB/s", "Ratio", "Result" };
+            const headers = [_][]const u8{ "Parser", "Fixture", "MiB/s", "Reference", "Reference MiB/s", "Ratio", "Result" };
             const row_align = [_]bool{ false, false, true, false, true, true, false };
             var widths = [_]usize{ headers[0].len, headers[1].len, headers[2].len, headers[3].len, headers[4].len, headers[5].len, headers[6].len };
             for (validated_regression_checks) |check| {
@@ -2194,8 +2201,8 @@ fn writeTerminalReport(
                 var a: [32]u8 = undefined;
                 var b: [32]u8 = undefined;
                 var c: [32]u8 = undefined;
-                widths[2] = maxUsize(widths[2], (try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mb_s})).len);
-                widths[4] = maxUsize(widths[4], (try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mb_s})).len);
+                widths[2] = maxUsize(widths[2], (try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mib_s})).len);
+                widths[4] = maxUsize(widths[4], (try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mib_s})).len);
                 widths[5] = maxUsize(widths[5], (try std.fmt.bufPrint(&c, "{d:.3}", .{check.reference_ratio})).len);
             }
             try writeTableBorder(w, &widths);
@@ -2208,9 +2215,9 @@ fn writeTerminalReport(
                 const row = [_][]const u8{
                     check.parser,
                     check.fixture,
-                    try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mb_s}),
+                    try std.fmt.bufPrint(&a, "{d:.2}", .{check.throughput_mib_s}),
                     check.reference_fixture,
-                    try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mb_s}),
+                    try std.fmt.bufPrint(&b, "{d:.2}", .{check.reference_mib_s}),
                     try std.fmt.bufPrint(&c, "{d:.3}", .{check.reference_ratio}),
                     if (check.pass) "PASS" else "FAIL",
                 };
@@ -2248,8 +2255,8 @@ fn writeJson(
     );
     for (parse_results, 0..) |r, i| {
         try w.print(
-            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mb_s\":{d:.6},\"samples_ns\":[",
-            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mb_s },
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mib_s\":{d:.6},\"samples_ns\":[",
+            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mib_s },
         );
         for (r.samples_ns, 0..) |sample, sample_index| {
             if (sample_index != 0) try w.writeByte(',');
@@ -2260,15 +2267,15 @@ fn writeJson(
     try w.writeAll("  ],\n  \"gates\": [\n");
     for (gate_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_permissive_mb_s\":{d:.6},\"pugixml_mb_s\":{d:.6},\"rapidxml_mb_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mb_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"ours_permissive_mib_s\":{d:.6},\"pugixml_mib_s\":{d:.6},\"rapidxml_mib_s\":{d:.6},\"best_external_parser\":\"{s}\",\"best_external_mib_s\":{d:.6},\"external_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
-                g.ours_permissive_mb_s,
-                g.pugixml_mb_s,
-                g.rapidxml_mb_s,
+                g.ours_permissive_mib_s,
+                g.pugixml_mib_s,
+                g.rapidxml_mib_s,
                 g.best_external_parser,
-                g.best_external_mb_s,
+                g.best_external_mib_s,
                 g.external_ratio,
                 if (g.pass) "true" else "false",
                 if (i + 1 == gate_rows.len) "" else ",",
@@ -2278,15 +2285,15 @@ fn writeJson(
     try w.writeAll("  ],\n  \"stream_comparisons\": [\n");
     for (stream_comparison_rows, 0..) |g, i| {
         try w.print(
-            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_permissive_mb_s\":{d:.6},\"stream_permissive_mb_s\":{d:.6},\"permissive_ratio\":{d:.6},\"dom_validated_mb_s\":{d:.6},\"stream_validated_mb_s\":{d:.6},\"validated_ratio\":{d:.6}}}{s}\n",
+            "    {{\"fixture\":\"{s}\",\"is_real\":{s},\"dom_permissive_mib_s\":{d:.6},\"stream_permissive_mib_s\":{d:.6},\"permissive_ratio\":{d:.6},\"dom_validated_mib_s\":{d:.6},\"stream_validated_mib_s\":{d:.6},\"validated_ratio\":{d:.6}}}{s}\n",
             .{
                 g.fixture,
                 if (g.is_real) "true" else "false",
-                g.dom_permissive_mb_s,
-                g.stream_permissive_mb_s,
+                g.dom_permissive_mib_s,
+                g.stream_permissive_mib_s,
                 g.permissive_ratio,
-                g.dom_validated_mb_s,
-                g.stream_validated_mb_s,
+                g.dom_validated_mib_s,
+                g.stream_validated_mib_s,
                 g.validated_ratio,
                 if (i + 1 == stream_comparison_rows.len) "" else ",",
             },
@@ -2295,8 +2302,8 @@ fn writeJson(
     try w.writeAll("  ],\n  \"validated_regression_results\": [\n");
     for (validated_regression_results, 0..) |r, i| {
         try w.print(
-            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mb_s\":{d:.6},\"samples_ns\":[",
-            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mb_s },
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"is_real\":{s},\"iterations\":{d},\"median_ns\":{d},\"throughput_mib_s\":{d:.6},\"samples_ns\":[",
+            .{ r.parser, r.fixture, if (r.is_real) "true" else "false", r.iterations, r.median_ns, r.throughput_mib_s },
         );
         for (r.samples_ns, 0..) |sample, sample_index| {
             if (sample_index != 0) try w.writeByte(',');
@@ -2307,13 +2314,13 @@ fn writeJson(
     try w.writeAll("  ],\n  \"validated_regression_checks\": [\n");
     for (validated_regression_checks, 0..) |check, i| {
         try w.print(
-            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"reference_fixture\":\"{s}\",\"throughput_mb_s\":{d:.6},\"reference_mb_s\":{d:.6},\"reference_ratio\":{d:.6},\"minimum_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
+            "    {{\"parser\":\"{s}\",\"fixture\":\"{s}\",\"reference_fixture\":\"{s}\",\"throughput_mib_s\":{d:.6},\"reference_mib_s\":{d:.6},\"reference_ratio\":{d:.6},\"minimum_ratio\":{d:.6},\"pass\":{s}}}{s}\n",
             .{
                 check.parser,
                 check.fixture,
                 check.reference_fixture,
-                check.throughput_mb_s,
-                check.reference_mb_s,
+                check.throughput_mib_s,
+                check.reference_mib_s,
                 check.reference_ratio,
                 validated_regression_min_reference_ratio,
                 if (check.pass) "true" else "false",
@@ -2449,7 +2456,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
                 failed = true;
                 std.debug.print(
                     "gate fail: {s} ours={d:.2} best={s} {d:.2} ratio={d:.3}\n",
-                    .{ g.fixture, g.ours_permissive_mb_s, g.best_external_parser, g.best_external_mb_s, g.external_ratio },
+                    .{ g.fixture, g.ours_permissive_mib_s, g.best_external_parser, g.best_external_mib_s, g.external_ratio },
                 );
             }
         }
@@ -2866,7 +2873,7 @@ test "benchmark gates reject missing parser rows" {
         .iterations = 1,
         .samples_ns = &samples,
         .median_ns = 1,
-        .throughput_mb_s = 1.0,
+        .throughput_mib_s = 1.0,
     }};
 
     try std.testing.expectError(error.MissingBenchmarkResult, evaluateGateRows(alloc, profile, &incomplete));
@@ -2936,7 +2943,7 @@ test "guarded fixture transfer requires complete positive samples" {
     const fixture: FixtureCase = .{ .name = "case.xml", .iterations = 1, .is_real = true };
     const parsers = &[_][]const u8{"ours-permissive"};
     var samples = [_]u64{ 10, 11, 12, 13, 14 };
-    var row: ParseResult = .{ .parser = parsers[0], .fixture = fixture.name, .is_real = true, .iterations = 1, .samples_ns = &samples, .median_ns = 12, .throughput_mb_s = 1 };
+    var row: ParseResult = .{ .parser = parsers[0], .fixture = fixture.name, .is_real = true, .iterations = 1, .samples_ns = &samples, .median_ns = 12, .throughput_mib_s = 1 };
     try validateGuardedFixtureRows(&.{row}, stable_protocol, parsers, fixture);
     try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{}, stable_protocol, parsers, fixture));
     try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{ row, row }, stable_protocol, parsers, fixture));
