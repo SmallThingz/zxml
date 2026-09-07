@@ -56,7 +56,7 @@ const validated_regression_parsers = [_][]const u8{
     "stream-validated",
 };
 
-const validated_regression_reference_fixture = "synthetic_entities.xml";
+const validated_regression_reference_fixture = "synthetic_entities_reference.xml";
 const validated_regression_min_reference_ratio: f64 = 1.25;
 
 const FixtureCase = struct {
@@ -200,6 +200,7 @@ const stable_fixtures = [_]FixtureCase{
 // Keep them in a mode-specific lane that runs only the implementations whose
 // behavior they stress. The generated data remains available for ad-hoc work.
 const validated_regression_fixtures = [_]FixtureCase{
+    .{ .name = validated_regression_reference_fixture, .iterations = 80, .is_real = false },
     .{ .name = "synthetic_doctype_entities.xml", .iterations = 80, .is_real = false },
 };
 
@@ -393,6 +394,7 @@ fn writeSyntheticFixtures(io: std.Io) !void {
     try writeFlatAttrs(io, FIXTURES_DIR ++ "/synthetic_flat_attrs.xml");
     try writeDeepTree(io, FIXTURES_DIR ++ "/synthetic_deep_tree.xml");
     try writeEntities(io, FIXTURES_DIR ++ "/synthetic_entities.xml");
+    try writeEntityReference(io, FIXTURES_DIR ++ "/synthetic_entities_reference.xml");
     try writeCdataMix(io, FIXTURES_DIR ++ "/synthetic_cdata_mix.xml");
     try writeWideSiblings(io, FIXTURES_DIR ++ "/synthetic_wide_siblings.xml");
     try writeNamespaceMix(io, FIXTURES_DIR ++ "/synthetic_namespace_mix.xml");
@@ -516,6 +518,21 @@ fn writeEntities(io: std.Io, path: []const u8) !void {
     var i: usize = 0;
     while (i < 9000) : (i += 1) {
         try out.writeAll("<item v='&amp;&lt;&gt;&quot;&apos;'>&#65;&#x42;&amp;ok&lt;test&gt;</item>");
+    }
+    try out.writeAll("</root>");
+    try out.flush();
+}
+
+fn writeEntityReference(io: std.Io, path: []const u8) !void {
+    var file = try std.Io.Dir.cwd().createFile(io, path, .{ .truncate = true });
+    defer file.close(io);
+    var out_buf: [4096]u8 = undefined;
+    var out_writer = file.writer(io, &out_buf);
+    const out = &out_writer.interface;
+    try out.writeAll("<root>");
+    var i: usize = 0;
+    while (i < 9000) : (i += 1) {
+        try out.print("<item id='{d}' v='&amp;&lt;&gt;&quot;&apos;'>&#65;&#x42;&amp;ok&lt;test&gt;</item>", .{i});
     }
     try out.writeAll("</root>");
     try out.flush();
@@ -1208,10 +1225,12 @@ fn evaluateValidatedRegressionChecks(
     var out = std.ArrayList(ValidatedRegressionCheck).empty;
     errdefer out.deinit(alloc);
 
+    _ = main_results;
     for (validated_regression_parsers) |parser_name| {
+        const reference = findThroughput(regression_results, parser_name, validated_regression_reference_fixture) orelse return error.MissingBenchmarkResult;
         for (validated_regression_fixtures) |fixture| {
+            if (std.mem.eql(u8, fixture.name, validated_regression_reference_fixture)) continue;
             const throughput = findThroughput(regression_results, parser_name, fixture.name) orelse return error.MissingBenchmarkResult;
-            const reference = findThroughput(main_results, parser_name, validated_regression_reference_fixture) orelse return error.MissingBenchmarkResult;
             const ratio = if (reference == 0.0) 0.0 else throughput / reference;
             try out.append(alloc, .{
                 .parser = parser_name,
@@ -2780,9 +2799,10 @@ test "headline benchmark profiles exclude diagnostic scan-heavy fixtures" {
     }
 }
 
-test "doctype entity pathology is validated-only and outside headline profiles" {
-    try std.testing.expectEqual(@as(usize, 1), validated_regression_fixtures.len);
-    try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", validated_regression_fixtures[0].name);
+test "doctype entity pathology uses a non-repeating validated-only reference" {
+    try std.testing.expectEqual(@as(usize, 2), validated_regression_fixtures.len);
+    try std.testing.expectEqualStrings(validated_regression_reference_fixture, validated_regression_fixtures[0].name);
+    try std.testing.expectEqualStrings("synthetic_doctype_entities.xml", validated_regression_fixtures[1].name);
     try std.testing.expectEqualSlices([]const u8, &.{ "ours-validated", "stream-validated" }, &validated_regression_parsers);
     for (validated_regression_parsers) |parser_name| try std.testing.expect(std.mem.indexOf(u8, parser_name, "validated") != null);
 }
