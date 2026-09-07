@@ -205,7 +205,7 @@ noinline fn parseValidatedRepeatedDocument(
     return null;
 }
 
-fn validateRepeatedTokenOnce(
+pub fn validateRepeatedTokenOnce(
     comptime opts: ParseOptions,
     input: []const u8,
     token_start: usize,
@@ -236,7 +236,7 @@ fn validateRepeatedTokenOnce(
     return true;
 }
 
-const RepeatedSelfClosingPlan = struct {
+pub const RepeatedSelfClosingPlan = struct {
     root_name_end: usize,
     token_start: usize,
     token_len: usize,
@@ -246,7 +246,7 @@ const RepeatedSelfClosingPlan = struct {
     count: usize,
 };
 
-noinline fn detectValidatedRepeatedEmptyDocument(input: []const u8) ?RepeatedSelfClosingPlan {
+pub noinline fn detectValidatedRepeatedEmptyDocument(input: []const u8) ?RepeatedSelfClosingPlan {
     if (input.len < 32 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
     const root_name_end = scanner.findNameEnd(input, 1);
     if (root_name_end <= 1 or root_name_end >= input.len or input[root_name_end] != '>') return null;
@@ -291,7 +291,7 @@ noinline fn detectValidatedRepeatedEmptyDocument(input: []const u8) ?RepeatedSel
     };
 }
 
-noinline fn detectRepeatedSelfClosingDocument(input: []const u8) ?RepeatedSelfClosingPlan {
+pub noinline fn detectRepeatedSelfClosingDocument(input: []const u8) ?RepeatedSelfClosingPlan {
     if (input.len < 64 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
     const root_name_end = scanner.findNameEnd(input, 1);
     if (root_name_end >= input.len or input[root_name_end] != '>') return null;
@@ -437,7 +437,7 @@ fn parseRepeatedSelfClosingDocument(
     return doc;
 }
 
-const RepeatedSimpleTextPlan = struct {
+pub const RepeatedSimpleTextPlan = struct {
     root_name_end: usize,
     token_start: usize,
     token_len: usize,
@@ -448,7 +448,7 @@ const RepeatedSimpleTextPlan = struct {
     count: usize,
 };
 
-noinline fn detectRepeatedSimpleTextPlan(input: []const u8) ?RepeatedSimpleTextPlan {
+pub noinline fn detectRepeatedSimpleTextPlan(input: []const u8) ?RepeatedSimpleTextPlan {
     if (input.len < 64 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
     const root_name_end = scanner.findNameEnd(input, 1);
     if (root_name_end >= input.len or input[root_name_end] != '>') return null;

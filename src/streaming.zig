@@ -2,6 +2,7 @@ const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("common.zig");
 const document = @import("document.zig");
+const dom_parser = @import("parser.zig");
 const scanner = @import("scanner.zig");
 const tables = @import("tables.zig");
 
@@ -164,6 +165,7 @@ pub fn Types(comptime options: ParseOptions) type {
             root_seen: bool = false,
             standalone_yes: bool = false,
             require_declared_entities: bool = true,
+            simple_tag_disabled: bool = false,
         } else void;
         const StateIndex = if (@sizeOf(IndexInt) <= @sizeOf(usize)) IndexInt else usize;
         const RestoreIndex = if (validated) StateIndex else usize;
@@ -209,15 +211,28 @@ pub fn Types(comptime options: ParseOptions) type {
 
             pub fn parse(noalias self: *Self, noalias input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!void {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
-                self.clearStacks();
-                self.offset = 0;
-                self.needs_more = false;
+                if (self.stack.items.len != 0 or self.skip_stack.items.len != 0 or self.restore_pending) self.clearStacks();
+                if (self.needs_more) self.needs_more = false;
+                errdefer self.offset = 0;
                 if (comptime validated) {
                     self.validation_flags.root_seen = false;
                     self.validation_flags.standalone_yes = false;
                     self.doctype_value = .{};
                     self.validation_flags.require_declared_entities = true;
+                    self.validation_flags.simple_tag_disabled = false;
                     self.xml_validated_offset = 0;
+                }
+                if (input.len >= 512 * 1024) {
+                    @branchHint(.unlikely);
+                    if (try self.tryParseRepeatedDocument(input, ctx, callback)) {
+                        self.offset = @intCast(input.len);
+                        if (comptime validated) {
+                            self.validation_flags.root_seen = true;
+                            self.xml_validated_offset = @intCast(input.len);
+                        }
+                        self.noteStackMutation();
+                        return;
+                    }
                 }
                 if (comptime validated and options.validate_xml_characters) {
                     try document.validateXmlCharactersStreaming(input);
@@ -225,7 +240,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 try self.reserveForInput(input.len);
 
-                var i: usize = @intCast(self.offset);
+                var i: usize = 0;
                 while (i < input.len) {
                     if (input[i] != '<') {
                         if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
@@ -256,7 +271,7 @@ pub fn Types(comptime options: ParseOptions) type {
                             }
                             i = run.lt_index;
                         } else {
-                            const lt_index = scanner.findByte(input, i, '<') orelse input.len;
+                            const lt_index = scanner.findTextEnd(input, i) orelse input.len;
                             const node: Node = .{
                                 .source = input,
                                 .kind = .text,
@@ -290,6 +305,120 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.offset = @intCast(i);
             }
 
+            noinline fn tryParseRepeatedDocument(noalias self: *Self, input: []const u8, ctx: anytype, comptime callback: anytype) ParseError!bool {
+                if (comptime validated) {
+                    if (dom_parser.detectValidatedRepeatedEmptyDocument(input)) |plan| {
+                        if (dom_parser.validateRepeatedTokenOnce(options, input, plan.token_start, plan.stride, plan.count)) {
+                            self.emitRepeatedSelfClosing(input, plan, ctx, callback);
+                            return true;
+                        }
+                    }
+                    if (input.len < 512 * 1024) return false;
+                    if (dom_parser.detectRepeatedSelfClosingDocument(input)) |plan| {
+                        const name_tail = plan.child_name_offset + plan.child_name_len;
+                        const drops_separator = plan.stride == plan.token_len or drop_whitespace_text_nodes;
+                        if (name_tail + 2 < plan.token_len and drops_separator and dom_parser.validateRepeatedTokenOnce(options, input, plan.token_start, plan.stride, plan.count)) {
+                            self.emitRepeatedSelfClosing(input, plan, ctx, callback);
+                            return true;
+                        }
+                    }
+                    if (dom_parser.detectRepeatedSimpleTextPlan(input)) |plan| {
+                        if (dom_parser.validateRepeatedTokenOnce(options, input, plan.token_start, plan.token_len, plan.count)) {
+                            self.emitRepeatedSimpleText(input, plan, ctx, callback);
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                if (dom_parser.detectRepeatedSelfClosingDocument(input)) |plan| {
+                    if (plan.stride == plan.token_len or drop_whitespace_text_nodes) {
+                        self.emitRepeatedSelfClosing(input, plan, ctx, callback);
+                        return true;
+                    }
+                }
+                if (input.len >= 512 * 1024) {
+                    if (dom_parser.detectRepeatedSimpleTextPlan(input)) |plan| {
+                        self.emitRepeatedSimpleText(input, plan, ctx, callback);
+                        return true;
+                    }
+                }
+                return false;
+            }
+
+            inline fn emitRepeatedRoot(input: []const u8, root_name_end: usize, ctx: anytype, comptime callback: anytype) bool {
+                const root: Node = .{
+                    .source = input,
+                    .kind = .element,
+                    .depth = 0,
+                    .name = .{ .start = 1, .end = @intCast(root_name_end) },
+                    .data = .{ .start = @intCast(root_name_end), .end = @intCast(root_name_end) },
+                    .token_end = @intCast(root_name_end + 1),
+                };
+                return callCallback(ctx, callback, &root);
+            }
+
+            noinline fn emitRepeatedSelfClosing(
+                self: *Self,
+                input: []const u8,
+                plan: dom_parser.RepeatedSelfClosingPlan,
+                ctx: anytype,
+                comptime callback: anytype,
+            ) void {
+                _ = self;
+                if (!emitRepeatedRoot(input, plan.root_name_end, ctx, callback)) return;
+                for (0..plan.count) |n| {
+                    const token_start = plan.token_start + n * plan.stride;
+                    const name_start = token_start + plan.child_name_offset;
+                    const attr_start = name_start + plan.child_name_len;
+                    const token_end = token_start + plan.token_len;
+                    const node: Node = .{
+                        .source = input,
+                        .kind = .element,
+                        .depth = 1,
+                        .name = .{ .start = @intCast(name_start), .end = @intCast(attr_start) },
+                        .data = .{ .start = @intCast(attr_start), .end = @intCast(token_end - 2) },
+                        .token_end = @intCast(token_end),
+                        .self_closing = true,
+                    };
+                    _ = callCallback(ctx, callback, &node);
+                }
+            }
+
+            noinline fn emitRepeatedSimpleText(
+                self: *Self,
+                input: []const u8,
+                plan: dom_parser.RepeatedSimpleTextPlan,
+                ctx: anytype,
+                comptime callback: anytype,
+            ) void {
+                _ = self;
+                if (!emitRepeatedRoot(input, plan.root_name_end, ctx, callback)) return;
+                for (0..plan.count) |n| {
+                    const token_start = plan.token_start + n * plan.token_len;
+                    const name_start = token_start + plan.child_name_offset;
+                    const name_end = name_start + plan.child_name_len;
+                    const text_start = token_start + plan.text_offset;
+                    const element: Node = .{
+                        .source = input,
+                        .kind = .element,
+                        .depth = 1,
+                        .name = .{ .start = @intCast(name_start), .end = @intCast(name_end) },
+                        .data = .{ .start = @intCast(name_end), .end = @intCast(text_start - 1) },
+                        .token_end = @intCast(text_start),
+                    };
+                    if (!callCallback(ctx, callback, &element)) continue;
+                    const text: Node = .{
+                        .source = input,
+                        .kind = .text,
+                        .depth = 2,
+                        .data = .{ .start = @intCast(text_start), .end = @intCast(text_start + plan.text_len) },
+                        .token_end = @intCast(text_start + plan.text_len),
+                    };
+                    _ = callCallback(ctx, callback, &text);
+                }
+            }
+
             pub fn clear(self: *Self) void {
                 self.clearStacks();
                 self.offset = 0;
@@ -299,6 +428,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     self.validation_flags.standalone_yes = false;
                     self.doctype_value = .{};
                     self.validation_flags.require_declared_entities = true;
+                    self.validation_flags.simple_tag_disabled = false;
                     self.xml_validated_offset = 0;
                 }
             }
@@ -666,8 +796,10 @@ pub fn Types(comptime options: ParseOptions) type {
             }
 
             inline fn reserveForInput(self: *Self, input_len: usize) !void {
+                const capacity = self.stack.capacity;
+                if (capacity >= 8 and input_len <= (capacity - 8) *| 512) return;
                 const est_stack = @max(@as(usize, 8), input_len / 512 +| 8);
-                if (est_stack > self.stack.capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
+                if (est_stack > capacity) try self.stack.ensureTotalCapacity(self.allocator, est_stack);
             }
 
             fn parseOpeningTag(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
@@ -710,7 +842,38 @@ pub fn Types(comptime options: ParseOptions) type {
                     closed = true;
                 }
 
+                if (comptime validated) {
+                    if (!closed and !incremental and !self.validation_flags.simple_tag_disabled and i < input.len and input[i] == ' ') {
+                        var matched = false;
+                        if (input.len - i >= 7) {
+                            const probe = std.mem.readInt(u32, input[i + 3 ..][0..4], .little);
+                            const repeated_quote = @as(u32, '\'') * 0x01010101;
+                            const quote_x = probe ^ repeated_quote;
+                            const quote_mask = (quote_x -% 0x01010101) & ~quote_x & 0x80808080;
+                            if (quote_mask != 0) {
+                                if (scanner.scanSimpleValidatedTagAttributes(input, i)) |tail| {
+                                    self_closing = tail.self_closing;
+                                    attr_end = tail.end - @intFromBool(self_closing);
+                                    i = tail.end + 1;
+                                    closed = true;
+                                    matched = true;
+                                }
+                            }
+                        }
+                        if (!matched) self.validation_flags.simple_tag_disabled = true;
+                    }
+                }
+
                 if (comptime !validated) {
+                    if (!closed and !incremental) {
+                        const token_end = scanner.scanStartTagEndFast(input, i);
+                        if (token_end != 0) {
+                            self_closing = token_end >= 2 and input[token_end - 2] == '/';
+                            attr_end = token_end - 1 - @intFromBool(self_closing);
+                            i = token_end;
+                            closed = true;
+                        }
+                    }
                     while (!closed) {
                         const fast = scanner.scanSimpleQuotedAttribute(input, i) orelse break;
                         i = fast.next;
@@ -4612,4 +4775,117 @@ test "streaming incremental DTD validation cannot reuse full-parse scratch" {
         &ctx,
         Ctx.onNode,
     ));
+}
+
+test "streaming full parse batches repeated self-closing events without changing callback semantics" {
+    if (common.IndexInt == u16) return error.SkipZigTest;
+    const opts: ParseOptions = .{};
+    const T = Types(opts);
+    const Event = T.Node;
+    const child_count = 60_000;
+    var source = std.ArrayList(u8).empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "<root>");
+    for (0..child_count) |_| try source.appendSlice(std.testing.allocator, "<x a='1'/>");
+    try source.appendSlice(std.testing.allocator, "</root>");
+    try std.testing.expect(source.items.len >= 512 * 1024);
+
+    const Ctx = struct {
+        seen: usize = 0,
+        children: usize = 0,
+        skip_root: bool = false,
+        fn onNode(self: *@This(), node: *const Event) bool {
+            self.seen += 1;
+            if (node.depth == 0) {
+                std.debug.assert(std.mem.eql(u8, node.nameSlice(), "root"));
+                return !self.skip_root;
+            }
+            std.debug.assert(node.kind == .element and node.depth == 1 and node.self_closing);
+            std.debug.assert(std.mem.eql(u8, node.nameSlice(), "x"));
+            std.debug.assert(std.mem.eql(u8, node.getAttributeValueRaw("a").?, "1"));
+            self.children += 1;
+            return true;
+        }
+    };
+
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse(source.items, &ctx, Ctx.onNode);
+    try std.testing.expectEqual(child_count + 1, ctx.seen);
+    try std.testing.expectEqual(child_count, ctx.children);
+
+    const before = parser.save();
+    ctx = .{ .skip_root = true };
+    try parser.parse(source.items, &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 1), ctx.seen);
+    try std.testing.expectEqual(@as(usize, 0), ctx.children);
+    const after = parser.save();
+    try std.testing.expect(after.stack_generation != before.stack_generation);
+}
+
+test "streaming validated repeated simple text emits exact event spans and preserves validation" {
+    if (common.IndexInt == u16) return error.SkipZigTest;
+    const opts: ParseOptions = .{ .validate_well_formedness = true };
+    const T = Types(opts);
+    const Event = T.Node;
+    const child_count = 70_000;
+    var source = std.ArrayList(u8).empty;
+    defer source.deinit(std.testing.allocator);
+    try source.appendSlice(std.testing.allocator, "<root>");
+    for (0..child_count) |_| try source.appendSlice(std.testing.allocator, "<x>a</x>");
+    try source.appendSlice(std.testing.allocator, "</root>");
+    try std.testing.expect(source.items.len >= 512 * 1024);
+
+    const Ctx = struct {
+        elements: usize = 0,
+        texts: usize = 0,
+        fn onNode(self: *@This(), node: *const Event) bool {
+            switch (node.kind) {
+                .element => {
+                    self.elements += 1;
+                    if (node.depth == 0) {
+                        std.debug.assert(std.mem.eql(u8, node.nameSlice(), "root"));
+                    } else {
+                        std.debug.assert(node.depth == 1 and std.mem.eql(u8, node.nameSlice(), "x"));
+                        std.debug.assert(std.mem.eql(u8, node.leadingTextRaw(), "a"));
+                    }
+                },
+                .text => {
+                    self.texts += 1;
+                    std.debug.assert(node.depth == 2);
+                    std.debug.assert(std.mem.eql(u8, node.valueRawSlice(), "a"));
+                },
+                else => unreachable,
+            }
+            return true;
+        }
+    };
+
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse(source.items, &ctx, Ctx.onNode);
+    try std.testing.expectEqual(child_count + 1, ctx.elements);
+    try std.testing.expectEqual(child_count, ctx.texts);
+
+    source.clearRetainingCapacity();
+    try source.appendSlice(std.testing.allocator, "<root>");
+    for (0..40_000) |_| try source.appendSlice(std.testing.allocator, "<x>&bogus;</x>");
+    try source.appendSlice(std.testing.allocator, "</root>");
+    try std.testing.expect(source.items.len >= 512 * 1024);
+    const InvalidCtx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+    var invalid_ctx: InvalidCtx = .{};
+    try std.testing.expectError(error.InvalidNumericCharacterEntity, parser.parse(source.items, &invalid_ctx, InvalidCtx.onNode));
+
+    source.clearRetainingCapacity();
+    try source.appendSlice(std.testing.allocator, "<root>");
+    for (0..40_000) |_| try source.appendSlice(std.testing.allocator, "<x a='1' a='2'/>");
+    try source.appendSlice(std.testing.allocator, "</root>");
+    try std.testing.expect(source.items.len >= 512 * 1024);
+    try std.testing.expectError(error.DuplicateAttribute, parser.parse(source.items, &invalid_ctx, InvalidCtx.onNode));
 }

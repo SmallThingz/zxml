@@ -220,6 +220,95 @@ noinline fn scanStartTagEndFastLong(
     return 0;
 }
 
+pub const SimpleValidatedTagEnd = struct {
+    end: usize,
+    self_closing: bool,
+};
+
+inline fn byteMatchMask64(word: u64, byte: u8) u64 {
+    const repeated = @as(u64, byte) * 0x0101010101010101;
+    const x = word ^ repeated;
+    return (x -% 0x0101010101010101) & ~x & 0x8080808080808080;
+}
+
+inline fn byteMatchMask32(word: u32, byte: u8) u32 {
+    const repeated = @as(u32, byte) * 0x01010101;
+    const x = word ^ repeated;
+    return (x -% 0x01010101) & ~x & 0x80808080;
+}
+
+/// Validates the common ` name='plain'` attribute-list shape in one pass.
+/// Returns null for any syntax needing the full XML attribute validator.
+pub noinline fn scanSimpleValidatedTagAttributes(noalias input: []const u8, start: usize) ?SimpleValidatedTagEnd {
+    var keys: [16]u32 = undefined;
+    var count: usize = 0;
+    var buckets: u64 = 0;
+    var i = start;
+    while (i < input.len) {
+        if (input[i] == '>') return .{ .end = i, .self_closing = false };
+        if (input[i] == '/' and i + 1 < input.len and input[i + 1] == '>') return .{ .end = i + 1, .self_closing = true };
+        if (input[i] != ' ' or count == keys.len or input.len - i < 12) return null;
+        const name_start = i + 1;
+        const first = input[name_start];
+        if (first >= 0x80 or !tables.isNameStart(first)) return null;
+        const name_word = std.mem.readInt(u32, input[name_start + 1 ..][0..4], .little);
+        const equal_mask = byteMatchMask32(name_word, '=');
+        if (equal_mask == 0) return null;
+        const extra_len: usize = @ctz(equal_mask) >> 3;
+        if (extra_len > 3) return null;
+        var key: u32 = first;
+        inline for (0..3) |offset| {
+            if (offset >= extra_len) break;
+            const c = input[name_start + 1 + offset];
+            if (c >= 0x80 or !tables.NameCharTable[c]) return null;
+            key |= @as(u32, c) << @intCast((offset + 1) * 8);
+        }
+        if (count == 0) {
+            keys[0] = key;
+            count = 1;
+        } else if (count == 1) {
+            if (keys[0] == key) return null;
+            keys[1] = key;
+            count = 2;
+        } else {
+            if (count == 2) {
+                inline for (0..2) |index| {
+                    const previous_bucket: u6 = @truncate((keys[index] *% 0x9e3779b1) >> 26);
+                    buckets |= @as(u64, 1) << previous_bucket;
+                }
+            }
+            const bucket: u6 = @truncate((key *% 0x9e3779b1) >> 26);
+            const bit = @as(u64, 1) << bucket;
+            if (buckets & bit != 0) {
+                for (keys[0..count]) |previous| if (previous == key) return null;
+            }
+            buckets |= bit;
+            keys[count] = key;
+            count += 1;
+        }
+        const name_end = name_start + 1 + extra_len;
+        const quote = input[name_end + 1];
+        if (quote != '\'') return null;
+        const value_start = name_end + 2;
+        if (input.len - value_start < 2) return null;
+        if (input[value_start + 1] == '\'') {
+            const first_value = input[value_start];
+            if (first_value == '<' or first_value == '&') return null;
+            i = value_start + 2;
+            continue;
+        }
+        if (input.len - value_start < 8) return null;
+        const value_word = std.mem.readInt(u64, input[value_start..][0..8], .little);
+        const quote_mask = byteMatchMask64(value_word, quote);
+        if (quote_mask == 0) return null;
+        const quote_bit = @ctz(quote_mask);
+        const specials = byteMatchMask64(value_word, '<') | byteMatchMask64(value_word, '&');
+        if (specials != 0 and @ctz(specials) < quote_bit) return null;
+        i = value_start + (@as(usize, quote_bit) >> 3) + 1;
+    }
+    return null;
+}
+
 pub const SimpleQuotedAttributeScan = struct {
     name_start: usize,
     name_end: usize,
