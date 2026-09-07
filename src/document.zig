@@ -1896,28 +1896,24 @@ fn emptyInput(comptime options: ParseOptions) options.Input() {
     return if (options.non_destructive) empty else @constCast(empty);
 }
 
-/// Generated persistent node layout. The fastest/default XML document is exactly
-/// parent + subtree_end + one source span. Optional navigation and misc metadata
-/// physically disappear from document types that do not request them.
+/// Generated persistent node layout. The fastest/default XML document is
+/// parent + one source span. Text spans are stored reversed internally so kind
+/// needs no persistent byte; subtree boundaries are derived lazily from preorder
+/// parent indexes instead of being written during parsing.
 pub fn GetRawNode(comptime options: ParseOptions) type {
     return struct {
         parent: IndexInt = InvalidIndex,
-        /// Inclusive subtree tail for elements/document. Zero identifies text in
-        /// the compact no-misc layout because real elements start at index >= 1.
-        subtree_end: IndexInt = 0,
-        /// Element tag-name span or text/misc primary source span.
+        /// Element tag-name span or text/misc primary source span. In the compact
+        /// no-misc layout, non-empty text spans are reversed as the kind sentinel.
         name_or_text: Span = .{},
         last_child: OptionalIndex(options.store_last_child) = if (options.store_last_child) InvalidIndex else {},
         prev_sibling: OptionalIndex(options.store_prev_sibling) = if (options.store_prev_sibling) InvalidIndex else {},
-        /// Rich node kind exists only when callers request XML misc nodes.
         kind: OptionalNodeType(options.include_misc_nodes) = if (options.include_misc_nodes) .text else {},
-        /// PI/declaration secondary payload exists only in the rich misc layout.
         misc_value: OptionalSpan(options.include_misc_nodes) = if (options.include_misc_nodes) .{} else {},
 
         pub inline fn initDocument() @This() {
             return .{
                 .parent = InvalidIndex,
-                .subtree_end = 0,
                 .name_or_text = .{},
                 .last_child = if (options.store_last_child) InvalidIndex else {},
                 .prev_sibling = if (options.store_prev_sibling) InvalidIndex else {},
@@ -1926,10 +1922,9 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
             };
         }
 
-        pub inline fn initElement(idx: IndexInt, parent: IndexInt, name: Span, prev: IndexInt) @This() {
+        pub inline fn initElement(_: IndexInt, parent: IndexInt, name: Span, prev: IndexInt) @This() {
             return .{
                 .parent = parent,
-                .subtree_end = idx,
                 .name_or_text = name,
                 .last_child = if (options.store_last_child) InvalidIndex else {},
                 .prev_sibling = if (options.store_prev_sibling) prev else {},
@@ -1939,10 +1934,10 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
         }
 
         pub inline fn initText(parent: IndexInt, text: Span, prev: IndexInt) @This() {
+            std.debug.assert(text.start < text.end);
             return .{
                 .parent = parent,
-                .subtree_end = 0,
-                .name_or_text = text,
+                .name_or_text = if (options.include_misc_nodes) text else .{ .start = text.end, .end = text.start },
                 .last_child = if (options.store_last_child) InvalidIndex else {},
                 .prev_sibling = if (options.store_prev_sibling) prev else {},
                 .kind = if (options.include_misc_nodes) .text else {},
@@ -1954,7 +1949,6 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
             comptime std.debug.assert(options.include_misc_nodes);
             return .{
                 .parent = parent,
-                .subtree_end = 0,
                 .name_or_text = primary,
                 .last_child = if (options.store_last_child) InvalidIndex else {},
                 .prev_sibling = if (options.store_prev_sibling) prev else {},
@@ -1966,17 +1960,15 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
         pub inline fn nodeKind(self: *const @This(), idx: IndexInt) NodeType {
             if (idx == 0) return .document;
             if (comptime options.include_misc_nodes) return self.kind;
-            return if (self.subtree_end == 0) .text else .element;
+            return if (self.name_or_text.start > self.name_or_text.end) .text else .element;
         }
 
         pub inline fn isDocument(_: *const @This(), idx: IndexInt) bool {
             return idx == 0;
         }
-
         pub inline fn isText(self: *const @This(), idx: IndexInt) bool {
             return self.nodeKind(idx) == .text;
         }
-
         pub inline fn isElement(self: *const @This(), idx: IndexInt) bool {
             return self.nodeKind(idx) == .element;
         }
@@ -1988,7 +1980,16 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
                     else => self.name_or_text,
                 };
             }
+            if (idx != 0 and self.name_or_text.start > self.name_or_text.end) {
+                return .{ .start = self.name_or_text.end, .end = self.name_or_text.start };
+            }
             return self.name_or_text;
+        }
+
+        inline fn setTextSpan(self: *@This(), text: Span) void {
+            comptime std.debug.assert(!options.include_misc_nodes);
+            std.debug.assert(text.start < text.end);
+            self.name_or_text = .{ .start = text.end, .end = text.start };
         }
     };
 }
@@ -2175,7 +2176,7 @@ fn GetNode(comptime options: ParseOptions) type {
             if (comptime options.store_last_child) return self.doc.nodeAt(self.raw().last_child);
             var idx = self.index + 1;
             var last: IndexInt = InvalidIndex;
-            const end = self.raw().subtree_end;
+            const end = self.doc.subtreeEndAt(self.index);
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) {
                 if (self.doc.nodes[@intCast(idx)].parent == self.index) last = idx;
                 const tail = self.doc.subtreeEndAt(idx);
@@ -2232,7 +2233,7 @@ fn GetNode(comptime options: ParseOptions) type {
 
         pub fn innerTextRaw(self: Self) ?[]const u8 {
             if (self.kind == .text or self.kind == .cdata) return self.valueRawSlice();
-            const end = self.raw().subtree_end;
+            const end = self.doc.subtreeEndAt(self.index);
             var first: ?[]const u8 = null;
             var idx = self.index + 1;
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
@@ -2250,7 +2251,7 @@ fn GetNode(comptime options: ParseOptions) type {
 
             var out = std.ArrayList(u8).empty;
             errdefer out.deinit(alloc);
-            const end = self.raw().subtree_end;
+            const end = self.doc.subtreeEndAt(self.index);
             var idx = self.index + 1;
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 switch (self.doc.kindAt(idx)) {
@@ -2272,7 +2273,7 @@ fn GetNode(comptime options: ParseOptions) type {
 
         pub fn querySelector(self: Self, selector: []const u8) ?Self {
             var idx = self.index + 1;
-            const end = self.raw().subtree_end;
+            const end = self.doc.subtreeEndAt(self.index);
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 const child = self.doc.nodeAt(idx).?;
                 if (child.kind == .element and selectorMatches(child, selector)) return child;
@@ -2284,7 +2285,7 @@ fn GetNode(comptime options: ParseOptions) type {
             var out = std.ArrayList(Self).empty;
             errdefer out.deinit(alloc);
             var idx = self.index + 1;
-            const end = self.raw().subtree_end;
+            const end = self.doc.subtreeEndAt(self.index);
             while (idx <= end and @as(usize, @intCast(idx)) < self.doc.nodes.len) : (idx += 1) {
                 const child = self.doc.nodeAt(idx).?;
                 if (child.kind == .element and selectorMatches(child, selector)) try out.append(alloc, child);
@@ -2360,8 +2361,8 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn textState(self: *const Self, idx: IndexInt) TextMaterializationState {
             if (comptime options.non_destructive) return .raw;
-            const node = &self.nodes[@intCast(idx)];
-            const end: usize = @intCast(node.name_or_text.end);
+            const span = self.nodes[@intCast(idx)].valueSpan(idx);
+            const end: usize = @intCast(span.end);
             if (end >= self.source.len) return .raw;
             return switch (self.source[end]) {
                 @intFromEnum(TextMaterializationState.decoded) => .decoded,
@@ -2372,19 +2373,19 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         inline fn markTextState(self: *Self, idx: IndexInt, state: TextMaterializationState) void {
             if (comptime options.non_destructive) return;
-            const end: usize = @intCast(self.nodes[@intCast(idx)].name_or_text.end);
+            const end: usize = @intCast(self.nodes[@intCast(idx)].valueSpan(idx).end);
             if (end < self.source.len) self.source[end] = @intFromEnum(state);
         }
 
         fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
             const node = &self.nodes[@intCast(idx)];
             std.debug.assert(node.nodeKind(idx) == .text);
-            if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.name_or_text.slice(self.source));
+            if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.valueSpan(idx).slice(self.source));
 
             switch (self.textState(idx)) {
-                .decoded => return .{ .value = node.name_or_text.slice(self.source) },
+                .decoded => return .{ .value = node.valueSpan(idx).slice(self.source) },
                 .decode_failed => {
-                    const raw = node.name_or_text.slice(self.source);
+                    const raw = node.valueSpan(idx).slice(self.source);
                     return .{
                         .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
                         .owned = true,
@@ -2393,17 +2394,21 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                 .raw => {},
             }
 
-            const original_end = node.name_or_text.end;
-            const result = try entities.decodeInPlaceWithEntityMap(node.name_or_text.sliceMut(self.source), options.validate_well_formedness, self.entityMap());
+            const original_span = node.valueSpan(idx);
+            const result = try entities.decodeInPlaceWithEntityMap(original_span.sliceMut(self.source), options.validate_well_formedness, self.entityMap());
             if (result.complete) {
-                node.name_or_text.end = node.name_or_text.start + @as(IndexInt, @intCast(result.len));
+                const decoded_span: Span = .{ .start = original_span.start, .end = original_span.start + @as(IndexInt, @intCast(result.len)) };
+                if (comptime options.include_misc_nodes) {
+                    node.name_or_text = decoded_span;
+                } else {
+                    node.setTextSpan(decoded_span);
+                }
                 self.markTextState(idx, .decoded);
-                return .{ .value = node.name_or_text.slice(self.source) };
+                return .{ .value = node.valueSpan(idx).slice(self.source) };
             }
 
-            node.name_or_text.end = original_end;
             self.markTextState(idx, .decode_failed);
-            const raw = node.name_or_text.slice(self.source);
+            const raw = original_span.slice(self.source);
             return .{
                 .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
                 .owned = true,
@@ -2457,13 +2462,14 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             return self.nodes[@intCast(idx)].nodeKind(idx);
         }
 
-        /// Inclusive subtree tail. Compact text/misc nodes store zero in the raw
-        /// field as their kind sentinel, so leaves derive their tail from index.
+        /// Inclusive subtree tail derived from preorder parent indexes. Every
+        /// descendant of `idx` has a parent index >= `idx`; the first following
+        /// node outside the subtree has a smaller parent index.
         inline fn subtreeEndAt(self: *const Self, idx: IndexInt) IndexInt {
-            return switch (self.kindAt(idx)) {
-                .document, .element => self.nodes[@intCast(idx)].subtree_end,
-                else => idx,
-            };
+            if (self.kindAt(idx) != .document and self.kindAt(idx) != .element) return idx;
+            var next: usize = @as(usize, @intCast(idx)) + 1;
+            while (next < self.nodes.len and self.nodes[next].parent >= idx) : (next += 1) {}
+            return @intCast(next - 1);
         }
 
         pub fn nodeAt(self: *const Self, idx: IndexInt) ?Node {
@@ -2484,7 +2490,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             var open_idx: IndexInt = InvalidIndex;
             var idx = start;
             while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.len) : (idx += 1) {
-                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.nodes[@intCast(open_idx)].subtree_end < idx) {
+                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.subtreeEndAt(open_idx) < idx) {
                     const closing = open_idx;
                     open_idx = self.nodes[@intCast(closing)].parent;
                     try self.writeCloseElement(writer, closing);
@@ -2495,7 +2501,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                     .document => {},
                     .element => {
                         try self.writeOpenElement(writer, idx);
-                        if (raw.subtree_end == idx) {
+                        if (self.subtreeEndAt(idx) == idx) {
                             try writer.writeAll("/>");
                         } else {
                             try writer.writeAll(">");
@@ -2796,7 +2802,7 @@ test "generated DOM layout removes disabled metadata" {
     const FullNode = full.Document().RawNode;
     const RichNode = rich.Document().RawNode;
 
-    try std.testing.expectEqual(@as(usize, @sizeOf(IndexInt) * 4), @sizeOf(CompactNode));
+    try std.testing.expectEqual(@as(usize, @sizeOf(IndexInt) * 3), @sizeOf(CompactNode));
     try std.testing.expect(@sizeOf(FullNode) > @sizeOf(CompactNode));
     try std.testing.expect(@sizeOf(RichNode) > @sizeOf(CompactNode));
     try std.testing.expectEqual(void, @FieldType(CompactNode, "last_child"));

@@ -148,51 +148,76 @@ pub noinline fn scanStartTagEnd(noalias input: []const u8, start: usize) ?StartT
     return null;
 }
 
+noinline fn scanStartTagEndExactNext(noalias input: []const u8, start: usize) usize {
+    const exact = scanStartTagEnd(input, start) orelse return 0;
+    return exact.end + 1;
+}
+
 /// Node-only parsing stops at the first raw `>` and checks quote parity in
 /// bulk. A `>` inside a quoted value may be rejected; mixed quote kinds use
 /// the general scanner. The fully validating parser retains the full grammar.
-pub noinline fn scanStartTagEndFast(noalias input: []const u8, start: usize) ?StartTagEndScan {
-    if (start >= input.len) return null;
+pub noinline fn scanStartTagEndFast(noalias input: []const u8, start: usize) usize {
+    if (start >= input.len) return 0;
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
     const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
-    var saw_single = false;
-    var saw_double = false;
-    var odd = false;
-    var i = start;
+    if (input.len - start < @sizeOf(Vec)) return scanStartTagEndFastLong(input, start, start, 0, false);
+
+    const bytes: Vec = input[start..][0..@sizeOf(Vec)].*;
+    const gt: Mask = @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('>')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))));
+    const before = (gt -% 1) & ~gt;
+    const single: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('\'')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
+    const double: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('"')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
+    const seen_quotes: u2 = @as(u2, @intFromBool(single != 0)) | (@as(u2, @intFromBool(double != 0)) << 1);
+    if (seen_quotes == 3) return scanStartTagEndExactNext(input, start);
+    const odd = @popCount(single | double) & 1 != 0;
+    if (gt != 0) {
+        if (odd) return 0;
+        return start + @ctz(gt) + 1;
+    }
+    return scanStartTagEndFastLong(input, start, start + @sizeOf(Vec), seen_quotes, odd);
+}
+
+noinline fn scanStartTagEndFastLong(
+    noalias input: []const u8,
+    start: usize,
+    initial_i: usize,
+    initial_seen_quotes: u2,
+    initial_odd: bool,
+) usize {
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const Bits = @Vector(byte_scan_vector_len, u1);
+    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    var seen_quotes = initial_seen_quotes;
+    var odd = initial_odd;
+    var i = initial_i;
     while (input.len - i >= @sizeOf(Vec)) : (i += @sizeOf(Vec)) {
         const bytes: Vec = input[i..][0..@sizeOf(Vec)].*;
         const gt: Mask = @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('>')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))));
         const before = (gt -% 1) & ~gt;
         const single: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('\'')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
         const double: Mask = @as(Mask, @bitCast(@as(Bits, @select(u1, bytes == @as(Vec, @splat('"')), @as(Bits, @splat(1)), @as(Bits, @splat(0)))))) & before;
-        saw_single = saw_single or single != 0;
-        saw_double = saw_double or double != 0;
-        if (saw_single and saw_double) return scanStartTagEnd(input, start);
+        seen_quotes |= @as(u2, @intFromBool(single != 0)) | (@as(u2, @intFromBool(double != 0)) << 1);
+        if (seen_quotes == 3) return scanStartTagEndExactNext(input, start);
         odd = odd != (@popCount(single | double) & 1 != 0);
         if (gt != 0) {
-            if (odd) return null;
-            const end = i + @ctz(gt);
-            return .{ .end = end, .self_closing = end > start and input[end - 1] == '/' };
+            if (odd) return 0;
+            return i + @ctz(gt) + 1;
         }
     }
     while (i < input.len) : (i += 1) {
         const c = input[i];
-        if (c == '>') {
-            if (odd) return null;
-            return .{ .end = i, .self_closing = i > start and input[i - 1] == '/' };
-        }
+        if (c == '>') return if (odd) 0 else i + 1;
         if (c == '\'') {
-            saw_single = true;
+            seen_quotes |= 1;
+            odd = !odd;
+        } else if (c == '"') {
+            seen_quotes |= 2;
             odd = !odd;
         }
-        if (c == '"') {
-            saw_double = true;
-            odd = !odd;
-        }
-        if (saw_single and saw_double) return scanStartTagEnd(input, start);
+        if (seen_quotes == 3) return scanStartTagEndExactNext(input, start);
     }
-    return null;
+    return 0;
 }
 
 pub const SimpleQuotedAttributeScan = struct {
@@ -1002,10 +1027,12 @@ test "node-only tag scanner never returns a different boundary" {
         const len = random.uintLessThan(usize, input.len + 1);
         for (input[0..len]) |*c| c.* = alphabet[random.uintLessThan(usize, alphabet.len)];
         const start = random.uintLessThan(usize, len + 1);
-        if (scanStartTagEndFast(input[0..len], start)) |fast| {
+        const fast_next = scanStartTagEndFast(input[0..len], start);
+        if (fast_next != 0) {
             const reference = scanStartTagEnd(input[0..len], start) orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(reference.end, fast.end);
-            try std.testing.expectEqual(reference.self_closing, fast.self_closing);
+            const fast_end = fast_next - 1;
+            try std.testing.expectEqual(reference.end, fast_end);
+            try std.testing.expectEqual(reference.self_closing, fast_end > start and input[fast_end - 1] == '/');
         }
     }
     for ([_][]const u8{ " a='one'/>", " a=\"one\" b='two'>", " a=\"a'b\"/>", " a='a\"b'>" }) |source| {
@@ -1013,8 +1040,9 @@ test "node-only tag scanner never returns a different boundary" {
             @memset(input[0..padding], 'x');
             @memcpy(input[padding..][0..source.len], source);
             @memset(input[padding + source.len ..], '\'');
-            const result = scanStartTagEndFast(&input, padding) orelse return error.TestUnexpectedResult;
-            try std.testing.expectEqual(padding + source.len - 1, result.end);
+            const result = scanStartTagEndFast(&input, padding);
+            if (result == 0) return error.TestUnexpectedResult;
+            try std.testing.expectEqual(padding + source.len - 1, result - 1);
         }
     }
 }

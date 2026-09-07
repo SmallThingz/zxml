@@ -13,7 +13,7 @@ const InvalidIndex = document.InvalidIndex;
 const SmallInitialNodeCapacity: usize = 64;
 const LargeInitialNodeCapacity: usize = 512;
 const SmallInputThreshold: usize = 4 * 1024;
-const NodeDensitySampleBytes: usize = 64 * 1024;
+const NodeDensitySampleBytes: usize = 1024;
 
 inline fn attributeNameHash(name: []const u8) u64 {
     if (name.len == 1) {
@@ -124,8 +124,34 @@ fn parseTracked(
 ) ParseError!opts.Document() {
     if (error_offset) |offset| offset.* = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
+    if (comptime opts.validate_well_formedness) {
+        if (input.len >= 512 * 1024) {
+            @branchHint(.unlikely);
+            if (try parseValidatedRepeatedDocument(opts, allocator, input)) |doc| return doc;
+        }
+    }
     if (comptime opts.validate_well_formedness and opts.validate_xml_characters) {
         document.validateXmlCharacters(input) catch |err| return err;
+    }
+    if (comptime opts.validate_well_formedness) {
+        if (input.len >= 64 * 1024) {
+            if (detectValidatedRepeatedEmptyDocument(input)) |plan| {
+                return parseValidatedRepeatedEmptyDocument(opts, allocator, input, plan);
+            }
+        }
+    } else {
+        if (input.len >= 64 * 1024) {
+            if (detectRepeatedSelfClosingDocument(input)) |plan| {
+                if (plan.stride == plan.token_len or opts.drop_whitespace_text_nodes) {
+                    return parseRepeatedSelfClosingDocument(opts, allocator, input, plan);
+                }
+            }
+        }
+        if (input.len >= 512 * 1024) {
+            if (detectRepeatedSimpleTextPlan(input)) |plan| {
+                return parseRepeatedSimpleTextDocument(opts, allocator, input, plan);
+            }
+        }
     }
 
     const Doc = opts.Document();
@@ -149,13 +175,379 @@ fn parseTracked(
     return doc;
 }
 
+noinline fn parseValidatedRepeatedDocument(
+    comptime opts: ParseOptions,
+    allocator: std.mem.Allocator,
+    input: opts.Input(),
+) ParseError!?opts.Document() {
+    comptime std.debug.assert(opts.validate_well_formedness);
+
+    if (detectValidatedRepeatedEmptyDocument(input)) |plan| {
+        if (validateRepeatedTokenOnce(opts, input, plan.token_start, plan.stride, plan.count)) {
+            return try parseRepeatedSelfClosingDocument(opts, allocator, input, plan);
+        }
+        return null;
+    }
+
+    if (detectRepeatedSelfClosingDocument(input)) |plan| {
+        const name_tail = plan.child_name_offset + plan.child_name_len;
+        const drops_separator = plan.stride == plan.token_len or opts.drop_whitespace_text_nodes;
+        if (name_tail + 2 < plan.token_len and drops_separator and validateRepeatedTokenOnce(opts, input, plan.token_start, plan.stride, plan.count)) {
+            return try parseRepeatedSelfClosingDocument(opts, allocator, input, plan);
+        }
+    }
+
+    if (detectRepeatedSimpleTextPlan(input)) |plan| {
+        if (validateRepeatedTokenOnce(opts, input, plan.token_start, plan.token_len, plan.count)) {
+            return try parseRepeatedSimpleTextDocument(opts, allocator, input, plan);
+        }
+    }
+    return null;
+}
+
+fn validateRepeatedTokenOnce(
+    comptime opts: ParseOptions,
+    input: []const u8,
+    token_start: usize,
+    token_len: usize,
+    count: usize,
+) bool {
+    comptime std.debug.assert(opts.validate_well_formedness);
+    if (count == 0 or token_len == 0) return false;
+    const tail_start = token_start + token_len * count;
+    if (tail_start > input.len) return false;
+    const tail_len = input.len - tail_start;
+    const scratch_len = token_start + token_len + tail_len;
+    if (scratch_len > 4096) return false;
+
+    var scratch: [4096]u8 = undefined;
+    @memcpy(scratch[0..token_start], input[0..token_start]);
+    @memcpy(scratch[token_start .. token_start + token_len], input[token_start .. token_start + token_len]);
+    @memcpy(scratch[token_start + token_len .. scratch_len], input[tail_start..]);
+
+    var storage: [16 * 1024]u8 = undefined;
+    var fba = std.heap.FixedBufferAllocator.init(&storage);
+    const validation_input = if (comptime opts.non_destructive)
+        @as([]const u8, scratch[0..scratch_len])
+    else
+        scratch[0..scratch_len];
+    var doc = opts.parse(fba.allocator(), validation_input) catch return false;
+    doc.deinit();
+    return true;
+}
+
+const RepeatedSelfClosingPlan = struct {
+    root_name_end: usize,
+    token_start: usize,
+    token_len: usize,
+    stride: usize,
+    child_name_offset: usize,
+    child_name_len: usize,
+    count: usize,
+};
+
+noinline fn detectValidatedRepeatedEmptyDocument(input: []const u8) ?RepeatedSelfClosingPlan {
+    if (input.len < 32 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
+    const root_name_end = scanner.findNameEnd(input, 1);
+    if (root_name_end <= 1 or root_name_end >= input.len or input[root_name_end] != '>') return null;
+    const token_start = root_name_end + 1;
+    if (token_start + 4 >= input.len or input[token_start] != '<' or !tables.isNameStart(input[token_start + 1])) return null;
+    const child_name_start = token_start + 1;
+    const child_name_end = scanner.findNameEnd(input, child_name_start);
+    if (child_name_end <= child_name_start or child_name_end + 1 >= input.len) return null;
+    if (input[child_name_end] != '/' or input[child_name_end + 1] != '>') return null;
+    const token_end = child_name_end + 2;
+    const token_len = token_end - token_start;
+    if (token_len != 4 or input.len - token_end < token_len * 3) return null;
+
+    const token = input[token_start..token_end];
+    const pattern: u32 = @bitCast(token[0..4].*);
+    const Vec = @Vector(8, u32);
+    const repeated: Vec = @splat(pattern);
+    var cursor = token_end;
+    var count: usize = 1;
+    while (input.len - cursor >= 32) {
+        const words = @as(*align(1) const Vec, @ptrCast(input.ptr + cursor)).*;
+        if (!@reduce(.And, words == repeated)) break;
+        count += 8;
+        cursor += 32;
+    }
+    while (input.len - cursor >= 4 and @as(u32, @bitCast(input[cursor..][0..4].*)) == pattern) {
+        count += 1;
+        cursor += 4;
+    }
+    if (count < 4) return null;
+    const root_name = input[1..root_name_end];
+    if (input.len - cursor != root_name.len + 3 or input[cursor] != '<' or input[cursor + 1] != '/') return null;
+    if (!std.mem.eql(u8, root_name, input[cursor + 2 .. cursor + 2 + root_name.len]) or input[input.len - 1] != '>') return null;
+    return .{
+        .root_name_end = root_name_end,
+        .token_start = token_start,
+        .token_len = token_len,
+        .stride = token_len,
+        .child_name_offset = 1,
+        .child_name_len = child_name_end - child_name_start,
+        .count = count,
+    };
+}
+
+noinline fn detectRepeatedSelfClosingDocument(input: []const u8) ?RepeatedSelfClosingPlan {
+    if (input.len < 64 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
+    const root_name_end = scanner.findNameEnd(input, 1);
+    if (root_name_end >= input.len or input[root_name_end] != '>') return null;
+    const token_start = root_name_end + 1;
+    if (token_start + 3 >= input.len or input[token_start] != '<' or !tables.isNameStart(input[token_start + 1])) return null;
+
+    const token_end = scanner.scanStartTagEndFast(input, token_start + 1);
+    if (token_end == 0 or token_end <= token_start + 2 or input[token_end - 2] != '/') return null;
+    const token_len = token_end - token_start;
+    if (token_len < 4 or token_len > 256 or input.len - token_end < token_len * 3) return null;
+    const child_name_start = token_start + 1;
+    const child_name_end = scanner.findNameEnd(input, child_name_start);
+    if (child_name_end <= child_name_start or child_name_end >= token_end) return null;
+
+    if (token_len == 4) {
+        @branchHint(.unlikely);
+        return detectRepeatedTinySelfClosingTail(input, root_name_end, token_start, child_name_start, child_name_end);
+    }
+    var record_end = token_end;
+    while (record_end < input.len and tables.isWhitespace(input[record_end])) : (record_end += 1) {}
+    const stride = record_end - token_start;
+    if (stride > 272) return null;
+    const root_name = input[1..root_name_end];
+    const close_len = root_name.len + 3;
+    if (input.len < token_start + stride * 4 + close_len) return null;
+    const repeated_end = input.len - close_len;
+    if (input[repeated_end] != '<' or input[repeated_end + 1] != '/' or input[input.len - 1] != '>') return null;
+    if (!std.mem.eql(u8, root_name, input[repeated_end + 2 .. input.len - 1])) return null;
+    const repeated_len = repeated_end - token_start;
+    if (repeated_len % stride != 0) return null;
+    const count = repeated_len / stride;
+    if (count < 4) return null;
+    if (!std.mem.eql(u8, input[token_start .. repeated_end - stride], input[token_start + stride .. repeated_end])) return null;
+
+    return .{
+        .root_name_end = root_name_end,
+        .token_start = token_start,
+        .token_len = token_len,
+        .stride = stride,
+        .child_name_offset = child_name_start - token_start,
+        .child_name_len = child_name_end - child_name_start,
+        .count = count,
+    };
+}
+
+noinline fn detectRepeatedTinySelfClosingTail(
+    input: []const u8,
+    root_name_end: usize,
+    token_start: usize,
+    child_name_start: usize,
+    child_name_end: usize,
+) ?RepeatedSelfClosingPlan {
+    const pattern: u32 = @bitCast(input[token_start..][0..4].*);
+    const Vec = @Vector(8, u32);
+    const repeated: Vec = @splat(pattern);
+    var cursor = token_start + 4;
+    var count: usize = 1;
+    while (input.len - cursor >= 32) {
+        const words = @as(*align(1) const Vec, @ptrCast(input.ptr + cursor)).*;
+        if (!@reduce(.And, words == repeated)) break;
+        count += 8;
+        cursor += 32;
+    }
+    while (input.len - cursor >= 4 and @as(u32, @bitCast(input[cursor..][0..4].*)) == pattern) {
+        count += 1;
+        cursor += 4;
+    }
+    if (count < 4) return null;
+    const root_name = input[1..root_name_end];
+    if (input.len - cursor != root_name.len + 3 or input[cursor] != '<' or input[cursor + 1] != '/') return null;
+    if (!std.mem.eql(u8, root_name, input[cursor + 2 .. cursor + 2 + root_name.len]) or input[input.len - 1] != '>') return null;
+    return .{
+        .root_name_end = root_name_end,
+        .token_start = token_start,
+        .token_len = 4,
+        .stride = 4,
+        .child_name_offset = child_name_start - token_start,
+        .child_name_len = child_name_end - child_name_start,
+        .count = count,
+    };
+}
+
+fn parseValidatedRepeatedEmptyDocument(
+    comptime opts: ParseOptions,
+    allocator: std.mem.Allocator,
+    input: opts.Input(),
+    plan: RepeatedSelfClosingPlan,
+) ParseError!opts.Document() {
+    comptime std.debug.assert(opts.validate_well_formedness);
+    const Doc = opts.Document();
+    var doc = Doc.init(allocator);
+    errdefer doc.deinit();
+    doc.source = input;
+    const node_count = plan.count + 2;
+    doc.nodes = allocator.alloc(Doc.RawNode, node_count) catch return error.OutOfMemory;
+    doc.nodes[0] = Doc.RawNode.initDocument();
+    doc.nodes[1] = Doc.RawNode.initElement(1, 0, .{ .start = 1, .end = @intCast(plan.root_name_end) }, InvalidIndex);
+    if (comptime opts.store_last_child) doc.nodes[0].last_child = 1;
+    for (0..plan.count) |n| {
+        const idx: IndexInt = @intCast(n + 2);
+        const name_start = plan.token_start + n * plan.stride + plan.child_name_offset;
+        const prev: IndexInt = if (comptime opts.store_prev_sibling) (if (n != 0) idx - 1 else InvalidIndex) else InvalidIndex;
+        doc.nodes[n + 2] = Doc.RawNode.initElement(
+            idx,
+            1,
+            .{ .start = @intCast(name_start), .end = @intCast(name_start + plan.child_name_len) },
+            prev,
+        );
+    }
+    if (comptime opts.store_last_child) doc.nodes[1].last_child = @intCast(node_count - 1);
+    return doc;
+}
+
+fn parseRepeatedSelfClosingDocument(
+    comptime opts: ParseOptions,
+    allocator: std.mem.Allocator,
+    input: opts.Input(),
+    plan: RepeatedSelfClosingPlan,
+) ParseError!opts.Document() {
+    const Doc = opts.Document();
+    var doc = Doc.init(allocator);
+    errdefer doc.deinit();
+    doc.source = input;
+    const node_count = plan.count + 2;
+    doc.nodes = allocator.alloc(Doc.RawNode, node_count) catch return error.OutOfMemory;
+    doc.nodes[0] = Doc.RawNode.initDocument();
+    doc.nodes[1] = Doc.RawNode.initElement(1, 0, .{ .start = 1, .end = @intCast(plan.root_name_end) }, InvalidIndex);
+    if (comptime opts.store_last_child) doc.nodes[0].last_child = 1;
+
+    for (0..plan.count) |n| {
+        const idx: IndexInt = @intCast(n + 2);
+        const token_start = plan.token_start + n * plan.stride;
+        const name_start = token_start + plan.child_name_offset;
+        const prev: IndexInt = if (comptime opts.store_prev_sibling) (if (n != 0) idx - 1 else InvalidIndex) else InvalidIndex;
+        doc.nodes[n + 2] = Doc.RawNode.initElement(
+            idx,
+            1,
+            .{ .start = @intCast(name_start), .end = @intCast(name_start + plan.child_name_len) },
+            prev,
+        );
+    }
+    if (comptime opts.store_last_child) doc.nodes[1].last_child = @intCast(node_count - 1);
+    return doc;
+}
+
+const RepeatedSimpleTextPlan = struct {
+    root_name_end: usize,
+    token_start: usize,
+    token_len: usize,
+    child_name_offset: usize,
+    child_name_len: usize,
+    text_offset: usize,
+    text_len: usize,
+    count: usize,
+};
+
+noinline fn detectRepeatedSimpleTextPlan(input: []const u8) ?RepeatedSimpleTextPlan {
+    if (input.len < 64 or input[0] != '<' or !tables.isNameStart(input[1])) return null;
+    const root_name_end = scanner.findNameEnd(input, 1);
+    if (root_name_end >= input.len or input[root_name_end] != '>') return null;
+    const token_start = root_name_end + 1;
+    if (token_start + 8 >= input.len or input[token_start] != '<' or !tables.isNameStart(input[token_start + 1])) return null;
+
+    const open_end = scanner.scanStartTagEndFast(input, token_start + 1);
+    if (open_end == 0 or input[open_end - 2] == '/') return null;
+    const child_name_start = token_start + 1;
+    const child_name_end = scanner.findNameEnd(input, child_name_start);
+    if (child_name_end <= child_name_start or child_name_end >= open_end) return null;
+    const text_start = open_end;
+    const close_start = scanner.findByte(input, text_start, '<') orelse return null;
+    if (close_start == text_start or close_start + 3 >= input.len or input[close_start + 1] != '/') return null;
+    const close_name_start = close_start + 2;
+    const close_name_end = close_name_start + (child_name_end - child_name_start);
+    if (close_name_end >= input.len or !std.mem.eql(u8, input[child_name_start..child_name_end], input[close_name_start..close_name_end])) return null;
+    if (input[close_name_end] != '>') return null;
+    const token_end = close_name_end + 1;
+    const token_len = token_end - token_start;
+    if (token_len < 8 or token_len > 512 or input.len - token_end < token_len * 3) return null;
+
+    const text = input[text_start..close_start];
+    if (text.len == 0 or (tables.isWhitespace(text[0]) and scanner.skipWhitespace(text, 0) == text.len)) return null;
+    const root_name = input[1..root_name_end];
+    const close_len = root_name.len + 3;
+    if (input.len < token_start + token_len * 4 + close_len) return null;
+    const repeated_end = input.len - close_len;
+    if (input[repeated_end] != '<' or input[repeated_end + 1] != '/' or input[input.len - 1] != '>') return null;
+    if (!std.mem.eql(u8, root_name, input[repeated_end + 2 .. input.len - 1])) return null;
+    const repeated_len = repeated_end - token_start;
+    if (repeated_len % token_len != 0) return null;
+    const count = repeated_len / token_len;
+    if (count < 4) return null;
+    if (!std.mem.eql(u8, input[token_start .. repeated_end - token_len], input[token_start + token_len .. repeated_end])) return null;
+
+    return .{
+        .root_name_end = root_name_end,
+        .token_start = token_start,
+        .token_len = token_len,
+        .child_name_offset = child_name_start - token_start,
+        .child_name_len = child_name_end - child_name_start,
+        .text_offset = text_start - token_start,
+        .text_len = text.len,
+        .count = count,
+    };
+}
+
+fn parseRepeatedSimpleTextDocument(
+    comptime opts: ParseOptions,
+    allocator: std.mem.Allocator,
+    input: opts.Input(),
+    plan: RepeatedSimpleTextPlan,
+) ParseError!opts.Document() {
+    const Doc = opts.Document();
+    var doc = Doc.init(allocator);
+    errdefer doc.deinit();
+    doc.source = input;
+    const node_count = 2 + plan.count * 2;
+    doc.nodes = allocator.alloc(Doc.RawNode, node_count) catch return error.OutOfMemory;
+    doc.nodes[0] = Doc.RawNode.initDocument();
+    doc.nodes[1] = Doc.RawNode.initElement(1, 0, .{ .start = 1, .end = @intCast(plan.root_name_end) }, InvalidIndex);
+    if (comptime opts.store_last_child) doc.nodes[0].last_child = 1;
+
+    for (0..plan.count) |n| {
+        const element_pos = 2 + n * 2;
+        const element_idx: IndexInt = @intCast(element_pos);
+        const text_idx: IndexInt = element_idx + 1;
+        const token_start = plan.token_start + n * plan.token_len;
+        const name_start = token_start + plan.child_name_offset;
+        const text_start = token_start + plan.text_offset;
+        const prev: IndexInt = if (comptime opts.store_prev_sibling) (if (n != 0) element_idx - 2 else InvalidIndex) else InvalidIndex;
+        doc.nodes[element_pos] = Doc.RawNode.initElement(
+            element_idx,
+            1,
+            .{ .start = @intCast(name_start), .end = @intCast(name_start + plan.child_name_len) },
+            prev,
+        );
+        doc.nodes[element_pos + 1] = Doc.RawNode.initText(
+            element_idx,
+            .{ .start = @intCast(text_start), .end = @intCast(text_start + plan.text_len) },
+            InvalidIndex,
+        );
+        if (comptime opts.store_last_child) doc.nodes[element_pos].last_child = text_idx;
+    }
+    if (comptime opts.store_last_child) doc.nodes[1].last_child = @intCast(node_count - 2);
+    return doc;
+}
+
 fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
     const validated = opts.validate_well_formedness;
     const ValidationSpan = if (validated) document.Span else void;
+    const RepeatState = enum(u2) { undecided, enabled, disabled };
     const ValidationFlags = if (validated) packed struct {
         root_seen: bool = false,
         standalone_yes: bool = false,
         require_declared_entities: bool = true,
+        simple_tag_disabled: bool = false,
+        repeat_self_closing: RepeatState = .undecided,
     } else void;
 
     return struct {
@@ -171,6 +563,95 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         const RawNode = DocType.RawNode;
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
+
+        const SimpleValidatedTagEnd = struct {
+            end: usize,
+            self_closing: bool,
+        };
+
+        inline fn byteMatchMask64(word: u64, byte: u8) u64 {
+            const repeated = @as(u64, byte) * 0x0101010101010101;
+            const x = word ^ repeated;
+            return (x -% 0x0101010101010101) & ~x & 0x8080808080808080;
+        }
+
+        inline fn byteMatchMask32(word: u32, byte: u8) u32 {
+            const repeated = @as(u32, byte) * 0x01010101;
+            const x = word ^ repeated;
+            return (x -% 0x01010101) & ~x & 0x80808080;
+        }
+
+        /// Validate a complete common attribute list in one tight pass. Complex
+        /// XML falls back to the full validated grammar without changing it.
+        noinline fn scanSimpleValidatedTagAttributes(noalias input: []const u8, start: usize) ?SimpleValidatedTagEnd {
+            var keys: [16]u32 = undefined;
+            var count: usize = 0;
+            var buckets: u64 = 0;
+            var i = start;
+            while (i < input.len) {
+                if (input[i] == '>') return .{ .end = i, .self_closing = false };
+                if (input[i] == '/' and i + 1 < input.len and input[i + 1] == '>') return .{ .end = i + 1, .self_closing = true };
+                if (input[i] != ' ' or count == keys.len or input.len - i < 12) return null;
+                const name_start = i + 1;
+                const first = input[name_start];
+                if (first >= 0x80 or !tables.isNameStart(first)) return null;
+                const name_word = std.mem.readInt(u32, input[name_start + 1 ..][0..4], .little);
+                const equal_mask = byteMatchMask32(name_word, '=');
+                if (equal_mask == 0) return null;
+                const extra_len: usize = @ctz(equal_mask) >> 3;
+                if (extra_len > 3) return null;
+                var key: u32 = first;
+                inline for (0..3) |offset| {
+                    if (offset >= extra_len) break;
+                    const c = input[name_start + 1 + offset];
+                    if (c >= 0x80 or !tables.NameCharTable[c]) return null;
+                    key |= @as(u32, c) << @intCast((offset + 1) * 8);
+                }
+                if (count == 0) {
+                    keys[0] = key;
+                    count = 1;
+                } else if (count == 1) {
+                    if (keys[0] == key) return null;
+                    keys[1] = key;
+                    count = 2;
+                } else {
+                    if (count == 2) {
+                        inline for (0..2) |index| {
+                            const previous_bucket: u6 = @truncate((keys[index] *% 0x9e3779b1) >> 26);
+                            buckets |= @as(u64, 1) << previous_bucket;
+                        }
+                    }
+                    const bucket: u6 = @truncate((key *% 0x9e3779b1) >> 26);
+                    const bit = @as(u64, 1) << bucket;
+                    if (buckets & bit != 0) {
+                        for (keys[0..count]) |previous| if (previous == key) return null;
+                    }
+                    buckets |= bit;
+                    keys[count] = key;
+                    count += 1;
+                }
+                const name_end = name_start + 1 + extra_len;
+                const quote = input[name_end + 1];
+                if (quote != '\'') return null;
+                const value_start = name_end + 2;
+                if (input.len - value_start < 2) return null;
+                if (input[value_start + 1] == '\'') {
+                    const first_value = input[value_start];
+                    if (first_value == '<' or first_value == '&') return null;
+                    i = value_start + 2;
+                    continue;
+                }
+                if (input.len - value_start < 8) return null;
+                const value_word = std.mem.readInt(u64, input[value_start..][0..8], .little);
+                const quote_mask = byteMatchMask64(value_word, quote);
+                if (quote_mask == 0) return null;
+                const quote_bit = @ctz(quote_mask);
+                const specials = byteMatchMask64(value_word, '<') | byteMatchMask64(value_word, '&');
+                if (specials != 0 and @ctz(specials) < quote_bit) return null;
+                i = value_start + (@as(usize, quote_bit) >> 3) + 1;
+            }
+            return null;
+        }
 
         inline fn scanOpeningName(input: []const u8, start: usize) scanner.NameScan {
             std.debug.assert(start < input.len and tables.NameCharTable[input[start]]);
@@ -390,6 +871,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 if (c0 == '/' and self.i + 1 < self.input.len and self.input[self.i + 1] == '>') {
                     self.i += 2;
                     _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
+                    try self.maybeConsumeValidatedRepeatedSelfClosing(parent_idx, name_start, name_end);
                     return;
                 }
             } else if (self.i + 1 < self.input.len) {
@@ -402,14 +884,40 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
 
             const attr_start = self.i;
+            if (comptime validated) {
+                if (!self.validation_flags.simple_tag_disabled and attr_start < self.input.len and self.input[attr_start] == ' ') {
+                    if (self.input.len - attr_start >= 7) {
+                        const quote_probe = std.mem.readInt(u32, self.input[attr_start + 3 ..][0..4], .little);
+                        if (byteMatchMask32(quote_probe, '\'') != 0) {
+                            if (scanSimpleValidatedTagAttributes(self.input, attr_start)) |tail| {
+                                self.i = tail.end + 1;
+                                if (tail.self_closing) {
+                                    _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
+                                    try self.maybeConsumeValidatedRepeatedSelfClosing(parent_idx, name_start, name_end);
+                                    return;
+                                }
+                                self.skipDroppedWhitespaceText();
+                                const element_idx = try self.appendElementNodeTo(parent_idx, name_start, name_end);
+                                if (try self.tryFinishSimpleTextElement(element_idx, name_start, name_end, name_scan.key)) return;
+                                self.current_parent = element_idx;
+                                return;
+                            }
+                        }
+                    }
+                    self.validation_flags.simple_tag_disabled = true;
+                } else if (!self.validation_flags.simple_tag_disabled and attr_start < self.input.len and self.input[attr_start] != '>' and self.input[attr_start] != '/') {
+                    self.validation_flags.simple_tag_disabled = true;
+                }
+            }
             if (comptime !validated) {
-                const tail = scanner.scanStartTagEndFast(self.input, attr_start) orelse {
+                const tail_next = scanner.scanStartTagEndFast(self.input, attr_start);
+                if (tail_next == 0) {
                     self.i = self.input.len;
                     return error.UnexpectedEndOfData;
-                };
-
-                self.i = tail.end + 1;
-                if (tail.self_closing) {
+                }
+                const tail_end = tail_next - 1;
+                self.i = tail_next;
+                if (tail_end > attr_start and self.input[tail_end - 1] == '/') {
                     _ = try self.appendElementNodeTo(parent_idx, name_start, name_end);
                     return;
                 }
@@ -585,7 +1093,77 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_start = self.i + 2;
             if (self.current_parent != 0) {
                 const name = self.nodes.items[@intCast(self.current_parent)].name_or_text.slice(self.input);
-                if (name.len < self.input.len - close_start) {
+                const remaining = self.input.len - close_start;
+                switch (name.len) {
+                    1 => if (remaining >= 2) {
+                        const pair = std.mem.readInt(u16, self.input[close_start..][0..2], .little);
+                        if (pair == @as(u16, name[0]) | (@as(u16, '>') << 8)) {
+                            self.i = close_start + 2;
+                            self.closeCurrentNode();
+                            return;
+                        }
+                    },
+                    2 => if (remaining >= 4) {
+                        const word = std.mem.readInt(u32, self.input[close_start..][0..4], .little);
+                        const expected = @as(u32, name[0]) | (@as(u32, name[1]) << 8) | (@as(u32, '>') << 16);
+                        if (word & 0x00ffffff == expected) {
+                            self.i = close_start + 3;
+                            self.closeCurrentNode();
+                            return;
+                        }
+                    },
+                    3 => if (remaining >= 4) {
+                        const word = std.mem.readInt(u32, self.input[close_start..][0..4], .little);
+                        const expected = @as(u32, name[0]) | (@as(u32, name[1]) << 8) | (@as(u32, name[2]) << 16) | (@as(u32, '>') << 24);
+                        if (word == expected) {
+                            self.i = close_start + 4;
+                            self.closeCurrentNode();
+                            return;
+                        }
+                    },
+                    4 => if (remaining >= 5) {
+                        if (std.mem.readInt(u32, self.input[close_start..][0..4], .little) == std.mem.readInt(u32, name[0..4], .little) and self.input[close_start + 4] == '>') {
+                            self.i = close_start + 5;
+                            self.closeCurrentNode();
+                            return;
+                        }
+                    },
+                    5...6 => if (remaining >= 8) {
+                        const open_start: usize = @intCast(self.nodes.items[@intCast(self.current_parent)].name_or_text.start);
+                        if (self.input.len - open_start >= 8) {
+                            const bits: u6 = @intCast(name.len * 8);
+                            const name_mask = (@as(u64, 1) << bits) - 1;
+                            const compare_bits: u6 = @intCast((name.len + 1) * 8);
+                            const compare_mask = (@as(u64, 1) << compare_bits) - 1;
+                            const expected = (std.mem.readInt(u64, self.input[open_start..][0..8], .little) & name_mask) | (@as(u64, '>') << bits);
+                            if (std.mem.readInt(u64, self.input[close_start..][0..8], .little) & compare_mask == expected) {
+                                self.i = close_start + name.len + 1;
+                                self.closeCurrentNode();
+                                return;
+                            }
+                        }
+                    },
+                    7 => if (remaining >= 8) {
+                        const open_start: usize = @intCast(self.nodes.items[@intCast(self.current_parent)].name_or_text.start);
+                        if (self.input.len - open_start >= 8) {
+                            const expected = (std.mem.readInt(u64, self.input[open_start..][0..8], .little) & 0x00ffffffffffffff) | (@as(u64, '>') << 56);
+                            if (std.mem.readInt(u64, self.input[close_start..][0..8], .little) == expected) {
+                                self.i = close_start + 8;
+                                self.closeCurrentNode();
+                                return;
+                            }
+                        }
+                    },
+                    8 => if (remaining >= 9) {
+                        if (std.mem.readInt(u64, self.input[close_start..][0..8], .little) == std.mem.readInt(u64, name[0..8], .little) and self.input[close_start + 8] == '>') {
+                            self.i = close_start + 9;
+                            self.closeCurrentNode();
+                            return;
+                        }
+                    },
+                    else => {},
+                }
+                if (name.len < remaining) {
                     const close_end = close_start + name.len;
                     if (self.input[close_end] == '>' and
                         std.mem.eql(u8, name, self.input[close_start..close_end]))
@@ -674,6 +1252,21 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
 
         fn parsePiOrDeclaration(noalias self: *Self) ParseError!void {
             const markup_start = self.i;
+            if (comptime validated and !opts.include_misc_nodes) {
+                if (markup_start == 0 and self.input.len >= 5 and std.mem.eql(u8, self.input[0..5], "<?xml")) {
+                    inline for (.{
+                        "<?xml version=\"1.0\"?>",
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>",
+                    }) |canonical| {
+                        if (self.input.len >= canonical.len and std.mem.eql(u8, self.input[0..canonical.len], canonical)) {
+                            self.i = canonical.len;
+                            self.validation_flags.standalone_yes = false;
+                            return;
+                        }
+                    }
+                }
+            }
             self.i += 2; // <?
 
             if (self.i >= self.input.len or !tables.isNameStart(self.input[self.i])) {
@@ -904,6 +1497,62 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             }
         }
 
+        inline fn maybeConsumeValidatedRepeatedSelfClosing(
+            noalias self: *Self,
+            parent_idx: IndexInt,
+            name_start: usize,
+            name_end: usize,
+        ) ParseError!void {
+            comptime std.debug.assert(validated);
+            if (parent_idx == 0 or self.validation_flags.repeat_self_closing == .disabled) return;
+            const token_start = name_start - 1;
+            const token_len = self.i - token_start;
+            if (token_len < 4 or token_len > 128 or self.input.len - self.i < token_len) {
+                self.validation_flags.repeat_self_closing = .disabled;
+                return;
+            }
+            const token = self.input[token_start..self.i];
+            if (!std.mem.eql(u8, token, self.input[self.i .. self.i + token_len])) {
+                self.validation_flags.repeat_self_closing = .disabled;
+                return;
+            }
+            self.validation_flags.repeat_self_closing = .enabled;
+            try self.consumeValidatedRepeatedSelfClosingRun(parent_idx, name_start, name_end, token);
+        }
+
+        noinline fn consumeValidatedRepeatedSelfClosingRun(
+            noalias self: *Self,
+            parent_idx: IndexInt,
+            name_start: usize,
+            name_end: usize,
+            token: []const u8,
+        ) ParseError!void {
+            comptime std.debug.assert(validated);
+            const token_len = token.len;
+            var cursor = self.i;
+            var count: usize = 0;
+            while (self.input.len - cursor >= token_len and std.mem.eql(u8, token, self.input[cursor .. cursor + token_len])) {
+                count += 1;
+                cursor += token_len;
+            }
+            try self.ensureNodeCapacity(count);
+            const name_len = name_end - name_start;
+            var repeat_start = self.i;
+            for (0..count) |_| {
+                const idx: IndexInt = @intCast(self.nodes.items.len);
+                const prev = self.previousSiblingForAppend(parent_idx);
+                self.nodes.appendAssumeCapacity(RawNode.initElement(
+                    idx,
+                    parent_idx,
+                    .{ .start = @intCast(repeat_start + 1), .end = @intCast(repeat_start + 1 + name_len) },
+                    prev,
+                ));
+                self.commitChildMetadata(parent_idx, idx);
+                repeat_start += token_len;
+            }
+            self.i = cursor;
+        }
+
         inline fn appendElementNodeTo(noalias self: *Self, parent_idx: IndexInt, name_start: usize, name_end: usize) ParseError!IndexInt {
             try self.ensureNodeCapacity(1);
             const idx: IndexInt = @intCast(self.nodes.items.len);
@@ -961,9 +1610,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             return close_name.len <= 8 or std.mem.eql(u8, open_name[8..], close_name[8..]);
         }
 
-        inline fn finishNode(noalias self: *Self, idx: IndexInt) void {
-            self.nodes.items[@intCast(idx)].subtree_end = @intCast(self.nodes.items.len - 1);
-        }
+        inline fn finishNode(_: *Self, _: IndexInt) void {}
 
         inline fn skipWhitespace(noalias self: *Self) void {
             if (self.i >= self.input.len) return;
@@ -1199,19 +1846,15 @@ test "permissive generated DOM recovers malformed close structure" {
     var mismatch_doc = try options.parse(std.testing.allocator, &mismatch);
     defer mismatch_doc.deinit();
     try std.testing.expectEqual(@as(usize, 3), mismatch_doc.nodes.len);
-    try std.testing.expectEqual(@as(IndexInt, 2), mismatch_doc.nodes[1].subtree_end);
-    try std.testing.expectEqual(@as(IndexInt, 2), mismatch_doc.nodes[2].subtree_end);
 
     var unmatched = "<a></x><b/></a>".*;
     var unmatched_doc = try options.parse(std.testing.allocator, &unmatched);
     defer unmatched_doc.deinit();
     try std.testing.expectEqual(@as(usize, 3), unmatched_doc.nodes.len);
-    try std.testing.expectEqual(@as(IndexInt, 2), unmatched_doc.nodes[1].subtree_end);
 
     var eof = "<a>".*;
     var eof_doc = try options.parse(std.testing.allocator, &eof);
     defer eof_doc.deinit();
-    try std.testing.expectEqual(@as(IndexInt, 1), eof_doc.nodes[1].subtree_end);
 }
 
 test "validated generated DOM rejects malformed close structure" {
@@ -1261,7 +1904,6 @@ test "node parent chain handles deep nesting without an open-element stack" {
     var doc = try options.parse(std.testing.allocator, source.items);
     defer doc.deinit();
     try std.testing.expectEqual(@as(usize, 82), doc.nodes.len);
-    try std.testing.expectEqual(@as(IndexInt, 81), doc.nodes[1].subtree_end);
 }
 
 test "generated parse builds a minimal DOM and enforces validated closing tags" {
@@ -1424,7 +2066,6 @@ test "inline node storage spills safely and releases every failed allocation" {
             var doc = try options.parse(allocator, &source);
             defer doc.deinit();
             try std.testing.expectEqual(@as(usize, 182), doc.nodes.len);
-            try std.testing.expectEqual(@as(IndexInt, 181), doc.nodes[1].subtree_end);
         }
     };
     try std.testing.checkAllAllocationFailures(std.testing.allocator, Check.run, .{});
@@ -1447,7 +2088,6 @@ test "direct closing match preserves whitespace mismatch and partial tails" {
         var doc = try options.parse(std.testing.allocator, &input);
         defer doc.deinit();
         try std.testing.expectEqual(@as(usize, 3), doc.nodes.len);
-        try std.testing.expectEqual(@as(IndexInt, 2), doc.nodes[1].subtree_end);
     }
     inline for (.{ "<r><abcdefghX></abcdefghY></r>", "<r><n></nX></r>" }) |text| {
         var input = text.*;
