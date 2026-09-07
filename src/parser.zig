@@ -324,7 +324,7 @@ pub noinline fn detectRepeatedSelfClosingDocument(input: []const u8) ?RepeatedSe
     if (repeated_len % stride != 0) return null;
     const count = repeated_len / stride;
     if (count < 4) return null;
-    if (!std.mem.eql(u8, input[token_start .. repeated_end - stride], input[token_start + stride .. repeated_end])) return null;
+    if (!scanner.eqlShifted(input, token_start, repeated_end, stride)) return null;
 
     return .{
         .root_name_end = root_name_end,
@@ -483,7 +483,7 @@ pub noinline fn detectRepeatedSimpleTextPlan(input: []const u8) ?RepeatedSimpleT
     if (repeated_len % token_len != 0) return null;
     const count = repeated_len / token_len;
     if (count < 4) return null;
-    if (!std.mem.eql(u8, input[token_start .. repeated_end - token_len], input[token_start + token_len .. repeated_end])) return null;
+    if (!scanner.eqlShifted(input, token_start, repeated_end, token_len)) return null;
 
     return .{
         .root_name_end = root_name_end,

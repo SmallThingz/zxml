@@ -24,6 +24,96 @@ pub noinline fn countByte(source: []const u8, value: u8) usize {
     return count;
 }
 
+/// Exact shifted equality used by large repeated-document detectors. It
+/// batches many vector blocks behind one reduction/branch while still checking
+/// every byte, then handles the remaining vectors and scalar tail exactly.
+pub noinline fn eqlShifted(noalias input: []const u8, start: usize, end: usize, stride: usize) bool {
+    std.debug.assert(start <= end and stride <= end - start);
+    const len = end - start - stride;
+    if (len == 0) return true;
+    const Vec = @Vector(byte_scan_vector_len, u8);
+    const width = @sizeOf(Vec);
+    var i: usize = 0;
+    while (len - i >= width * 16) : (i += width * 16) {
+        const a0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i)).*;
+        const a1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 1)).*;
+        const a2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 2)).*;
+        const a3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 3)).*;
+        const a4 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 4)).*;
+        const a5 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 5)).*;
+        const a6 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 6)).*;
+        const a7 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 7)).*;
+        const a8 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 8)).*;
+        const a9 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 9)).*;
+        const a10 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 10)).*;
+        const a11 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 11)).*;
+        const a12 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 12)).*;
+        const a13 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 13)).*;
+        const a14 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 14)).*;
+        const a15 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 15)).*;
+        const b0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i)).*;
+        const b1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 1)).*;
+        const b2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 2)).*;
+        const b3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 3)).*;
+        const b4 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 4)).*;
+        const b5 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 5)).*;
+        const b6 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 6)).*;
+        const b7 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 7)).*;
+        const b8 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 8)).*;
+        const b9 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 9)).*;
+        const b10 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 10)).*;
+        const b11 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 11)).*;
+        const b12 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 12)).*;
+        const b13 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 13)).*;
+        const b14 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 14)).*;
+        const b15 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 15)).*;
+        const d0 = (a0 ^ b0) | (a1 ^ b1) | (a2 ^ b2) | (a3 ^ b3);
+        const d1 = (a4 ^ b4) | (a5 ^ b5) | (a6 ^ b6) | (a7 ^ b7);
+        const d2 = (a8 ^ b8) | (a9 ^ b9) | (a10 ^ b10) | (a11 ^ b11);
+        const d3 = (a12 ^ b12) | (a13 ^ b13) | (a14 ^ b14) | (a15 ^ b15);
+        if (@reduce(.Or, d0 | d1 | d2 | d3) != 0) return false;
+    }
+    while (len - i >= width * 8) : (i += width * 8) {
+        const a0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i)).*;
+        const a1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width)).*;
+        const a2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 2)).*;
+        const a3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 3)).*;
+        const a4 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 4)).*;
+        const a5 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 5)).*;
+        const a6 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 6)).*;
+        const a7 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 7)).*;
+        const b0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i)).*;
+        const b1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width)).*;
+        const b2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 2)).*;
+        const b3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 3)).*;
+        const b4 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 4)).*;
+        const b5 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 5)).*;
+        const b6 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 6)).*;
+        const b7 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 7)).*;
+        var diff = (a0 ^ b0) | (a1 ^ b1) | (a2 ^ b2) | (a3 ^ b3);
+        diff |= (a4 ^ b4) | (a5 ^ b5) | (a6 ^ b6) | (a7 ^ b7);
+        if (@reduce(.Or, diff) != 0) return false;
+    }
+    while (len - i >= width * 4) : (i += width * 4) {
+        const a0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i)).*;
+        const a1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width)).*;
+        const a2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 2)).*;
+        const a3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i + width * 3)).*;
+        const b0 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i)).*;
+        const b1 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width)).*;
+        const b2 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 2)).*;
+        const b3 = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i + width * 3)).*;
+        const diff = (a0 ^ b0) | (a1 ^ b1) | (a2 ^ b2) | (a3 ^ b3);
+        if (@reduce(.Or, diff) != 0) return false;
+    }
+    while (len - i >= width) : (i += width) {
+        const a = @as(*align(1) const Vec, @ptrCast(input.ptr + start + i)).*;
+        const b = @as(*align(1) const Vec, @ptrCast(input.ptr + start + stride + i)).*;
+        if (@reduce(.Or, a ^ b) != 0) return false;
+    }
+    return std.mem.eql(u8, input[start + i .. start + len], input[start + stride + i .. start + stride + len]);
+}
+
 pub inline fn findByte(noalias haystack: []const u8, start: usize, needle: u8) ?usize {
     if (start >= haystack.len) {
         @branchHint(.unlikely);
@@ -1151,4 +1241,33 @@ test "direct text vector loads preserve every alignment and short tail" {
         }
     }
     try std.testing.expectEqual(@as(?usize, null), findTextEnd(&source, std.math.maxInt(usize)));
+}
+
+test "shifted bulk equality matches exact reference" {
+    var input: [2048]u8 = undefined;
+    const starts = [_]usize{ 0, 5 };
+    const strides = [_]usize{ 1, 3, 17, 31, 32, 63, 127, 255 };
+    const lengths = [_]usize{ 0, 1, 15, 16, 31, 32, 33, 127, 128, 129, 255, 256, 257, 511, 512, 513, 1000 };
+
+    for (starts) |start| {
+        for (strides) |stride| {
+            for (lengths) |len| {
+                const end = start + stride + len;
+                if (end > input.len) continue;
+                for (start..end) |i| input[i] = @intCast((i - start) % stride);
+
+                const expected = std.mem.eql(u8, input[start .. start + len], input[start + stride .. end]);
+                try std.testing.expectEqual(expected, eqlShifted(&input, start, end, stride));
+                try std.testing.expect(expected);
+
+                if (len != 0) {
+                    const at = start + stride + len - 1;
+                    input[at] ^= 0x80;
+                    const changed = std.mem.eql(u8, input[start .. start + len], input[start + stride .. end]);
+                    try std.testing.expectEqual(changed, eqlShifted(&input, start, end, stride));
+                    try std.testing.expect(!changed);
+                }
+            }
+        }
+    }
 }
