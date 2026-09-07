@@ -21,29 +21,38 @@ zig build tools -- setup-fixtures
 ## Run
 
 ```bash
-# full setup + comparison, matching zhtml
+# full 37-fixture comparison, optimized for day-to-day runs
 zig build bench-compare
+
+# publication-grade 37-fixture comparison
 zig build bench-compare -- --profile stable
 zig build bench-interleaved -- ../zxml-base ../zxml-candidate --profile quick --repeats 9 --core-a 0 --core-b 2
 zig build conformance
 
 # direct tool invocation after setup, when needed
 zig build tools -- run-benchmarks --profile quick
+zig build tools -- run-benchmarks --profile full
 zig build tools -- run-benchmarks --profile stable
 zig-out/bin/zxml-tools run-benchmarks --profile stable --no-build --guard-fixtures
 ```
 
-`run-benchmarks` also updates:
+`full` and `stable` cover the same 37 headline fixtures and compute the same external and validated-pathology comparisons. `full` is the default developer profile: three samples targeted at 5 ms each, scaled-down calibration hints, and reuse of an in-range calibration measurement as sample 1. `stable` remains the publication profile: five independent samples targeted at 40 ms each and hard-fails its gates. `full` reports gate failures but does not make them fatal because its short samples are intended for fast feedback. `quick` keeps its smaller fixture subset.
+
+Developer profiles also reuse already-built pugixml/rapidxml runners when their runner sources and parser headers are older than the binaries. `stable` always rebuilds both external runners so publication evidence never depends on a stale C++ artifact.
+
+A successful `stable` run also updates:
 
 - `README.md` auto-summary block
 - `bench/README.md` latest benchmark snapshot block
+
+`full` writes `bench/results/full.{json,md}` for the developer run and leaves `latest.{json,md}` plus the publication README snapshots untouched.
 
 For a frozen-binary measurement, build the runners first and use `zig-out/bin/zxml-tools run-benchmarks --profile stable --no-build` inside the quiet-host guard. This skips compilation, not parsing or validation; the caller must verify that all four runner binaries match the intended source revision.
 
 Results are written to:
 
-- `bench/results/latest.json`
-- `bench/results/latest.md`
+- `bench/results/full.json` and `full.md` for the default `full` profile
+- `bench/results/latest.json` and `latest.md` for `stable` (and the smaller legacy profiles)
 
 Headline DOM benchmarks instantiate the actual generated parser types: `permissive` is `ParseOptions{}` and `validated` sets only `validate_well_formedness = true`. Misc-node storage is not silently enabled. The benchmark workflow follows zhtml. zxml keeps input/setup outside the timed region and constructs and frees a fresh generated `Document` in every timed iteration. Parser scratch and node growth are included; finished node capacity is not retained between DOM parses. Streaming reuses its generated parser state. An optimization barrier keeps each completed DOM observable before destruction. The node-only DOM uses parent links for nesting and no attribute-record array. Its small-document inline node buffer is rebuilt on each iteration, not retained across parses. The default permissive DOM may reject raw `>` within a quoted attribute value; the validated policy preserves that grammar. Corpus membership and external gates are unchanged. External runners use their native repeat-parse lifecycle. zxml runners are
 built with `ReleaseFast -Dcpu=native`; C++ runners use `-O3 -DNDEBUG -march=native`.
@@ -53,8 +62,7 @@ frequency-scaling state, advertised CPU MHz range, Zig version, and C++ driver.
 
 On a shared Linux host, `--no-build --guard-fixtures` collects each fixture in an
 independent clean window using `host-quiet`, `guarded-run`, and CPU6 via `taskset`.
-The guard covers calibration and all five interleaved sample rounds for every
-applicable parser. Exit 75 discards that entire fixture attempt and retries it;
+The guard covers calibration and every interleaved sample round for each applicable parser. `full` uses three rounds; `stable` uses five. Exit 75 discards that entire fixture attempt and retries it;
 other failures stop collection. Parser/fixture coverage, lifecycle, exclusions,
 and performance gates are unchanged. JSON records `guarded_fixtures: true`, and
 Markdown identifies this collection mode. This is not one continuous quiet run.
@@ -66,9 +74,9 @@ not a contamination guard: never reuse a checkpoint from a contaminated run.
 The default node-only fast path may reject literal `>` in quoted attribute values; full validated mode retains that syntax. A passing external gate does not establish the original absolute throughput objectives; see [validation](VALIDATION.md).
 
 Fixture setup rejects extremely opaque feeds. `synthetic_long_text.xml` remains
-a generated diagnostic-only fixture and is excluded from quick/stable profiles.
+a generated diagnostic-only fixture and is excluded from quick/full/stable profiles.
 `synthetic_doctype_entities.xml` is also excluded from headline profiles and
-external gates; stable runs exercise it only in the validated-only regression lane.
+external gates; full and stable runs exercise it only in the validated-only regression lane.
 That lane compares it against `synthetic_entities_reference.xml`, a deliberately
 non-repeating ordinary-entity workload so exact-repeat DOM acceleration cannot
 artificially inflate the denominator. The 1.25x minimum ratio is unchanged. Detailed

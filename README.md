@@ -38,6 +38,48 @@ rapidxml          │████░░░░░░░░░░░░░░░�
 pugixml           │████░░░░░░░░░░░░░░░░│ 1095.58 MB/s (21.03%)
 ```
 
+### Full Stable Fixture Numbers (MB/s)
+
+| Fixture | ours-permissive | ours-validated | stream-permissive | stream-validated | pugixml | rapidxml |
+|---|---:|---:|---:|---:|---:|---:|
+| `note.xml` | 2896.59 | 1700.81 | 3397.09 | 1359.56 | 1004.39 | 1777.77 |
+| `sitemaps.xml` | 4143.51 | 2064.18 | 3585.86 | 1718.95 | 2005.55 | 2016.09 |
+| `plant_catalog.xml` | 3693.96 | 1864.61 | 3125.16 | 1523.58 | 1568.34 | 1744.29 |
+| `cd_catalog.xml` | 3389.45 | 1757.73 | 2801.73 | 1388.91 | 1510.87 | 1636.23 |
+| `hnrss.xml` | 10064.06 | 5541.31 | 8372.60 | 4309.44 | 3014.61 | 2706.89 |
+| `xkcd_rss.xml` | 8720.08 | 4140.86 | 8617.95 | 3208.49 | 2519.39 | 2588.01 |
+| `bbc_world.xml` | 6130.75 | 3470.61 | 5034.80 | 3103.76 | 2654.27 | 2561.68 |
+| `arxiv_cs.xml` | 8499.86 | 4160.02 | 10331.91 | 4507.49 | 2738.87 | 1929.20 |
+| `ecb_usd.xml` | 6787.37 | 3253.73 | 5249.54 | 2794.58 | 2765.87 | 2824.94 |
+| `tree.xml` | 3169.99 | 1476.76 | 2803.41 | 1439.60 | 1304.25 | 2115.65 |
+| `character.xml` | 3291.46 | 1387.48 | 2545.73 | 1427.26 | 1101.20 | 2021.02 |
+| `transitions.xml` | 3576.53 | - | 2243.44 | - | 1404.53 | 2176.05 |
+| `xgconsole.xml` | 6079.60 | 2027.04 | 3788.93 | 1341.56 | 1913.95 | 2517.80 |
+| `weekly_utf8.xml` | 3730.22 | 1291.42 | 3272.71 | 689.53 | 2282.23 | 2461.79 |
+| `pugixml_large.xml` | 2636.98 | 1520.66 | 2165.66 | 1705.47 | 495.04 | 317.60 |
+| `synthetic_flat_attrs.xml` | 6967.31 | 1349.42 | 2784.60 | 1013.17 | 485.24 | 382.07 |
+| `synthetic_deep_tree.xml` | 1949.86 | 1196.36 | 1525.05 | 1046.97 | 1335.70 | 803.21 |
+| `synthetic_entities.xml` | 10747.98 | 10631.20 | 6031.90 | 848.00 | 952.89 | 967.42 |
+| `synthetic_cdata_mix.xml` | 2442.64 | 1826.01 | 3007.99 | 1783.90 | 697.09 | 537.14 |
+| `synthetic_wide_siblings.xml` | 1236.34 | 963.56 | 2362.38 | 976.39 | 421.00 | 310.13 |
+| `synthetic_namespace_mix.xml` | 3835.42 | 1469.58 | 3302.78 | 1525.50 | 719.81 | 593.40 |
+| `synthetic_long_names.xml` | 6786.15 | 3379.33 | 4827.34 | 2553.45 | 1388.39 | 1701.42 |
+| `synthetic_self_closing_swarm.xml` | 4781.37 | 1261.78 | 3411.99 | 1461.59 | 630.78 | 524.63 |
+| `synthetic_mixed_content.xml` | 2340.58 | 1383.38 | 3021.33 | 1348.66 | 545.16 | 398.08 |
+| `synthetic_small_records.xml` | 1896.25 | 1299.81 | 2612.33 | 1260.37 | 422.98 | 297.44 |
+| `synthetic_tiny_empty.xml` | 1703.60 | 1718.34 | 1565.09 | 1288.58 | 191.78 | 118.46 |
+| `synthetic_tiny_text.xml` | 1773.60 | 1764.77 | 1344.36 | 697.94 | 179.39 | 122.31 |
+| `synthetic_one_attr.xml` | 3727.10 | 3699.31 | 1816.53 | 1091.93 | 284.39 | 189.07 |
+| `synthetic_two_attr.xml` | 5588.00 | 5547.62 | 2052.47 | 1073.86 | 312.37 | 220.78 |
+| `synthetic_attrs4.xml` | 8607.36 | 8472.63 | 2346.34 | 970.10 | 338.39 | 248.75 |
+| `synthetic_attrs8.xml` | 12911.00 | 12530.89 | 2468.69 | 947.13 | 335.35 | 255.90 |
+| `synthetic_single_quotes.xml` | 10097.03 | 9964.43 | 3058.01 | 1272.07 | 533.26 | 425.13 |
+| `synthetic_unicode_names.xml` | 8587.17 | 8476.01 | 3418.14 | 568.14 | 653.29 | 551.73 |
+| `synthetic_pretty_indented.xml` | 1930.66 | 1355.12 | 2439.05 | 1245.59 | 523.17 | 414.64 |
+| `synthetic_crlf_pretty.xml` | 2016.92 | 1150.47 | 2925.20 | 1261.10 | 503.59 | 422.12 |
+| `synthetic_token_whitespace_mix.xml` | 9248.32 | 8987.29 | 1439.68 | 967.24 | 406.32 | 368.87 |
+| `synthetic_attr_count_mix.xml` | 6789.05 | 1427.08 | 2849.51 | 1067.51 | 392.92 | 308.65 |
+
 ### Stable Gate Snapshot
 
 | Profile | Passed | Rule |
@@ -57,7 +99,7 @@ zig build conformance
 zig build docs-check
 zig build examples-check
 zig build ship-check
-zig build bench-compare
+zig build bench-compare # all 37 fixtures, fast developer sampling
 ```
 
 Fastest/default parse (source may be lazily materialized by later queries):

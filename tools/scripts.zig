@@ -11,16 +11,37 @@ const STABLE_RESUME_PATH = RESULTS_DIR ++ "/stable.resume.json";
 const FIXTURES_DIR = "bench/fixtures";
 const PARSERS_DIR = "bench/parsers";
 const pugixml_revision = "27b68329de32cf9c601ca8eb6c588fd639960c40";
-const min_sample_ns: u64 = 20_000_000;
-const target_sample_ns: u64 = 40_000_000;
-const max_sample_ns: u64 = 80_000_000;
+const BenchmarkProtocol = struct {
+    min_sample_ns: u64,
+    target_sample_ns: u64,
+    max_sample_ns: u64,
+    repeats: usize,
+    reuse_calibration_sample: bool,
+};
+
+const stable_protocol: BenchmarkProtocol = .{
+    .min_sample_ns = 20_000_000,
+    .target_sample_ns = 40_000_000,
+    .max_sample_ns = 80_000_000,
+    .repeats = 5,
+    .reuse_calibration_sample = false,
+};
+
+// Developer-facing full-corpus runs keep every fixture/parser/gate but spend
+// much less time per sample. Publication-grade evidence continues to use stable.
+const full_protocol: BenchmarkProtocol = .{
+    .min_sample_ns = 3_000_000,
+    .target_sample_ns = 5_000_000,
+    .max_sample_ns = 10_000_000,
+    .repeats = 3,
+    .reuse_calibration_sample = true,
+};
 const ReadmeSummaryStartMarker = "<!-- README_AUTO_SUMMARY:START -->";
 const ReadmeSummaryEndMarker = "<!-- README_AUTO_SUMMARY:END -->";
 const BenchReadmeSnapshotStartMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:START -->";
 const BenchReadmeSnapshotEndMarker = "<!-- BENCH_README_AUTO_SNAPSHOT:END -->";
 const max_opaque_cdata_ratio = 0.90;
 
-const repeats: usize = 5;
 // Fresh generated DOM construction and destruction are included in every sample.
 const benchmark_methodology_version: usize = 4;
 const interleaved_build_seed: u64 = 23_063;
@@ -69,6 +90,7 @@ const FixtureCase = struct {
 const Profile = struct {
     name: []const u8,
     fixtures: []const FixtureCase,
+    protocol: BenchmarkProtocol,
 };
 
 const BenchmarkEnvironment = struct {
@@ -251,9 +273,10 @@ const ValidatedRegressionCheck = struct {
 };
 
 fn getProfile(name: []const u8) !Profile {
-    if (std.mem.eql(u8, name, "smoke")) return .{ .name = "smoke", .fixtures = &smoke_fixtures };
-    if (std.mem.eql(u8, name, "quick")) return .{ .name = "quick", .fixtures = &quick_fixtures };
-    if (std.mem.eql(u8, name, "stable")) return .{ .name = "stable", .fixtures = &stable_fixtures };
+    if (std.mem.eql(u8, name, "smoke")) return .{ .name = "smoke", .fixtures = &smoke_fixtures, .protocol = full_protocol };
+    if (std.mem.eql(u8, name, "quick")) return .{ .name = "quick", .fixtures = &quick_fixtures, .protocol = full_protocol };
+    if (std.mem.eql(u8, name, "full")) return .{ .name = "full", .fixtures = &stable_fixtures, .protocol = full_protocol };
+    if (std.mem.eql(u8, name, "stable")) return .{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol };
     return error.InvalidProfile;
 }
 
@@ -818,7 +841,16 @@ fn appendCxxPrefix(io: std.Io, alloc: std.mem.Allocator, argv: *std.ArrayList([]
     }
 }
 
-fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
+fn outputNeedsRebuild(io: std.Io, output: []const u8, sources: []const []const u8) bool {
+    const output_stat = std.Io.Dir.cwd().statFile(io, output, .{}) catch return true;
+    for (sources) |source| {
+        const source_stat = std.Io.Dir.cwd().statFile(io, source, .{}) catch return true;
+        if (source_stat.mtime.nanoseconds > output_stat.mtime.nanoseconds) return true;
+    }
+    return false;
+}
+
+fn buildRunners(io: std.Io, alloc: std.mem.Allocator, force_external_rebuild: bool) !void {
     try common.ensureDir(io, BUILD_DIR);
     try common.ensureDir(io, BIN_DIR);
     try common.ensureDir(io, TMP_SCRATCH_DIR);
@@ -828,23 +860,40 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator) !void {
     const zig_build = [_][]const u8{ "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
-    var pugixml_cc = std.ArrayList([]const u8).empty;
-    defer pugixml_cc.deinit(alloc);
-    try appendCxxPrefix(io, alloc, &pugixml_cc);
-    try pugixml_cc.appendSlice(alloc, &.{
-        "-O3",                              "-DNDEBUG",                              "-march=native",               "-std=c++17", "-Wall",                          "-Wextra", "-Werror",
-        "bench/runners/pugixml_runner.cpp", "bench/parsers/pugixml/src/pugixml.cpp", "-Ibench/parsers/pugixml/src", "-o",         "bench/build/bin/pugixml_runner",
-    });
-    try runInheritWithBenchTmp(io, alloc, pugixml_cc.items, REPO_ROOT);
+    const pugixml_sources = [_][]const u8{
+        "bench/runners/pugixml_runner.cpp",
+        "bench/parsers/pugixml/src/pugixml.cpp",
+        "bench/parsers/pugixml/src/pugixml.hpp",
+        "bench/parsers/pugixml/src/pugiconfig.hpp",
+    };
+    if (force_external_rebuild or outputNeedsRebuild(io, BIN_DIR ++ "/pugixml_runner", &pugixml_sources)) {
+        var pugixml_cc = std.ArrayList([]const u8).empty;
+        defer pugixml_cc.deinit(alloc);
+        try appendCxxPrefix(io, alloc, &pugixml_cc);
+        try pugixml_cc.appendSlice(alloc, &.{
+            "-O3",                              "-DNDEBUG",                              "-march=native",               "-std=c++17", "-Wall",                          "-Wextra", "-Werror",
+            "bench/runners/pugixml_runner.cpp", "bench/parsers/pugixml/src/pugixml.cpp", "-Ibench/parsers/pugixml/src", "-o",         "bench/build/bin/pugixml_runner",
+        });
+        try runInheritWithBenchTmp(io, alloc, pugixml_cc.items, REPO_ROOT);
+    } else std.debug.print("pugixml runner up-to-date\n", .{});
 
-    var rapidxml_cc = std.ArrayList([]const u8).empty;
-    defer rapidxml_cc.deinit(alloc);
-    try appendCxxPrefix(io, alloc, &rapidxml_cc);
-    try rapidxml_cc.appendSlice(alloc, &.{
-        "-O3",                               "-DNDEBUG",                 "-march=native", "-std=c++17",                      "-Wall", "-Wextra", "-Werror",
-        "bench/runners/rapidxml_runner.cpp", "-Ibench/parsers/rapidxml", "-o",            "bench/build/bin/rapidxml_runner",
-    });
-    try runInheritWithBenchTmp(io, alloc, rapidxml_cc.items, REPO_ROOT);
+    const rapidxml_sources = [_][]const u8{
+        "bench/runners/rapidxml_runner.cpp",
+        "bench/parsers/rapidxml/rapidxml.hpp",
+        "bench/parsers/rapidxml/rapidxml_iterators.hpp",
+        "bench/parsers/rapidxml/rapidxml_print.hpp",
+        "bench/parsers/rapidxml/rapidxml_utils.hpp",
+    };
+    if (force_external_rebuild or outputNeedsRebuild(io, BIN_DIR ++ "/rapidxml_runner", &rapidxml_sources)) {
+        var rapidxml_cc = std.ArrayList([]const u8).empty;
+        defer rapidxml_cc.deinit(alloc);
+        try appendCxxPrefix(io, alloc, &rapidxml_cc);
+        try rapidxml_cc.appendSlice(alloc, &.{
+            "-O3",                               "-DNDEBUG",                 "-march=native", "-std=c++17",                      "-Wall", "-Wextra", "-Werror",
+            "bench/runners/rapidxml_runner.cpp", "-Ibench/parsers/rapidxml", "-o",            "bench/build/bin/rapidxml_runner",
+        });
+        try runInheritWithBenchTmp(io, alloc, rapidxml_cc.items, REPO_ROOT);
+    } else std.debug.print("rapidxml runner up-to-date\n", .{});
 }
 
 fn runParser(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, iterations: usize) !u64 {
@@ -913,29 +962,50 @@ fn finishParseBench(
     };
 }
 
-fn calibratedIterationCount(base_iterations: usize, base_ns: u64) usize {
-    if (base_ns == 0 or (base_ns >= min_sample_ns and base_ns <= max_sample_ns)) return base_iterations;
+fn calibratedIterationCount(protocol: BenchmarkProtocol, base_iterations: usize, base_ns: u64) usize {
+    if (base_ns == 0 or (base_ns >= protocol.min_sample_ns and base_ns <= protocol.max_sample_ns)) return base_iterations;
 
     // Scale both directions toward a stable target. Historical iteration hints
     // were tuned for retained-capacity parsing; after methodology or parser
     // changes they can be wildly too large as well as too small.
-    const numerator = @as(u128, base_iterations) * @as(u128, target_sample_ns);
+    const numerator = @as(u128, base_iterations) * @as(u128, protocol.target_sample_ns);
     const scaled_u128 = (numerator + base_ns - 1) / base_ns;
     const max_iterations = @as(u128, base_iterations) * 10_000;
     return @intCast(@max(@as(u128, 1), @min(scaled_u128, max_iterations)));
 }
 
-fn calibrateIterations(io: std.Io, alloc: std.mem.Allocator, parser_name: []const u8, fixture_path: []const u8, base_iterations: usize) !usize {
+const Calibration = struct {
+    iterations: usize,
+    reusable_sample_ns: u64 = 0,
+};
+
+fn calibrationBaseIterations(protocol: BenchmarkProtocol, hint: usize) usize {
+    const scaled = (@as(u128, hint) * protocol.target_sample_ns + stable_protocol.target_sample_ns - 1) / stable_protocol.target_sample_ns;
+    return @intCast(@max(@as(u128, 1), scaled));
+}
+
+fn calibrateIterations(io: std.Io, alloc: std.mem.Allocator, protocol: BenchmarkProtocol, parser_name: []const u8, fixture_path: []const u8, iteration_hint: usize) !Calibration {
+    const base_iterations = calibrationBaseIterations(protocol, iteration_hint);
     const base_ns = try runParser(io, alloc, parser_name, fixture_path, base_iterations);
-    return calibratedIterationCount(base_iterations, base_ns);
+    const iterations = calibratedIterationCount(protocol, base_iterations, base_ns);
+    return .{
+        .iterations = iterations,
+        .reusable_sample_ns = if (protocol.reuse_calibration_sample and base_ns != 0 and iterations == base_iterations) base_ns else 0,
+    };
 }
 
 test "benchmark iteration calibration scales up and down" {
-    try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(100, 40_000_000));
-    try std.testing.expectEqual(@as(usize, 400), calibratedIterationCount(100, 10_000_000));
-    try std.testing.expectEqual(@as(usize, 20), calibratedIterationCount(100, 200_000_000));
-    try std.testing.expectEqual(@as(usize, 1), calibratedIterationCount(1, 400_000_000));
-    try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(100, 0));
+    try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(stable_protocol, 100, 40_000_000));
+    try std.testing.expectEqual(@as(usize, 400), calibratedIterationCount(stable_protocol, 100, 10_000_000));
+    try std.testing.expectEqual(@as(usize, 20), calibratedIterationCount(stable_protocol, 100, 200_000_000));
+    try std.testing.expectEqual(@as(usize, 1), calibratedIterationCount(stable_protocol, 1, 400_000_000));
+    try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(stable_protocol, 100, 0));
+    try std.testing.expectEqual(@as(usize, 100), calibratedIterationCount(full_protocol, 100, 5_000_000));
+    try std.testing.expectEqual(@as(usize, 50), calibratedIterationCount(full_protocol, 100, 10_000_001));
+    try std.testing.expectEqual(@as(usize, 100), calibrationBaseIterations(stable_protocol, 100));
+    try std.testing.expectEqual(@as(usize, 13), calibrationBaseIterations(full_protocol, 100));
+    try std.testing.expect(!stable_protocol.reuse_calibration_sample);
+    try std.testing.expect(full_protocol.reuse_calibration_sample);
 }
 
 fn fixtureResultsComplete(rows: []const ParseResult, parsers: []const []const u8, fx: FixtureCase) bool {
@@ -1043,6 +1113,7 @@ fn loadStableResumeCheckpoint(
 fn benchmarkFixtureSet(
     io: std.Io,
     alloc: std.mem.Allocator,
+    protocol: BenchmarkProtocol,
     fixtures: []const FixtureCase,
     parsers: []const []const u8,
     results: *std.ArrayList(ParseResult),
@@ -1073,19 +1144,24 @@ fn benchmarkFixtureSet(
             const parser_index = (fixture_index + offset) % parsers.len;
             const parser_name = parsers[parser_index];
             if (!parserAppliesToFixture(parser_name, fx)) continue;
-            calibrated[parser_index] = try calibrateIterations(io, alloc, parser_name, fixture_path, fx.iterations);
-            sample_sets[parser_index] = try alloc.alloc(u64, repeats);
+            const calibration = try calibrateIterations(io, alloc, protocol, parser_name, fixture_path, fx.iterations);
+            calibrated[parser_index] = calibration.iterations;
+            const samples = try alloc.alloc(u64, protocol.repeats);
+            @memset(samples, 0);
+            if (protocol.repeats != 0) samples[0] = calibration.reusable_sample_ns;
+            sample_sets[parser_index] = samples;
         }
 
         // Interleave parser samples and rotate who runs first on every repeat.
-        for (0..repeats) |rep| {
+        for (0..protocol.repeats) |rep| {
             for (0..parsers.len) |offset| {
                 const parser_index = (fixture_index + rep + offset) % parsers.len;
                 const parser_name = parsers[parser_index];
                 if (!parserAppliesToFixture(parser_name, fx)) continue;
+                if (sample_sets[parser_index].?[rep] != 0) continue;
                 std.debug.print(
                     "running parse: parser={s} fixture={s} iterations={d} sample={d}/{d}\n",
-                    .{ parser_name, fx.name, calibrated[parser_index], rep + 1, repeats },
+                    .{ parser_name, fx.name, calibrated[parser_index], rep + 1, protocol.repeats },
                 );
                 sample_sets[parser_index].?[rep] = try runParser(io, alloc, parser_name, fixture_path, calibrated[parser_index]);
             }
@@ -1116,13 +1192,13 @@ fn guardedExitSucceeded(code: u8) !bool {
     };
 }
 
-fn validateGuardedFixtureRows(rows: []const ParseResult, parsers: []const []const u8, fixture: FixtureCase) !void {
+fn validateGuardedFixtureRows(rows: []const ParseResult, protocol: BenchmarkProtocol, parsers: []const []const u8, fixture: FixtureCase) !void {
     var expected: usize = 0;
     for (parsers) |parser| expected += @intFromBool(parserAppliesToFixture(parser, fixture));
     if (rows.len != expected or !fixtureResultsComplete(rows, parsers, fixture)) return error.IncompleteGuardedFixture;
     for (rows) |row| {
         if (!std.mem.eql(u8, row.fixture, fixture.name) or row.is_real != fixture.is_real or
-            row.iterations == 0 or row.samples_ns.len != repeats) return error.IncompleteGuardedFixture;
+            row.iterations == 0 or row.samples_ns.len != protocol.repeats) return error.IncompleteGuardedFixture;
         for (row.samples_ns) |sample| if (sample == 0) return error.IncompleteGuardedFixture;
     }
 }
@@ -1140,7 +1216,7 @@ fn benchmarkOneFixture(io: std.Io, alloc: std.mem.Allocator, args: []const []con
         for (rows.items) |*row| freeParseResult(alloc, row);
         rows.deinit(alloc);
     }
-    try benchmarkFixtureSet(io, alloc, fixtures[index..][0..1], parsers, &rows, null, index);
+    try benchmarkFixtureSet(io, alloc, profile.protocol, fixtures[index..][0..1], parsers, &rows, null, index);
     var buffer: [4096]u8 = undefined;
     var stdout = std.Io.File.stdout().writerStreaming(io, &buffer);
     try stdout.interface.print("{f}\n", .{std.json.fmt(rows.items, .{})});
@@ -1183,7 +1259,7 @@ fn benchmarkGuardedFixtureSet(
             }
             var decoded = try std.json.parseFromSlice([]ParseResult, alloc, child.stdout, .{});
             defer decoded.deinit();
-            try validateGuardedFixtureRows(decoded.value, parsers, fixture);
+            try validateGuardedFixtureRows(decoded.value, profile.protocol, parsers, fixture);
             const path = try std.fs.path.join(alloc, &.{ FIXTURES_DIR, fixture.name });
             defer alloc.free(path);
             const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
@@ -1381,6 +1457,7 @@ test "evaluateGateRows records best external parser" {
         .fixtures = &[_]FixtureCase{
             .{ .name = "x.xml", .iterations = 1, .is_real = true },
         },
+        .protocol = full_protocol,
     };
     var sample_a = [_]u64{1};
     var sample_b = [_]u64{1};
@@ -1518,6 +1595,35 @@ fn updateFileSection(
     }
 }
 
+fn writeFullParseThroughputTable(w: anytype, alloc: std.mem.Allocator, parse_results: []const ParseResult) !void {
+    try w.writeAll("| Fixture | ours-permissive | ours-validated | stream-permissive | stream-validated | pugixml | rapidxml |\n");
+    try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
+
+    var fixtures = std.ArrayList([]const u8).empty;
+    defer fixtures.deinit(alloc);
+    for (parse_results) |r| {
+        var seen = false;
+        for (fixtures.items) |name| {
+            if (std.mem.eql(u8, name, r.fixture)) {
+                seen = true;
+                break;
+            }
+        }
+        if (!seen) try fixtures.append(alloc, r.fixture);
+    }
+
+    for (fixtures.items) |fixture_name| {
+        try w.print("| `{s}`", .{fixture_name});
+        inline for (.{ "ours-permissive", "ours-validated", "stream-permissive", "stream-validated", "pugixml", "rapidxml" }) |parser_name| {
+            try w.writeAll(" | ");
+            if (findParseResult(parse_results, parser_name, fixture_name)) |r| {
+                try w.print("{d:.2}", .{r.throughput_mb_s});
+            } else try w.writeAll("-");
+        }
+        try w.writeAll(" |\n");
+    }
+}
+
 fn renderReadmeAutoSummary(
     alloc: std.mem.Allocator,
     environment: BenchmarkEnvironment,
@@ -1561,6 +1667,10 @@ fn renderReadmeAutoSummary(
     }
     try w.writeAll("```\n\n");
 
+    try w.writeAll("### Full Stable Fixture Numbers (MB/s)\n\n");
+    try writeFullParseThroughputTable(w, alloc, parse_results);
+    try w.writeAll("\n");
+
     try w.writeAll("### Stable Gate Snapshot\n\n");
     try w.writeAll("| Profile | Passed | Rule |\n");
     try w.writeAll("|---|---:|---|\n");
@@ -1597,51 +1707,8 @@ fn renderBenchReadmeSnapshot(
     try w.writeAll("## Latest Benchmark Snapshot\n\n");
     try writeBenchmarkEnvironmentTable(w, "###", environment);
     try w.writeAll("### Parse Throughput Comparison (MB/s)\n\n");
-    try w.writeAll("| Fixture | ours-permissive | ours-validated | stream-permissive | stream-validated | pugixml | rapidxml |\n");
-    try w.writeAll("|---|---:|---:|---:|---:|---:|---:|\n");
-
-    var fixtures = std.ArrayList([]const u8).empty;
-    defer fixtures.deinit(alloc);
-    for (parse_results) |r| {
-        var seen = false;
-        for (fixtures.items) |name| {
-            if (std.mem.eql(u8, name, r.fixture)) {
-                seen = true;
-                break;
-            }
-        }
-        if (!seen) try fixtures.append(alloc, r.fixture);
-    }
-
-    for (fixtures.items) |fixture_name| {
-        try w.print("| `{s}` | ", .{fixture_name});
-        if (findParseResult(parse_results, "ours-permissive", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" | ");
-        if (findParseResult(parse_results, "ours-validated", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" | ");
-        if (findParseResult(parse_results, "stream-permissive", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" | ");
-        if (findParseResult(parse_results, "stream-validated", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" | ");
-        if (findParseResult(parse_results, "pugixml", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" | ");
-        if (findParseResult(parse_results, "rapidxml", fixture_name)) |r| {
-            try w.print("{d:.2}", .{r.throughput_mb_s});
-        } else try w.writeAll("-");
-        try w.writeAll(" |\n");
-    }
-
-    try w.writeAll("\n### Stable Gates\n\n");
+    try writeFullParseThroughputTable(w, alloc, parse_results);
+    try w.writeAll("\n### External Parser Gates\n\n");
     try w.writeAll("| Fixture | ours-permissive | best external | ours/best-ext | Result |\n");
     try w.writeAll("|---|---:|---|---:|---|\n");
     for (gate_rows) |g| {
@@ -1746,6 +1813,7 @@ fn writeMarkdown(
     alloc: std.mem.Allocator,
     environment: BenchmarkEnvironment,
     profile_name: []const u8,
+    protocol: BenchmarkProtocol,
     guard_fixtures: bool,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -1757,6 +1825,7 @@ fn writeMarkdown(
     const w = &out.writer;
 
     try w.print("# ZXML Benchmark Results\n\nGenerated (unix): {d}\n\nProfile: `{s}`\n\n", .{ common.nowUnix(io), profile_name });
+    try w.print("Sampling: {d} rounds, target {d:.1} ms per parser sample.\n\n", .{ protocol.repeats, @as(f64, @floatFromInt(protocol.target_sample_ns)) / 1_000_000.0 });
     try w.print("Collection: {s}\n\n", .{if (guard_fixtures)
         "independently guarded fixture windows on CPU6, not one continuous quiet interval. Every retained fixture passed its complete calibration/sample guard."
     else
@@ -1772,7 +1841,7 @@ fn writeMarkdown(
     }
 
     if (gate_rows.len != 0) {
-        try w.writeAll("\n## Stable Gates\n\n");
+        try w.writeAll("\n## External Parser Gates\n\n");
         try w.writeAll("| Fixture | ours-permissive | pugixml | rapidxml | best external | ours/best-ext | Result |\n");
         try w.writeAll("|---|---:|---:|---:|---|---:|---|\n");
         for (gate_rows) |g| {
@@ -2161,6 +2230,7 @@ fn writeJson(
     alloc: std.mem.Allocator,
     environment: BenchmarkEnvironment,
     profile_name: []const u8,
+    protocol: BenchmarkProtocol,
     guard_fixtures: bool,
     parse_results: []const ParseResult,
     gate_rows: []const GateRow,
@@ -2173,8 +2243,8 @@ fn writeJson(
     const w = &out.writer;
 
     try w.print(
-        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"environment\": {f},\n  \"guarded_fixtures\": {s},\n  \"parse_results\": [\n",
-        .{ common.nowUnix(io), profile_name, benchmark_methodology_version, std.json.fmt(environment, .{}), if (guard_fixtures) "true" else "false" },
+        "{{\n  \"generated_unix\": {d},\n  \"profile\": \"{s}\",\n  \"methodology_version\": {d},\n  \"sample_repeats\": {d},\n  \"sample_target_ns\": {d},\n  \"environment\": {f},\n  \"guarded_fixtures\": {s},\n  \"parse_results\": [\n",
+        .{ common.nowUnix(io), profile_name, benchmark_methodology_version, protocol.repeats, protocol.target_sample_ns, std.json.fmt(environment, .{}), if (guard_fixtures) "true" else "false" },
     );
     for (parse_results, 0..) |r, i| {
         try w.print(
@@ -2257,7 +2327,7 @@ fn writeJson(
 }
 
 fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, args: []const []const u8) !void {
-    var profile_name: []const u8 = "quick";
+    var profile_name: []const u8 = "full";
     var write_baseline = false;
     var resume_stable = false;
     var skip_build = false;
@@ -2292,7 +2362,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     try common.ensureDir(io, RESULTS_DIR);
     if (!skip_build) {
         try ensureExternalParsersBuilt(io, alloc);
-        try buildRunners(io, alloc);
+        try buildRunners(io, alloc, std.mem.eql(u8, profile.name, "stable"));
     }
 
     var parse_results = std.ArrayList(ParseResult).empty;
@@ -2311,7 +2381,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     if (guard_fixtures) {
         try benchmarkGuardedFixtureSet(io, alloc, executable, profile, false, &parse_results);
     } else {
-        try benchmarkFixtureSet(io, alloc, profile.fixtures, &parse_parsers, &parse_results, resume_context, 0);
+        try benchmarkFixtureSet(io, alloc, profile.protocol, profile.fixtures, &parse_parsers, &parse_results, resume_context, 0);
     }
 
     var validated_regression_results = std.ArrayList(ParseResult).empty;
@@ -2321,11 +2391,11 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     }
     var validated_regression_checks: []ValidatedRegressionCheck = try alloc.alloc(ValidatedRegressionCheck, 0);
     defer alloc.free(validated_regression_checks);
-    if (std.mem.eql(u8, profile.name, "stable")) {
+    if (std.mem.eql(u8, profile.name, "stable") or std.mem.eql(u8, profile.name, "full")) {
         if (guard_fixtures) {
             try benchmarkGuardedFixtureSet(io, alloc, executable, profile, true, &validated_regression_results);
         } else {
-            try benchmarkFixtureSet(io, alloc, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null, 0);
+            try benchmarkFixtureSet(io, alloc, profile.protocol, &validated_regression_fixtures, &validated_regression_parsers, &validated_regression_results, null, 0);
         }
         alloc.free(validated_regression_checks);
         validated_regression_checks = try evaluateValidatedRegressionChecks(alloc, parse_results.items, validated_regression_results.items);
@@ -2336,9 +2406,12 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     const stream_comparison_rows = try evaluateStreamComparisonRows(alloc, profile, parse_results.items);
     defer freeStreamComparisonRows(alloc, stream_comparison_rows);
 
-    const md = try writeMarkdown(io, alloc, environment, profile.name, guard_fixtures, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
+    const result_stem = if (std.mem.eql(u8, profile.name, "full")) "full" else "latest";
+    const md = try writeMarkdown(io, alloc, environment, profile.name, profile.protocol, guard_fixtures, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
     defer alloc.free(md);
-    try common.writeFile(io, RESULTS_DIR ++ "/latest.md", md);
+    const md_path = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/{s}.md", .{result_stem});
+    defer alloc.free(md_path);
+    try common.writeFile(io, md_path, md);
 
     const terminal = try writeTerminalReport(io, alloc, profile.name, parse_results.items, gate_rows, stream_comparison_rows, validated_regression_checks);
     defer alloc.free(terminal);
@@ -2348,6 +2421,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         alloc,
         environment,
         profile.name,
+        profile.protocol,
         guard_fixtures,
         parse_results.items,
         gate_rows,
@@ -2356,7 +2430,9 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         validated_regression_checks,
     );
     defer alloc.free(json);
-    try common.writeFile(io, RESULTS_DIR ++ "/latest.json", json);
+    const json_path = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/{s}.json", .{result_stem});
+    defer alloc.free(json_path);
+    try common.writeFile(io, json_path, json);
 
     var stdout_buffer: [16 * 1024]u8 = undefined;
     var stdout_writer = std.Io.File.stdout().writerStreaming(io, &stdout_buffer);
@@ -2388,7 +2464,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
         }
     }
 
-    std.debug.print("wrote {s}/latest.md and {s}/latest.json\n", .{ RESULTS_DIR, RESULTS_DIR });
+    std.debug.print("wrote {s} and {s}\n", .{ md_path, json_path });
 
     if (failed) return error.BenchmarkGateFailed;
 
@@ -2684,8 +2760,8 @@ fn usage() void {
         \\usage:
         \\  zxml-tools setup-parsers
         \\  zxml-tools setup-fixtures [--refresh]
-        \\  zxml-tools run-benchmarks [--profile smoke|quick|stable] [--write-baseline] [--no-build] [--guard-fixtures]
-        \\  zxml-tools compare-worktrees <base> <candidate> [--profile smoke|quick|stable] [--repeats N] [--core-a N] [--core-b N] [--seed N] [--out path]
+        \\  zxml-tools run-benchmarks [--profile smoke|quick|full|stable] [--write-baseline] [--no-build] [--guard-fixtures]
+        \\  zxml-tools compare-worktrees <base> <candidate> [--profile smoke|quick|full|stable] [--repeats N] [--core-a N] [--core-b N] [--seed N] [--out path]
         \\  zxml-tools run-conformance [--suite path]...
         \\  zxml-tools docs-check
         \\  zxml-tools examples-check
@@ -2769,7 +2845,7 @@ pub fn main(init: std.process.Init) !void {
 test "benchmark gates reject missing parser rows" {
     const alloc = std.testing.allocator;
     const fixtures = [_]FixtureCase{.{ .name = "fixture.xml", .iterations = 1, .is_real = true }};
-    const profile = Profile{ .name = "test", .fixtures = &fixtures };
+    const profile = Profile{ .name = "test", .fixtures = &fixtures, .protocol = full_protocol };
     var samples = [_]u64{1};
     const incomplete = [_]ParseResult{.{
         .parser = "ours-permissive",
@@ -2792,8 +2868,19 @@ fn profileHasFixture(profile: Profile, fixture: []const u8) bool {
     return false;
 }
 
+test "full profile keeps stable coverage with shorter sampling" {
+    const full = try getProfile("full");
+    const stable = try getProfile("stable");
+    try std.testing.expectEqual(stable.fixtures.len, full.fixtures.len);
+    for (stable.fixtures, full.fixtures) |a, b| try std.testing.expectEqualStrings(a.name, b.name);
+    try std.testing.expectEqual(@as(usize, 3), full.protocol.repeats);
+    try std.testing.expectEqual(@as(u64, 5_000_000), full.protocol.target_sample_ns);
+    try std.testing.expectEqual(@as(usize, 5), stable.protocol.repeats);
+    try std.testing.expectEqual(@as(u64, 40_000_000), stable.protocol.target_sample_ns);
+}
+
 test "headline benchmark profiles exclude diagnostic scan-heavy fixtures" {
-    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures }, Profile{ .name = "stable", .fixtures = &stable_fixtures } }) |profile| {
+    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures, .protocol = full_protocol }, Profile{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol } }) |profile| {
         try std.testing.expect(!profileHasFixture(profile, "synthetic_long_text.xml"));
         try std.testing.expect(!profileHasFixture(profile, "synthetic_doctype_entities.xml"));
     }
@@ -2808,10 +2895,10 @@ test "doctype entity pathology uses a non-repeating validated-only reference" {
 }
 
 test "unicode text throughput fixture stays out while unicode names remain" {
-    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures }, Profile{ .name = "stable", .fixtures = &stable_fixtures } }) |profile| {
+    inline for (.{ Profile{ .name = "quick", .fixtures = &quick_fixtures, .protocol = full_protocol }, Profile{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol } }) |profile| {
         try std.testing.expect(!profileHasFixture(profile, "synthetic_unicode_text.xml"));
     }
-    try std.testing.expect(profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures }, "synthetic_unicode_names.xml"));
+    try std.testing.expect(profileHasFixture(.{ .name = "stable", .fixtures = &stable_fixtures, .protocol = stable_protocol }, "synthetic_unicode_names.xml"));
 }
 
 test "documented command validator accepts build and tool commands" {
@@ -2838,17 +2925,17 @@ test "guarded fixture transfer requires complete positive samples" {
     const parsers = &[_][]const u8{"ours-permissive"};
     var samples = [_]u64{ 10, 11, 12, 13, 14 };
     var row: ParseResult = .{ .parser = parsers[0], .fixture = fixture.name, .is_real = true, .iterations = 1, .samples_ns = &samples, .median_ns = 12, .throughput_mb_s = 1 };
-    try validateGuardedFixtureRows(&.{row}, parsers, fixture);
-    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{}, parsers, fixture));
-    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{ row, row }, parsers, fixture));
+    try validateGuardedFixtureRows(&.{row}, stable_protocol, parsers, fixture);
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{}, stable_protocol, parsers, fixture));
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{ row, row }, stable_protocol, parsers, fixture));
     row.iterations = 0;
-    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, stable_protocol, parsers, fixture));
     row.iterations = 1;
     row.samples_ns = samples[0..4];
-    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, stable_protocol, parsers, fixture));
     row.samples_ns = &samples;
     samples[0] = 0;
-    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, parsers, fixture));
+    try std.testing.expectError(error.IncompleteGuardedFixture, validateGuardedFixtureRows(&.{row}, stable_protocol, parsers, fixture));
 }
 
 test "guarded fixture collection cannot build or resume timing checkpoints" {
