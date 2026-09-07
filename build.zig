@@ -93,6 +93,7 @@ pub fn build(b: *std.Build) void {
 
     const conformance_cmd = b.addRunArtifact(tools_exe);
     conformance_cmd.addArg("run-conformance");
+    conformance_cmd.addArg("--strict");
 
     const docs_check_cmd = b.addRunArtifact(tools_exe);
     docs_check_cmd.addArg("docs-check");

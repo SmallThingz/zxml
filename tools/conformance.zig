@@ -19,6 +19,7 @@ const SuiteSummary = struct {
 };
 
 pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []const u8) !void {
+    var strict = false;
     var suite_paths = std.ArrayList([]u8).empty;
     defer {
         for (suite_paths.items) |p| alloc.free(p);
@@ -28,6 +29,10 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--")) continue;
+        if (std.mem.eql(u8, args[i], "--strict")) {
+            strict = true;
+            continue;
+        }
         if (!std.mem.eql(u8, args[i], "--suite")) return ConformanceError.InvalidArguments;
         i += 1;
         if (i >= args.len) return ConformanceError.InvalidArguments;
@@ -67,11 +72,16 @@ pub fn runConformance(io: std.Io, alloc: std.mem.Allocator, args: []const []cons
     }
 
     std.debug.print("\nConformance Summary\n", .{});
+    var total: usize = 0;
+    var passed_total: usize = 0;
     for (summaries.items) |s| {
+        total += s.total;
+        passed_total += s.passed;
         std.debug.print("- {s}: {d}/{d} passed ({d} failed)\n", .{ s.suite_name, s.passed, s.total, s.failed });
     }
+    std.debug.print("TOTAL: {d}/{d} PASS, {d} FAIL across {d} suite(s)\n", .{ passed_total, total, failed_total, summaries.items.len });
 
-    if (failed_total != 0) return ConformanceError.ConformanceFailed;
+    if (strict and failed_total != 0) return ConformanceError.ConformanceFailed;
 }
 
 fn discoverSuites(io: std.Io, alloc: std.mem.Allocator, out: *std.ArrayList([]u8)) !void {

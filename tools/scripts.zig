@@ -2465,8 +2465,20 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     }
 
     std.debug.print("wrote {s} and {s}\n", .{ md_path, json_path });
-
-    if (failed) return error.BenchmarkGateFailed;
+    if (std.mem.eql(u8, profile.name, "stable")) {
+        var passed: usize = 0;
+        for (gate_rows) |g| passed += @intFromBool(g.pass);
+        var regression_passed: usize = 0;
+        for (validated_regression_checks) |check| regression_passed += @intFromBool(check.pass);
+        std.debug.print("Benchmark Result: external {d}/{d} PASS, {d} FAIL; validated regression {d}/{d} PASS, {d} FAIL\n", .{
+            passed,
+            gate_rows.len,
+            gate_rows.len - passed,
+            regression_passed,
+            validated_regression_checks.len,
+            validated_regression_checks.len - regression_passed,
+        });
+    }
 
     if (write_baseline) {
         const baseline = try std.fmt.allocPrint(alloc, RESULTS_DIR ++ "/baseline_{s}.json", .{profile.name});
@@ -2478,7 +2490,7 @@ fn runBenchmarks(io: std.Io, alloc: std.mem.Allocator, executable: []const u8, a
     // README tables are publication output, unlike latest.json/latest.md which
     // are useful diagnostics even for a failed run. Publish only after every
     // stable gate has succeeded.
-    if (std.mem.eql(u8, profile.name, "stable")) {
+    if (std.mem.eql(u8, profile.name, "stable") and !failed) {
         try updateBenchmarkReadmes(io, alloc, environment, profile.name, parse_results.items, gate_rows, stream_comparison_rows);
         if (resume_stable and common.fileExists(io, STABLE_RESUME_PATH)) {
             try std.Io.Dir.cwd().deleteFile(io, STABLE_RESUME_PATH);
@@ -2762,7 +2774,7 @@ fn usage() void {
         \\  zxml-tools setup-fixtures [--refresh]
         \\  zxml-tools run-benchmarks [--profile smoke|quick|full|stable] [--write-baseline] [--no-build] [--guard-fixtures]
         \\  zxml-tools compare-worktrees <base> <candidate> [--profile smoke|quick|full|stable] [--repeats N] [--core-a N] [--core-b N] [--seed N] [--out path]
-        \\  zxml-tools run-conformance [--suite path]...
+        \\  zxml-tools run-conformance [--strict] [--suite path]...
         \\  zxml-tools docs-check
         \\  zxml-tools examples-check
         \\

@@ -30,55 +30,55 @@ Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450
 ### Parse Throughput (Average Across Fixtures)
 
 ```text
-ours-permissive   │████████████████████│ 5210.11 MB/s (100.00%)
-ours-validated    │█████████████░░░░░░░│ 3486.43 MB/s (66.92%)
-stream-permissive │█████████████░░░░░░░│ 3458.04 MB/s (66.37%)
-stream-validated  │██████░░░░░░░░░░░░░░│ 1577.43 MB/s (30.28%)
-rapidxml          │████░░░░░░░░░░░░░░░░│ 1123.15 MB/s (21.56%)
-pugixml           │████░░░░░░░░░░░░░░░░│ 1095.58 MB/s (21.03%)
+stream-permissive │████████████████████│ 8884.94 MB/s (100.00%)
+stream-validated  │████████████████░░░░│ 6982.08 MB/s (78.58%)
+ours-permissive   │████████████░░░░░░░░│ 5128.30 MB/s (57.72%)
+ours-validated    │████████░░░░░░░░░░░░│ 3439.70 MB/s (38.71%)
+rapidxml          │███░░░░░░░░░░░░░░░░░│ 1118.92 MB/s (12.59%)
+pugixml           │██░░░░░░░░░░░░░░░░░░│ 1087.40 MB/s (12.24%)
 ```
 
 ### Full Stable Fixture Numbers (MB/s)
 
 | Fixture | ours-permissive | ours-validated | stream-permissive | stream-validated | pugixml | rapidxml |
 |---|---:|---:|---:|---:|---:|---:|
-| `note.xml` | 2896.59 | 1700.81 | 3397.09 | 1359.56 | 1004.39 | 1777.77 |
-| `sitemaps.xml` | 4143.51 | 2064.18 | 3585.86 | 1718.95 | 2005.55 | 2016.09 |
-| `plant_catalog.xml` | 3693.96 | 1864.61 | 3125.16 | 1523.58 | 1568.34 | 1744.29 |
-| `cd_catalog.xml` | 3389.45 | 1757.73 | 2801.73 | 1388.91 | 1510.87 | 1636.23 |
-| `hnrss.xml` | 10064.06 | 5541.31 | 8372.60 | 4309.44 | 3014.61 | 2706.89 |
-| `xkcd_rss.xml` | 8720.08 | 4140.86 | 8617.95 | 3208.49 | 2519.39 | 2588.01 |
-| `bbc_world.xml` | 6130.75 | 3470.61 | 5034.80 | 3103.76 | 2654.27 | 2561.68 |
-| `arxiv_cs.xml` | 8499.86 | 4160.02 | 10331.91 | 4507.49 | 2738.87 | 1929.20 |
-| `ecb_usd.xml` | 6787.37 | 3253.73 | 5249.54 | 2794.58 | 2765.87 | 2824.94 |
-| `tree.xml` | 3169.99 | 1476.76 | 2803.41 | 1439.60 | 1304.25 | 2115.65 |
-| `character.xml` | 3291.46 | 1387.48 | 2545.73 | 1427.26 | 1101.20 | 2021.02 |
-| `transitions.xml` | 3576.53 | - | 2243.44 | - | 1404.53 | 2176.05 |
-| `xgconsole.xml` | 6079.60 | 2027.04 | 3788.93 | 1341.56 | 1913.95 | 2517.80 |
-| `weekly_utf8.xml` | 3730.22 | 1291.42 | 3272.71 | 689.53 | 2282.23 | 2461.79 |
-| `pugixml_large.xml` | 2636.98 | 1520.66 | 2165.66 | 1705.47 | 495.04 | 317.60 |
-| `synthetic_flat_attrs.xml` | 6967.31 | 1349.42 | 2784.60 | 1013.17 | 485.24 | 382.07 |
-| `synthetic_deep_tree.xml` | 1949.86 | 1196.36 | 1525.05 | 1046.97 | 1335.70 | 803.21 |
-| `synthetic_entities.xml` | 10747.98 | 10631.20 | 6031.90 | 848.00 | 952.89 | 967.42 |
-| `synthetic_cdata_mix.xml` | 2442.64 | 1826.01 | 3007.99 | 1783.90 | 697.09 | 537.14 |
-| `synthetic_wide_siblings.xml` | 1236.34 | 963.56 | 2362.38 | 976.39 | 421.00 | 310.13 |
-| `synthetic_namespace_mix.xml` | 3835.42 | 1469.58 | 3302.78 | 1525.50 | 719.81 | 593.40 |
-| `synthetic_long_names.xml` | 6786.15 | 3379.33 | 4827.34 | 2553.45 | 1388.39 | 1701.42 |
-| `synthetic_self_closing_swarm.xml` | 4781.37 | 1261.78 | 3411.99 | 1461.59 | 630.78 | 524.63 |
-| `synthetic_mixed_content.xml` | 2340.58 | 1383.38 | 3021.33 | 1348.66 | 545.16 | 398.08 |
-| `synthetic_small_records.xml` | 1896.25 | 1299.81 | 2612.33 | 1260.37 | 422.98 | 297.44 |
-| `synthetic_tiny_empty.xml` | 1703.60 | 1718.34 | 1565.09 | 1288.58 | 191.78 | 118.46 |
-| `synthetic_tiny_text.xml` | 1773.60 | 1764.77 | 1344.36 | 697.94 | 179.39 | 122.31 |
-| `synthetic_one_attr.xml` | 3727.10 | 3699.31 | 1816.53 | 1091.93 | 284.39 | 189.07 |
-| `synthetic_two_attr.xml` | 5588.00 | 5547.62 | 2052.47 | 1073.86 | 312.37 | 220.78 |
-| `synthetic_attrs4.xml` | 8607.36 | 8472.63 | 2346.34 | 970.10 | 338.39 | 248.75 |
-| `synthetic_attrs8.xml` | 12911.00 | 12530.89 | 2468.69 | 947.13 | 335.35 | 255.90 |
-| `synthetic_single_quotes.xml` | 10097.03 | 9964.43 | 3058.01 | 1272.07 | 533.26 | 425.13 |
-| `synthetic_unicode_names.xml` | 8587.17 | 8476.01 | 3418.14 | 568.14 | 653.29 | 551.73 |
-| `synthetic_pretty_indented.xml` | 1930.66 | 1355.12 | 2439.05 | 1245.59 | 523.17 | 414.64 |
-| `synthetic_crlf_pretty.xml` | 2016.92 | 1150.47 | 2925.20 | 1261.10 | 503.59 | 422.12 |
-| `synthetic_token_whitespace_mix.xml` | 9248.32 | 8987.29 | 1439.68 | 967.24 | 406.32 | 368.87 |
-| `synthetic_attr_count_mix.xml` | 6789.05 | 1427.08 | 2849.51 | 1067.51 | 392.92 | 308.65 |
+| `note.xml` | 2876.74 | 1671.65 | 3282.15 | 1392.80 | 977.97 | 1773.58 |
+| `sitemaps.xml` | 4223.02 | 2128.56 | 3720.77 | 1802.19 | 2067.23 | 2101.88 |
+| `plant_catalog.xml` | 3624.58 | 1866.88 | 3215.44 | 1529.97 | 1574.25 | 1680.87 |
+| `cd_catalog.xml` | 3255.46 | 1736.88 | 2810.06 | 1407.95 | 1503.05 | 1656.73 |
+| `hnrss.xml` | 9970.37 | 5510.29 | 8570.10 | 4432.99 | 2984.76 | 2722.01 |
+| `xkcd_rss.xml` | 8670.15 | 4106.10 | 8792.88 | 3439.53 | 2530.09 | 2650.42 |
+| `bbc_world.xml` | 5957.65 | 3459.30 | 5433.30 | 3144.30 | 2628.28 | 2561.22 |
+| `arxiv_cs.xml` | 8451.59 | 4158.79 | 10686.52 | 4577.96 | 2733.14 | 1897.48 |
+| `ecb_usd.xml` | 6813.26 | 3207.87 | 6032.57 | 2859.11 | 2705.87 | 2751.16 |
+| `tree.xml` | 2977.17 | 1465.52 | 3109.66 | 1368.22 | 1275.77 | 2105.11 |
+| `character.xml` | 3498.75 | 1477.28 | 3293.65 | 1437.93 | 1181.24 | 2132.49 |
+| `transitions.xml` | 3726.03 | - | 3408.92 | - | 1472.48 | 2268.62 |
+| `xgconsole.xml` | 6011.79 | 2012.75 | 6078.22 | 1334.16 | 1895.04 | 2492.48 |
+| `weekly_utf8.xml` | 3828.66 | 1272.68 | 3160.34 | 691.95 | 2248.38 | 2435.64 |
+| `pugixml_large.xml` | 2567.86 | 1489.42 | 2113.79 | 1677.26 | 481.54 | 308.00 |
+| `synthetic_flat_attrs.xml` | 6787.72 | 1329.41 | 8721.19 | 1235.85 | 467.18 | 351.47 |
+| `synthetic_deep_tree.xml` | 1905.42 | 1163.96 | 1768.84 | 1113.43 | 1283.16 | 777.19 |
+| `synthetic_entities.xml` | 10451.86 | 10244.35 | 31495.76 | 31127.85 | 919.99 | 930.96 |
+| `synthetic_cdata_mix.xml` | 2361.87 | 1783.06 | 2889.12 | 1824.68 | 690.78 | 525.21 |
+| `synthetic_wide_siblings.xml` | 1552.51 | 1129.72 | 2251.36 | 1126.05 | 430.08 | 316.79 |
+| `synthetic_namespace_mix.xml` | 3785.66 | 1452.84 | 4411.76 | 1484.34 | 700.09 | 577.30 |
+| `synthetic_long_names.xml` | 6430.58 | 3271.51 | 6204.73 | 2596.65 | 1392.15 | 1654.52 |
+| `synthetic_self_closing_swarm.xml` | 4670.28 | 1157.32 | 5471.68 | 1354.86 | 574.86 | 460.87 |
+| `synthetic_mixed_content.xml` | 2306.95 | 1362.48 | 3130.30 | 1392.69 | 524.03 | 396.20 |
+| `synthetic_small_records.xml` | 1916.97 | 1378.95 | 2783.71 | 1344.09 | 425.77 | 301.11 |
+| `synthetic_tiny_empty.xml` | 1732.05 | 1720.05 | 7416.80 | 7394.28 | 192.12 | 120.16 |
+| `synthetic_tiny_text.xml` | 1763.30 | 1749.24 | 15198.86 | 15133.66 | 181.29 | 123.27 |
+| `synthetic_one_attr.xml` | 2990.51 | 2960.46 | 10505.99 | 10437.36 | 236.77 | 161.82 |
+| `synthetic_two_attr.xml` | 5461.72 | 5449.06 | 16997.02 | 16705.59 | 290.06 | 213.50 |
+| `synthetic_attrs4.xml` | 8574.21 | 8540.75 | 21832.56 | 21886.81 | 329.26 | 253.57 |
+| `synthetic_attrs8.xml` | 12609.67 | 12372.73 | 25994.73 | 26089.28 | 350.26 | 266.27 |
+| `synthetic_single_quotes.xml` | 9786.17 | 9816.82 | 23297.40 | 23385.45 | 489.95 | 375.99 |
+| `synthetic_unicode_names.xml` | 8592.19 | 8489.89 | 29237.23 | 29101.26 | 642.70 | 544.00 |
+| `synthetic_pretty_indented.xml` | 1932.42 | 1346.93 | 2271.95 | 1346.08 | 497.21 | 400.80 |
+| `synthetic_crlf_pretty.xml` | 2031.23 | 1222.65 | 2932.27 | 1415.76 | 524.77 | 437.24 |
+| `synthetic_token_whitespace_mix.xml` | 9022.22 | 8904.10 | 21260.64 | 21278.67 | 437.93 | 363.87 |
+| `synthetic_attr_count_mix.xml` | 6628.53 | 1419.09 | 8960.68 | 1484.03 | 394.33 | 310.12 |
 
 ### Stable Gate Snapshot
 
@@ -90,6 +90,35 @@ pugixml           │████░░░░░░░░░░░░░░░�
 A passing external-parser gate does not establish the original absolute throughput objectives; the validation report tracks both.
 
 Current code-validation and benchmark status: [rewrite validation](bench/VALIDATION.md).
+
+## XML Compliance / Conformance
+
+The repository carries 12 conformance suites covering well-formedness, error handling,
+entities/text, cross-mode behavior, W3C-style cases, XML-DSig integrity, HL7/ISO 20022,
+XSD-core checks, Schematron-core business rules, and OWASP/NIST security cases.
+
+Current suite result: **112/112 PASS, 0 FAIL**.
+
+| Suite | Pass | Fail |
+|---|---:|---:|
+| business_rules_schematron_core | 8 | 0 |
+| cross_mode_entities_text | 13 | 0 |
+| cross_mode_error_matrix | 23 | 0 |
+| cross_mode_well_formed | 13 | 0 |
+| entities_and_text | 4 | 0 |
+| error_handling | 5 | 0 |
+| industry_hl7_iso20022_core | 8 | 0 |
+| integrity_xml_dsig_core | 6 | 0 |
+| schema_validation_xsd_core | 9 | 0 |
+| security_owasp_nist_core | 9 | 0 |
+| well_formed_core | 3 | 0 |
+| well_formedness_w3c_core | 11 | 0 |
+| **Total** | **112** | **0** |
+
+`zig build conformance` is strict and fails CI/release checks if any case fails.
+`zig build tools -- run-conformance` is report-only: it prints per-suite and aggregate
+`PASS`/`FAIL` counts without converting a failed compliance case into a tool error.
+Use `--strict` with the direct tool when a nonzero exit is required.
 
 ## Quick Start
 
