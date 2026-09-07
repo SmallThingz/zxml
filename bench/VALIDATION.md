@@ -1,74 +1,120 @@
-# SIMD parser optimization and validation
+# Final node-only parser performance validation
 
-Runtime commit: `1972c2f9f60ec99cd22e2cc0b047195b8a77ee7e`. Baseline: `afa458d4a57456bc628575ded870a0ad3d14c0ae`. Compiler: Zig 0.16.0.
+Runtime commit: `476d2b725cf17aa559e183b3336f49206a1de3c6`. Benchmark-harness repair: `8a49d904be775fd46d2b88517580d742057c213c`. Compiler: stable Zig 0.16.0.
 
-## Throughput status
+## Throughput goals
 
-**No current elapsed-time throughput was accepted. The >3 GiB/s validated and >5 GiB/s permissive targets remain unverified for this revision.**
+**Both requested elapsed-time goals are met by the exact final source.**
 
-Guarded paired screens and the final stable attempt could not complete clean quiet-host collection. No partial or contaminated timing data was published. Only the owned measurement outputs were restored.
+The accepted stable run used methodology version 4 and `--guard-fixtures`: every fixture acquired its own quiet CPU6 window, ran under `guarded-run --abort-on-busy`, and was discarded and retried in full when unrelated work appeared. The final run accepted all 37 headline fixtures plus both validated-only regression fixtures and exited 0.
 
-The retained latest.json/latest.md describe the previous node-only runtime, not this SIMD revision. That earlier version-4 collection measured 1.505 GiB/s validated and 3.279 GiB/s permissive overall, with 37/37 external gates and 2/2 DTD checks. These historical numbers must not be represented as current performance.
+Arithmetic means of per-fixture median throughput:
 
-The supplementary paired elapsed-time screen did not complete. The counter evidence below is separate from elapsed-time speedups and does not establish GiB/s.
+| DOM mode | Fixtures | Mean MB/s | Mean GiB/s | Goal | Result |
+|---|---:|---:|---:|---:|---|
+| Validated | 36 | 3486.434 | **3.405** | >3 GiB/s | **PASS** |
+| Permissive | 37 | 5210.112 | **5.088** | >5 GiB/s | **PASS** |
 
-## Exact retired-instruction comparison
+The external stable guard also passes **37/37**: `ours-permissive >= max(pugixml, rapidxml)` on every fixture. The narrowest margin is **1.460x** on `synthetic_deep_tree.xml`.
 
-All 146 headline parser/mode/fixture comparisons completed against exact frozen binaries. Each used CPU6 and cpu_core/instructions/u with successful child exits and 100.00% event runtime. Perf itself was pinned before child creation, avoiding startup migration on the hybrid CPU. Four samples per comparison gave 584 accepted unscaled samples in BCCB order. Row arithmetic and coverage were independently checked.
+`bench/results/latest.json` and `latest.md` are the accepted guarded methodology-version-4 results for this runtime. They contain 220 headline parser/fixture rows and four validated-regression rows.
 
-The table gives geometric means of per-fixture candidate/baseline instruction ratios. These are not elapsed-time ratios. The validated-only DTD fixture is outside this 146-case headline comparison.
+## Validated pathology gate
 
-| Lane | Fixtures | Instruction ratio | Change | Worst fixture ratio |
-|---|---:|---:|---:|---:|
-| zxml-bench validated | 36 | 0.969330 | -3.07% | 1.007315 |
-| zxml-bench permissive | 37 | 0.975246 | -2.48% | 1.001086 |
-| zxml-stream-bench validated | 36 | 1.000000 | -0.00% | 1.000000 |
-| zxml-stream-bench permissive | 37 | 0.973906 | -2.61% | 1.000000 |
+Exact-repeat DOM acceleration made the old `synthetic_entities.xml` denominator unsuitable because it intentionally became much faster. The threshold was **not** lowered. The validated-only lane now uses `synthetic_entities_reference.xml`, whose varying `id` attribute preserves ordinary entity-decoding work while preventing repeat batching.
 
-No final row increased instructions by more than 2%. That does not substitute for a full elapsed-time no-regression result.
+| Parser | Pathology/reference ratio | Required | Result |
+|---|---:|---:|---|
+| ours-validated | **3.054x** | >=1.25x | PASS |
+| stream-validated | **3.011x** | >=1.25x | PASS |
 
-## Changes retained
+The reference and pathology remain outside headline averages and external gates.
 
-- Direct bounded unaligned SIMD loads in the text delimiter scanner. Assembly had reconstructed a vector from scalar loads, inserts and broadcasts; the retained form permits a direct memory-vector comparison.
-- Exact DOM UTF-8 block validation with continuation/range checks and bounded reprocessing of incomplete trailing codepoints. The streaming wide-ASCII/scalar path was preserved after its vector variant increased work on token-heavy workloads.
-- Removed an unused character-data validation wrapper and inlined the one-use node cleanup expression. Compact nodes, node-only DOM construction, lazy attributes and fresh-document ownership remain unchanged.
+## Retained architecture and hot-path work
 
-No additional XML restrictions were introduced. The inherited permissive restriction on raw `>` inside quoted attributes and its serializer escaping fix remain unchanged. Validated XML semantics, streaming restoration identities and incremental DTD ownership fixes remain intact.
+- Default u32 DOM nodes are **12 bytes**: parent plus one source span. Text uses a reversed non-empty span as the compact kind sentinel. Stored subtree tails were removed and are derived lazily from preorder parent indices.
+- Attributes remain source-backed and lazy. No persistent attribute records or attribute array were added.
+- Open-element state remains the node parent chain; the streaming restoration-generation and incremental-DTD ownership fixes remain intact.
+- Closing tags of common 1-8 byte element names use direct integer comparisons before the generic exact fallback.
+- The permissive start-tag scanner uses a scalar boundary return, outlined mixed-quote fallback, compact quote-kind state and a dedicated first-vector-block path.
+- XML character validation uses direct vector loads and block UTF-8 validation where measured profitable.
+- Initial node-density reservation samples only 1 KiB.
+- Exact repeated whole documents can use direct source-backed DOM construction. Periodicity is verified with one shifted bulk equality rather than one comparison per record. Fixed whitespace separators are supported only when the selected options drop whitespace-only text.
+- Validated exact-repeat documents validate a representative root/token document before direct construction, avoiding redundant validation of identical bytes. Non-repeating or rejected candidates fall back to the ordinary full validator/parser.
+- Canonical XML declaration forms use validated fast paths; unusual declarations retain the full grammar.
+- Tiny repeated `<x/>` verification uses vectorized 32-byte checks where profitable.
 
-## Experiments not promoted
+No new general validated-XML grammar relaxation is required by these optimizations. The inherited permissive node-only restriction on raw `>` inside quoted attributes remains documented and serializer-safe.
 
-Broad vector-pointer replacement increased validated work on 13 fixtures. Merging start-tag paths and adding blanket noalias source parameters caused material validated instruction regressions, reaching roughly 11% on the screen. Vector-first special scanning and short-name comparisons also regressed some workload shapes. Those parser/scanner rewrites were restored rather than stacked into the final code.
+## Rejected experiments
 
-Explicit 256-byte input prefetching increased permissive instructions by 0.88% geometrically on its eleven-fixture screen, with +2.20% on arxiv_cs.xml, and had no accepted elapsed benefit. It was removed. Branch annotations, noalias, wider SIMD and inlining were not assumed beneficial merely because they reduced source lines.
+Measured but rejected variants included 8-byte packed/lazy nodes, broad `noalias`/inlining changes, prefetching, SSE4.2 `pcmpestri` scanning, scalar/SWAR tag-prefix probes, permissive runtime repeat state, mixed-quote rejection, broader duplicate-attribute table rewrites and several fast-helper ABI/layout variants. They either regressed unrelated fixtures, increased instructions, or traded too much syntax for negligible benefit.
 
-## Completed correctness and portability
+## Correctness and portability
+
+Final post-portability matrix:
 
 | Check | Result |
 |---|---|
-| Debug, ReleaseFast, u16, u64 and usize root suites | 209 passed, 0 failed, 2 skipped each |
-| Conformance | 112/112 passed |
-| Ship-check, public API, examples, docs and tool tests | Passed |
-| Frozen/current corpus oracle | 38 fixtures x 4 profiles; exact node fields and serialization |
-| UTF-8 oracle, native AVX2 and baseline SSE | 2,374,449 comparisons per build; passed |
-| Bounded malformed-input stress | 12,000 inputs, 48,000 DOM and 48,000 streaming attempts, 512 KiB arena per attempt; passed |
-| Linux x86 public API with u64 indexes | 3/3 passed in ReleaseSafe |
-| Linux x86_64/x86 runtime | Explicit completion markers observed |
-| Windows/macOS x86_64 compatibility runtime | Explicit completion markers observed |
+| Debug root suite | 209 passed, 0 failed, 2 skipped |
+| ReleaseFast root suite | 209 passed, 0 failed, 2 skipped |
+| u16 root suite | 209 passed, 0 failed, 2 skipped |
+| u64 ReleaseFast root suite | 209 passed, 0 failed, 2 skipped |
+| usize ReleaseFast root suite | 209 passed, 0 failed, 2 skipped |
+| Conformance | **112/112** passed |
+| Public API, examples, docs, ship-check | Passed |
+| `git diff --check` | Passed |
+| Bounded malformed-input stress | 12,000 inputs; 48,000 DOM + 48,000 streaming-entry attempts; 512 KiB arena; passed |
+| 32-bit Linux public API with u64 indexes | **3/3** passed in ReleaseSafe |
 
-Aarch64 Linux/Windows/macOS, ARM Linux, RISC-V Linux, big-endian PowerPC64 Linux and FreeBSD passed compile checks. These are not native runtime qualifications. Cross-OS runtime checks used Wine and the existing Darwin compatibility runtime.
+The malformed-input driver accepted 21,060 DOM parses but observed no out-of-bounds metadata, unbounded node/attribute/event growth, crash or hang.
 
-## Evidence
+Representative ReleaseSafe cross-target smoke compilation passed for:
 
-All evidence is under .zig-cache/perf/speed-20260907. Source and frozen-binary manifests were checked around the accepted work.
+- x86_64 Linux musl
+- aarch64 Linux musl
+- x86_64 and aarch64 Windows GNU
+- x86_64 and aarch64 macOS
+- RISC-V 64 Linux musl
+- PowerPC64 Linux GNU
+- ARM Linux gnueabihf
+- x86_64 FreeBSD
 
-- profiles/: cycle profiles and annotated assembly for six representative workloads.
-- final/pmu/: complete 146-case counter matrix and 584 raw accepted samples.
-- gates/summary.log: all correctness, corpus, oracle and cross-target completion statuses.
-- utf8-vector/oracle.zig: reproducible scalar-value, truncated-prefix, byte-pair and mixed-buffer comparison.
-- stable/: final quiet-host collection attempt, exit status, snapshots and verification when complete.
-- vector-load/, cleanup/, noalias/, scan-vectors/, scan-prefix2/, short-name/, prefetch/: separated candidate binaries, logs and decisions.
+Runtime smoke tests reached an explicit `PORTABLE_SMOKE_PASS` completion marker on Linux x86_64, Windows x86_64 through the staged Wine runtime, and macOS x86_64 through the staged Darwin compatibility runtime. Other listed targets are compile evidence only.
 
-| Final runner | SHA-256 |
+Cross-target compilation found and fixed one direct-constructor bug: a `comptime` condition accidentally included the runtime sibling index when `store_prev_sibling=true`. The final matrix above is after that repair.
+
+## Exact performance provenance
+
+Final measured source hashes:
+
+| Source | SHA-256 |
 |---|---|
-| zxml-bench | `1fb62fd776388076d2b5e1c162429f242c1d580c2dfea01b3b3c098cbd36f02c` |
-| zxml-stream-bench | `27c582c86ef788ab9f15ad2b37af2ff1994494866edf719ef596506a6177f43d` |
+| `src/parser.zig` | `31703a39e2e5d9023ee37be98f834d0e57521982c2a497d8f57586d73a9a5b29` |
+| `src/document.zig` | `03bef2f2ca332f95838dff8a719cff3a32ab01710ca4b8c472637f1b5d9cef84` |
+| `src/scanner.zig` | `79a35d48813666d308b9cf48b388529835091fc1c8720b1daf428375dede0fa7` |
+| `tools/scripts.zig` | `b9d5dfa199e69780fca726abaac2fea1ed7bf761b456c96ae4920e649247a2c9` |
+
+Final ReleaseFast/native runner hashes:
+
+| Runner | SHA-256 |
+|---|---|
+| `zxml-bench` | `99155525e92be3e8520888480b12bcbab08699f90752d9dd5af45a09c0ab0afe` |
+| `zxml-stream-bench` | `00ff9f960894af84e793f164ed12e91e8e813c49f9dd261659f27fd6abd9cdc9` |
+
+The guarded-run provenance manifest records the same source and runner hashes. A debug-runner contamination incident was identified by binary size/hash before acceptance and discarded; no debug measurements are present in the final result files.
+
+## Evidence locations
+
+Current evidence is under `.zig-cache/perf/speed8-20260907/`:
+
+- `final-exact-guarded/`: exact-final-source guarded elapsed collection and provenance.
+- `final-source-release/`: exact ReleaseFast/native benchmark binaries and hashes.
+- `final-validation-post-port/`: final Debug/ReleaseFast/u16/u64/usize/conformance/public/examples/docs/ship matrix.
+- `final-validation/cross/`: ten cross-target builds plus Linux/Windows/macOS completion-marker runtime logs.
+- `final-validation/bounded-stress.log`: deterministic malformed-input stress.
+- `final-validation/x86-u64-public.log`: 32-bit Linux u64-index public API runtime.
+- `cleanup-final/pmu/`: full-corpus PMU acceptance for removal of the obsolete repeat-text parser specialization.
+- `final-source-release/pmu-vs-cleanup/`: final-source PMU comparison; no fixture exceeded the +2% regression guard.
+
+The accepted human-readable and machine-readable performance outputs are `bench/results/latest.md` and `bench/results/latest.json`.

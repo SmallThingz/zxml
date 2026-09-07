@@ -23,8 +23,26 @@ Low-latency XML parsing for Zig with comptime-generated DOM/streaming types, sou
 
 <!-- README_AUTO_SUMMARY:START -->
 
-The current SIMD revision has complete correctness and instruction-counter evidence, but no accepted elapsed-time snapshot. The retained latest results belong to the preceding node-only runtime. See [current validation](bench/VALIDATION.md) for the distinction and unchanged throughput objectives.
+Source: `bench/results/latest.json` (`stable` profile).
 
+Tested on `Linux 7.2.2-zen1-1-zen` with CPU `12th Gen Intel(R) Core(TM) i5-12450H` using Zig `0.16.0`.
+
+### Parse Throughput (Average Across Fixtures)
+
+```text
+ours-permissive   │████████████████████│ 5210.11 MB/s (100.00%)
+ours-validated    │█████████████░░░░░░░│ 3486.43 MB/s (66.92%)
+stream-permissive │█████████████░░░░░░░│ 3458.04 MB/s (66.37%)
+stream-validated  │██████░░░░░░░░░░░░░░│ 1577.43 MB/s (30.28%)
+rapidxml          │████░░░░░░░░░░░░░░░░│ 1123.15 MB/s (21.56%)
+pugixml           │████░░░░░░░░░░░░░░░░│ 1095.58 MB/s (21.03%)
+```
+
+### Stable Gate Snapshot
+
+| Profile | Passed | Rule |
+|---|---:|---|
+| `stable` | 37/37 | `ours-permissive >= max(pugixml, rapidxml)` |
 <!-- README_AUTO_SUMMARY:END -->
 
 A passing external-parser gate does not establish the original absolute throughput objectives; the validation report tracks both.
