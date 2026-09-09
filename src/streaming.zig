@@ -161,6 +161,7 @@ pub fn Types(comptime options: ParseOptions) type {
         const ValidationBool = if (validated) bool else void;
         const ValidationIndex = if (validated) IndexInt else void;
         const ValidationSpan = if (validated) Span else void;
+        const TextContinuation = if (options.drop_whitespace_text_nodes) bool else void;
         const ValidationFlags = if (validated) packed struct {
             root_seen: bool = false,
             standalone_yes: bool = false,
@@ -184,8 +185,15 @@ pub fn Types(comptime options: ParseOptions) type {
             validation_flags: ValidationFlags = if (validated) .{} else {},
             doctype_value: ValidationSpan = if (validated) .{} else {},
             xml_validated_offset: ValidationIndex = if (validated) 0 else {},
+            text_continuation: TextContinuation = if (options.drop_whitespace_text_nodes) false else {},
 
             const Self = @This();
+
+            inline fn isValidGeneratedXmlName(name: []const u8) bool {
+                if (comptime options.validate_xml_characters) return document.isValidXmlNameAssumeValidUtf8(name);
+                return document.isValidXmlName(name);
+            }
+
             const drop_whitespace_text_nodes = options.drop_whitespace_text_nodes;
             const include_misc_nodes = options.include_misc_nodes;
 
@@ -199,6 +207,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 standalone_yes: ValidationBool,
                 doctype_value: ValidationSpan,
                 require_declared_entities: ValidationBool,
+                text_continuation: TextContinuation = if (options.drop_whitespace_text_nodes) false else {},
             };
 
             pub fn init(allocator: std.mem.Allocator) Parser {
@@ -213,6 +222,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 if (!common.lenFits(input.len)) return error.InputTooLarge;
                 if (self.stack.items.len != 0 or self.skip_stack.items.len != 0 or self.restore_pending) self.clearStacks();
                 if (self.needs_more) self.needs_more = false;
+                if (comptime drop_whitespace_text_nodes) self.text_continuation = false;
                 errdefer self.offset = 0;
                 if (comptime validated) {
                     self.validation_flags.root_seen = false;
@@ -240,7 +250,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 }
                 try self.reserveForInput(input.len);
 
-                var i: usize = 0;
+                var i: usize = document.utf8BomLen(input);
                 while (i < input.len) {
                     if (input[i] != '<') {
                         if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
@@ -423,6 +433,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 self.clearStacks();
                 self.offset = 0;
                 self.needs_more = false;
+                if (comptime drop_whitespace_text_nodes) self.text_continuation = false;
                 if (comptime validated) {
                     self.validation_flags.root_seen = false;
                     self.validation_flags.standalone_yes = false;
@@ -443,6 +454,7 @@ pub fn Types(comptime options: ParseOptions) type {
                     .stack_len = @intCast(self.stackLen()),
                     .skip_stack_len = @intCast(self.skipStackLen()),
                     .needs_more = self.needs_more,
+                    .text_continuation = if (drop_whitespace_text_nodes) self.text_continuation else {},
                     .stack_generation = self.stack_generation,
                     .root_seen = if (validated) self.validation_flags.root_seen else {},
                     .standalone_yes = if (validated) self.validation_flags.standalone_yes else {},
@@ -457,6 +469,7 @@ pub fn Types(comptime options: ParseOptions) type {
             pub fn restore(self: *Self, state: State) void {
                 self.offset = state.offset;
                 self.needs_more = state.needs_more;
+                if (comptime drop_whitespace_text_nodes) self.text_continuation = state.text_continuation;
                 if (comptime validated) {
                     self.validation_flags.root_seen = state.root_seen;
                     self.validation_flags.standalone_yes = state.standalone_yes;
@@ -514,6 +527,14 @@ pub fn Types(comptime options: ParseOptions) type {
                 try self.reserveForInput(input.len);
                 self.needs_more = false;
 
+                if (offset == 0) {
+                    if (document.isPartialUtf8Bom(parse_input)) {
+                        self.needs_more = true;
+                        return false;
+                    }
+                    offset = document.utf8BomLen(parse_input);
+                }
+
                 while (offset < parse_input.len) {
                     if (self.skipStackLen() != 0) {
                         const progress = try self.walkSkipped(parse_input, offset, true);
@@ -524,7 +545,8 @@ pub fn Types(comptime options: ParseOptions) type {
                         }
                         continue;
                     }
-                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[parse_input[offset]]) {
+                    const continues_text = if (drop_whitespace_text_nodes) self.text_continuation else false;
+                    if (drop_whitespace_text_nodes and !continues_text and tables.WhitespaceTable[parse_input[offset]]) {
                         const next = scanner.skipWhitespace(parse_input, offset);
                         if (next >= parse_input.len) {
                             // Keep a trailing whitespace run pending: a later
@@ -544,6 +566,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     }
                     // Token parsers commit persistent state only after the token boundary is complete,
                     // so incremental EOF leaves nothing to roll back.
+                    const parsing_text = parse_input[offset] != '<';
+                    if (comptime drop_whitespace_text_nodes) {
+                        if (!parsing_text) self.text_continuation = false;
+                    }
                     const next = self.parseOne(parse_input, offset, ctx, callback, true) catch |err| switch (err) {
                         error.UnexpectedEndOfData => {
                             self.needs_more = true;
@@ -551,6 +577,7 @@ pub fn Types(comptime options: ParseOptions) type {
                         },
                         else => |e| return e,
                     };
+                    if (comptime drop_whitespace_text_nodes) self.text_continuation = parsing_text and next == parse_input.len;
                     offset = next;
                 }
                 if (trailing_partial_utf8) {
@@ -571,14 +598,15 @@ pub fn Types(comptime options: ParseOptions) type {
             inline fn parseOne(noalias self: *Self, input: []const u8, start: usize, ctx: anytype, comptime callback: anytype, comptime incremental: bool) ParseError!usize {
                 const i = start;
                 if (input[i] != '<') {
-                    if (drop_whitespace_text_nodes and tables.WhitespaceTable[input[i]]) {
+                    const continues_text = incremental and (if (drop_whitespace_text_nodes) self.text_continuation else false);
+                    if (drop_whitespace_text_nodes and !continues_text and tables.WhitespaceTable[input[i]]) {
                         const next = scanner.skipWhitespace(input, i);
                         if (next >= input.len) return next;
                         if (input[next] == '<') return next;
                     }
                     if (comptime validated) {
                         const run = scanner.scanTextSpecials(input, i);
-                        const has_non_whitespace = !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
+                        const has_non_whitespace = continues_text or !tables.WhitespaceTable[input[i]] or scanner.skipWhitespace(input, i) < run.lt_index;
                         try self.validateCharacterDataSpecials(input, i, run.lt_index, run.has_close_bracket, run.has_ampersand, incremental);
                         if (self.stackLen() == 0 and has_non_whitespace) return error.InvalidDocumentContent;
                         if (run.lt_index > i and (!drop_whitespace_text_nodes or has_non_whitespace)) {
@@ -817,8 +845,9 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name_start = i;
                 const name_scan = scanner.scanNameAndKey(input, i);
                 const name_end = name_scan.end;
+                if (incremental and name_end == input.len) return error.UnexpectedEndOfData;
                 if (comptime validated) {
-                    if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.ExpectedElementName;
+                    if (name_scan.needs_unicode_validation and !isValidGeneratedXmlName(input[name_start..name_end])) return error.ExpectedElementName;
                 }
                 i = name_end;
                 const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
@@ -919,8 +948,9 @@ pub fn Types(comptime options: ParseOptions) type {
                         attr_i = scanner.findNameEnd(input, i);
                         break :blk false;
                     };
+                    if (incremental and attr_i == input.len) return error.UnexpectedEndOfData;
                     if (comptime validated) {
-                        if (attr_name_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
+                        if (attr_name_needs_unicode_validation and !isValidGeneratedXmlName(input[attr_name_start..attr_i])) return error.ExpectedAttributeName;
                         if (attr_count == 0) {
                             first_attr_start = attr_name_start;
                             first_attr_end = attr_i;
@@ -1079,7 +1109,7 @@ pub fn Types(comptime options: ParseOptions) type {
                 const name_scan = scanner.scanNameAndKeyAfterStart(input, i);
                 const name_end = name_scan.end;
                 if (comptime validated) {
-                    if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) {
+                    if (name_scan.needs_unicode_validation and !isValidGeneratedXmlName(input[name_start..name_end])) {
                         return error.InvalidClosingTagName;
                     }
                 }
@@ -1163,12 +1193,12 @@ pub fn Types(comptime options: ParseOptions) type {
                 };
                 const target_end = i;
                 if (comptime validated) {
-                    if (target_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[target_start..target_end])) return error.ExpectedPiTarget;
+                    if (target_needs_unicode_validation and !isValidGeneratedXmlName(input[target_start..target_end])) return error.ExpectedPiTarget;
                 }
                 const xml_target = target_end - target_start == 3 and std.ascii.eqlIgnoreCase(input[target_start..target_end], "xml");
                 if (comptime validated) {
                     if (xml_target and !std.mem.eql(u8, input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
-                    if (xml_target and start != 0) return error.InvalidDeclaration;
+                    if (xml_target and start != document.utf8BomLen(input)) return error.InvalidDeclaration;
                     if (xml_target and target_end >= input.len) {
                         if (incremental) return error.UnexpectedEndOfData;
                         return error.InvalidDeclaration;
@@ -1239,10 +1269,10 @@ pub fn Types(comptime options: ParseOptions) type {
                     if (comptime validated) {
                         if (self.stackLen() == 0) return error.InvalidDocumentContent;
                     }
-                    if (include_misc_nodes) {
+                    if (include_misc_nodes or value_start != end) {
                         const node: Node = .{
                             .source = input,
-                            .kind = .cdata,
+                            .kind = if (include_misc_nodes) .cdata else .text,
                             .depth = @intCast(self.stackLen()),
                             .data = .{ .start = @intCast(value_start), .end = @intCast(end) },
                             .token_end = @intCast(end + 3),
@@ -1857,7 +1887,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime validated: bool
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
     if (comptime validated) {
-        if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.ExpectedElementName;
+        if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.ExpectedElementName;
     }
     i = name_end;
     const name = Span{ .start = @intCast(name_start), .end = @intCast(name_end) };
@@ -1897,7 +1927,7 @@ fn scanOpeningTagToken(input: []const u8, start: usize, comptime validated: bool
             const attr_name_start = i;
             const attr_name_scan = scanner.scanNameEnd(input, i);
             i = attr_name_scan.end;
-            if (attr_name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[attr_name_start..i])) return error.ExpectedAttributeName;
+            if (attr_name_scan.needs_unicode_validation and !document.isValidXmlName(input[attr_name_start..i])) return error.ExpectedAttributeName;
             if (attr_count == 0) {
                 first_attr_start = attr_name_start;
                 first_attr_end = i;
@@ -2675,7 +2705,7 @@ fn scanClosingTag(input: []const u8, start: usize, comptime validated: bool, com
     const name_scan = scanner.scanNameAndKey(input, i);
     const name_end = name_scan.end;
     if (comptime validated) {
-        if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(input[name_start..name_end])) return error.InvalidClosingTagName;
+        if (name_scan.needs_unicode_validation and !document.isValidXmlName(input[name_start..name_end])) return error.InvalidClosingTagName;
     }
     i = name_end;
     if (i < input.len and tables.isWhitespace(input[i])) i = skipWsMode(input, i, validated);
@@ -2699,7 +2729,7 @@ fn skipPi(input: []const u8, start: usize, comptime validated: bool, comptime in
         const target_scan = scanner.scanNameEndAfterStart(input, i);
         i = target_scan.end;
         const target = input[target_start..i];
-        if (target_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(target)) return error.ExpectedPiTarget;
+        if (target_scan.needs_unicode_validation and !document.isValidXmlName(target)) return error.ExpectedPiTarget;
         if (target.len == 3 and std.ascii.eqlIgnoreCase(target, "xml")) {
             if (!std.mem.eql(u8, target, "xml")) return error.ExpectedPiTarget;
             return error.InvalidDeclaration;
@@ -2814,6 +2844,7 @@ test "permissive streaming parser erases validation-only state" {
     const ValidatedParser = Types(.{ .validate_well_formedness = true }).Parser;
     const PermissiveState = PermissiveParser.State;
     const ValidatedState = ValidatedParser.State;
+    const KeepWhitespaceParser = Types(.{ .drop_whitespace_text_nodes = false }).Parser;
     const ExpectedStateIndex = if (@sizeOf(IndexInt) <= @sizeOf(usize)) IndexInt else usize;
 
     inline for (&.{
@@ -2843,6 +2874,10 @@ test "permissive streaming parser erases validation-only state" {
     try std.testing.expectEqual(Span, @FieldType(ValidatedParser, "doctype_value"));
     try std.testing.expectEqual(Span, @FieldType(ValidatedState, "doctype_value"));
     try std.testing.expectEqual(IndexInt, @FieldType(ValidatedParser, "xml_validated_offset"));
+    try std.testing.expectEqual(bool, @FieldType(PermissiveParser, "text_continuation"));
+    try std.testing.expectEqual(bool, @FieldType(PermissiveState, "text_continuation"));
+    try std.testing.expectEqual(void, @FieldType(KeepWhitespaceParser, "text_continuation"));
+    try std.testing.expectEqual(void, @FieldType(KeepWhitespaceParser.State, "text_continuation"));
     inline for (.{ "offset", "stack_len", "skip_stack_len" }) |field| {
         try std.testing.expectEqual(ExpectedStateIndex, @FieldType(PermissiveState, field));
         try std.testing.expectEqual(ExpectedStateIndex, @FieldType(ValidatedState, field));
@@ -4888,4 +4923,212 @@ test "streaming validated repeated simple text emits exact event spans and prese
     try source.appendSlice(std.testing.allocator, "</root>");
     try std.testing.expect(source.items.len >= 512 * 1024);
     try std.testing.expectError(error.DuplicateAttribute, parser.parse(source.items, &invalid_ctx, InvalidCtx.onNode));
+}
+
+test "compact streaming emits CDATA content as literal text" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const Ctx = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        text_events: usize = 0,
+        fn onNode(self: *@This(), event: Event) bool {
+            if (event.kind == .text) {
+                self.text_events += 1;
+                self.bytes.appendSlice(std.testing.allocator, event.valueRawSlice()) catch unreachable;
+            }
+            return true;
+        }
+    };
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    defer ctx.bytes.deinit(std.testing.allocator);
+    try parser.parse("<r>a<![CDATA[b&amp;<x>]]>c<![CDATA[]]></r>", &ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 3), ctx.text_events);
+    try std.testing.expectEqualStrings("ab&amp;<x>c", ctx.bytes.items);
+}
+
+test "streaming accepts a leading UTF-8 BOM across cumulative splits" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "\xEF\xBB\xBF<?xml version='1.0'?><r>text</r>";
+    const Ctx = struct {
+        elements: usize = 0,
+        texts: usize = 0,
+        fn onNode(self: *@This(), event: Event) bool {
+            if (event.kind == .element) self.elements += 1;
+            if (event.kind == .text) self.texts += 1;
+            return true;
+        }
+    };
+    var full = ParserType.init(std.testing.allocator);
+    defer full.deinit();
+    var full_ctx: Ctx = .{};
+    try full.parse(source, &full_ctx, Ctx.onNode);
+    try std.testing.expectEqual(@as(usize, 1), full_ctx.elements);
+    try std.testing.expectEqual(@as(usize, 1), full_ctx.texts);
+    inline for (.{ 1, 2, 3, 4 }) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+        try std.testing.expectEqual(@as(usize, 1), ctx.texts);
+    }
+}
+
+test "streaming cumulative attribute names wait for extension before duplicate checks" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r xmlns='urn:d' xmlns:cb='urn:cb'/>";
+    const Ctx = struct {
+        elements: usize = 0,
+        fn onNode(self: *@This(), event: Event) bool {
+            if (event.kind == .element) self.elements += 1;
+            return true;
+        }
+    };
+    inline for (.{ 2, 8, 13, 21, 22 }) |split| {
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        _ = try parser.parseAvailable(source[0..split], &ctx, Ctx.onNode);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+    }
+}
+
+test "streaming cumulative text preserves whitespace continued across a chunk" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .drop_whitespace_text_nodes = true };
+    const ParserType = Types(opts).Parser;
+    const Event = Types(opts).Node;
+    const source = "<r>value\r\n\t</r>";
+    const Ctx = struct {
+        text: std.ArrayList(u8) = .empty,
+        fn onNode(self: *@This(), event: Event) bool {
+            if (event.kind == .text) self.text.appendSlice(std.testing.allocator, event.valueRawSlice()) catch unreachable;
+            return true;
+        }
+    };
+    var parser = ParserType.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    defer ctx.text.deinit(std.testing.allocator);
+    _ = try parser.parseAvailable("<r>value\r", &ctx, Ctx.onNode);
+    try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+    try parser.finish();
+    try std.testing.expectEqualStrings("value\r\n\t", ctx.text.items);
+}
+test "streaming cumulative text continuation survives a trailing greater-than byte" {
+    inline for (.{ false, true }) |validated| {
+        const opts: ParseOptions = .{ .validate_well_formedness = validated, .drop_whitespace_text_nodes = true };
+        const ParserType = Types(opts).Parser;
+        const Event = Types(opts).Node;
+        const source = "<r>value> \t</r>";
+        const Ctx = struct {
+            text: std.ArrayList(u8) = .empty,
+            fn onNode(self: *@This(), event: Event) bool {
+                if (event.kind == .text) self.text.appendSlice(std.testing.allocator, event.valueRawSlice()) catch unreachable;
+                return true;
+            }
+        };
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        defer ctx.text.deinit(std.testing.allocator);
+        _ = try parser.parseAvailable("<r>value>", &ctx, Ctx.onNode);
+        try std.testing.expect(parser.text_continuation);
+        const saved = parser.save();
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqualStrings("value> \t", ctx.text.items);
+
+        parser.restore(saved);
+        try std.testing.expect(parser.text_continuation);
+    }
+}
+
+test "streaming cumulative BOM does not create a text continuation" {
+    inline for (.{ false, true }) |drop_whitespace| {
+        const opts: ParseOptions = .{ .validate_well_formedness = true, .drop_whitespace_text_nodes = drop_whitespace };
+        const ParserType = Types(opts).Parser;
+        const Event = Types(opts).Node;
+        const source = "\xEF\xBB\xBF \n<r/>";
+        const Ctx = struct {
+            elements: usize = 0,
+            text: std.ArrayList(u8) = .empty,
+            fn onNode(self: *@This(), event: Event) bool {
+                if (event.kind == .element) self.elements += 1;
+                if (event.kind == .text) self.text.appendSlice(std.testing.allocator, event.valueRawSlice()) catch unreachable;
+                return true;
+            }
+        };
+        var parser = ParserType.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        defer ctx.text.deinit(std.testing.allocator);
+        try std.testing.expect(try parser.parseAvailable(source[0..3], &ctx, Ctx.onNode));
+        if (comptime drop_whitespace) try std.testing.expect(!parser.text_continuation);
+        try std.testing.expect(try parser.parseAvailable(source, &ctx, Ctx.onNode));
+        try parser.finish();
+        try std.testing.expectEqual(@as(usize, 1), ctx.elements);
+        if (drop_whitespace) try std.testing.expectEqualStrings("", ctx.text.items) else try std.testing.expectEqualStrings(" \n", ctx.text.items);
+    }
+}
+
+test "streaming validated names stay bounded when XML character validation is disabled" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .validate_xml_characters = false };
+    const T = Types(opts);
+    const Event = T.Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), _: *const Event) bool {
+            return true;
+        }
+    };
+    const invalid = [_]struct { source: []const u8, err: ParseError }{
+        .{ .source = "<\xC3/>", .err = error.ExpectedElementName },
+        .{ .source = "<r \xC3='x'/>", .err = error.ExpectedAttributeName },
+        .{ .source = "<é></\xC3>", .err = error.InvalidClosingTagName },
+        .{ .source = "<?\xC3?><r/>", .err = error.ExpectedPiTarget },
+    };
+    for (invalid) |case| {
+        var parser = T.Parser.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(case.err, parser.parse(case.source, &ctx, Ctx.onNode));
+    }
+
+    var parser = T.Parser.init(std.testing.allocator);
+    defer parser.deinit();
+    var ctx: Ctx = .{};
+    try parser.parse("<é 名='x'></é>", &ctx, Ctx.onNode);
+}
+
+test "streaming skipped subtrees safely validate malformed UTF-8 names in trusted mode" {
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .validate_xml_characters = false };
+    const T = Types(opts);
+    const Event = T.Node;
+    const Ctx = struct {
+        fn onNode(_: *@This(), event: *const Event) bool {
+            return !(event.kind == .element and std.mem.eql(u8, event.nameSlice(), "x"));
+        }
+    };
+    const invalid = [_]struct { source: []const u8, err: ParseError }{
+        .{ .source = "<r><x><\xC3/></x></r>", .err = error.ExpectedElementName },
+        .{ .source = "<r><x><y \xC3='v'/></x></r>", .err = error.ExpectedAttributeName },
+        .{ .source = "<r><x></\xC3></x></r>", .err = error.InvalidClosingTagName },
+        .{ .source = "<r><x><?\xC3?></x></r>", .err = error.ExpectedPiTarget },
+    };
+    for (invalid) |case| {
+        var parser = T.Parser.init(std.testing.allocator);
+        defer parser.deinit();
+        var ctx: Ctx = .{};
+        try std.testing.expectError(case.err, parser.parse(case.source, &ctx, Ctx.onNode));
+    }
 }

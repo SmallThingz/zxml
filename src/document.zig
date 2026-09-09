@@ -811,11 +811,61 @@ pub fn xmlValidPrefixLenStreaming(input: []const u8) ParseError!usize {
 }
 
 pub fn validateXmlCharacters(input: []const u8) ParseError!void {
-    if (try xmlValidPrefixLenImpl(input, false) != input.len) return error.InvalidXmlCharacter;
+    if (try @call(.always_inline, xmlValidPrefixLenImpl, .{ input, false }) != input.len) return error.InvalidXmlCharacter;
 }
 
 pub fn validateXmlCharactersStreaming(input: []const u8) ParseError!void {
     if (try xmlValidPrefixLenImpl(input, true) != input.len) return error.InvalidXmlCharacter;
+}
+
+pub inline fn utf8BomLen(input: []const u8) usize {
+    return if (input.len >= 3 and input[0] == 0xEF and input[1] == 0xBB and input[2] == 0xBF) 3 else 0;
+}
+
+pub inline fn isPartialUtf8Bom(input: []const u8) bool {
+    if (input.len == 0 or input.len >= 3) return false;
+    const bom = [_]u8{ 0xEF, 0xBB, 0xBF };
+    return std.mem.eql(u8, input, bom[0..input.len]);
+}
+
+/// Locate the byte that makes XML character validation fail. This is kept out
+/// of the normal validation path and is used only to make parse diagnostics
+/// precise after the fast validator has already rejected the input.
+pub fn firstInvalidXmlCharacterOffset(input: []const u8) ?usize {
+    var i: usize = 0;
+    while (i < input.len) {
+        const first = input[i];
+        if (first < 0x80) {
+            if (first < 0x20 and first != '\t' and first != '\n' and first != '\r') return i;
+            i += 1;
+            continue;
+        }
+
+        const sequence_len: usize = if (first >= 0xC2 and first <= 0xDF)
+            2
+        else if (first >= 0xE0 and first <= 0xEF)
+            3
+        else if (first >= 0xF0 and first <= 0xF4)
+            4
+        else
+            return i;
+
+        if (input.len - i < sequence_len) return i;
+        var j: usize = 1;
+        while (j < sequence_len) : (j += 1) {
+            const continuation = input[i + j];
+            if (continuation < 0x80 or continuation > 0xBF) return i + j;
+            if (j == 1) {
+                if (first == 0xE0 and continuation < 0xA0) return i + j;
+                if (first == 0xED and continuation > 0x9F) return i + j;
+                if (first == 0xF0 and continuation < 0x90) return i + j;
+                if (first == 0xF4 and continuation > 0x8F) return i + j;
+            }
+        }
+        if (first == 0xEF and input[i + 1] == 0xBF and input[i + 2] >= 0xBE) return i;
+        i += sequence_len;
+    }
+    return null;
 }
 
 /// Validates XML Name codepoint ranges when UTF-8 shape has already been
@@ -1011,19 +1061,41 @@ pub const ParseDiagnostic = struct {
     pub fn location(self: @This()) Location {
         var line: usize = 1;
         var column: usize = 1;
-        var i: usize = 0;
         const end = @min(self.offset, self.source.len);
-        while (i < end) : (i += 1) {
-            if (self.source[i] == '\r') {
+        const bom_len = utf8BomLen(self.source);
+        var i: usize = if (end >= bom_len) bom_len else 0;
+        while (i < end) {
+            const first = self.source[i];
+            if (first == '\r') {
                 line += 1;
                 column = 1;
-                if (i + 1 < end and self.source[i + 1] == '\n') i += 1;
-            } else if (self.source[i] == '\n') {
-                line += 1;
-                column = 1;
-            } else {
-                column += 1;
+                i += 1;
+                if (i < end and self.source[i] == '\n') i += 1;
+                continue;
             }
+            if (first == '\n') {
+                line += 1;
+                column = 1;
+                i += 1;
+                continue;
+            }
+            if (first < 0x80) {
+                column += 1;
+                i += 1;
+                continue;
+            }
+
+            // Diagnostics are normally produced after UTF-8 validation, but
+            // remain robust when the reported error itself is a malformed
+            // sequence: count a valid scalar once, otherwise advance one byte.
+            const sequence_len = std.unicode.utf8ByteSequenceLength(first) catch 1;
+            const n: usize = @intCast(sequence_len);
+            if (n > 1 and i + n <= end and std.unicode.utf8ValidateSlice(self.source[i .. i + n])) {
+                i += n;
+            } else {
+                i += 1;
+            }
+            column += 1;
         }
         return .{ .line = line, .column = column };
     }
@@ -1997,7 +2069,6 @@ pub fn GetRawNode(comptime options: ParseOptions) type {
 const ValueError = std.mem.Allocator.Error || entities.DecodeError;
 
 const TextMaterializationState = enum(u8) {
-    decode_failed = 1,
     decoded = 2,
     raw = 0xff,
 };
@@ -2129,7 +2200,7 @@ fn GetNode(comptime options: ParseOptions) type {
             return name[split + 1 ..];
         }
 
-        pub fn namespaceUri(self: Self) ?[]const u8 {
+        fn namespaceUriLexical(self: Self) ?[]const u8 {
             if (self.kind != .element) return null;
             const prefix = self.namespacePrefix();
             if (prefix) |p| {
@@ -2152,6 +2223,26 @@ fn GetNode(comptime options: ParseOptions) type {
                     }
                 }
             }
+            return null;
+        }
+
+        /// Returns the lexical namespace declaration bytes borrowed from the
+        /// document source. This preserves the original zero-allocation API;
+        /// entity references are intentionally not decoded here.
+        pub fn namespaceUri(self: Self) ?[]const u8 {
+            return self.namespaceUriLexical();
+        }
+
+        /// Returns the namespace URI after XML entity decoding. The result may
+        /// borrow document storage or own an allocation; call `free(alloc)`.
+        pub fn namespaceUriDecoded(self: Self, alloc: std.mem.Allocator) ValueError!?common.SliceResult {
+            const lexical = self.namespaceUriLexical() orelse return null;
+            if (self.namespacePrefix()) |prefix| {
+                if (std.mem.eql(u8, prefix, "xml")) return .{ .value = lexical };
+            }
+            const decoded = try self.doc.decodeValueResult(alloc, lexical);
+            if (decoded.value.len != 0) return decoded;
+            decoded.free(alloc);
             return null;
         }
 
@@ -2359,6 +2450,20 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             };
         }
 
+        inline fn compactTextIsCdata(self: *const Self, idx: IndexInt) bool {
+            if (comptime options.include_misc_nodes) return false;
+            const span = self.nodes[@intCast(idx)].valueSpan(idx);
+            const start: usize = @intCast(span.start);
+            const end: usize = @intCast(span.end);
+            // The opening '<' can be used as a destructive text-cache marker by
+            // an immediately preceding text node, so key off the remaining
+            // immutable CDATA opener bytes instead. This node itself is never
+            // materialized in place once recognized as CDATA.
+            if (start < 8 or end > self.source.len or self.source.len - end < 3) return false;
+            return std.mem.eql(u8, self.source[start - 8 .. start], "![CDATA[") and
+                std.mem.eql(u8, self.source[end .. end + 3], "]]>");
+        }
+
         inline fn textState(self: *const Self, idx: IndexInt) TextMaterializationState {
             if (comptime options.non_destructive) return .raw;
             const span = self.nodes[@intCast(idx)].valueSpan(idx);
@@ -2366,7 +2471,6 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             if (end >= self.source.len) return .raw;
             return switch (self.source[end]) {
                 @intFromEnum(TextMaterializationState.decoded) => .decoded,
-                @intFromEnum(TextMaterializationState.decode_failed) => .decode_failed,
                 else => .raw,
             };
         }
@@ -2380,23 +2484,23 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
             const node = &self.nodes[@intCast(idx)];
             std.debug.assert(node.nodeKind(idx) == .text);
+            if (self.compactTextIsCdata(idx)) return .{ .value = node.valueSpan(idx).slice(self.source) };
             if (comptime options.non_destructive) return self.decodeValueResult(alloc, node.valueSpan(idx).slice(self.source));
 
             switch (self.textState(idx)) {
                 .decoded => return .{ .value = node.valueSpan(idx).slice(self.source) },
-                .decode_failed => {
-                    const raw = node.valueSpan(idx).slice(self.source);
-                    return .{
-                        .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
-                        .owned = true,
-                    };
-                },
                 .raw => {},
             }
 
             const original_span = node.valueSpan(idx);
-            const result = try entities.decodeInPlaceWithEntityMap(original_span.sliceMut(self.source), options.validate_well_formedness, self.entityMap());
+            const original = original_span.slice(self.source);
+            if (std.mem.indexOfScalar(u8, original, '&') == null) return .{ .value = original };
+            const result = try entities.decodeInPlaceShrinkingWithEntityMap(original_span.sliceMut(self.source), options.validate_well_formedness, self.entityMap());
             if (result.complete) {
+                // Compact text uses reversed non-empty spans as its kind tag. A
+                // zero-length decoded value cannot be cached without turning the
+                // node into an element, so keep that rare result ephemeral.
+                if (result.len == 0) return .{ .value = "" };
                 const decoded_span: Span = .{ .start = original_span.start, .end = original_span.start + @as(IndexInt, @intCast(result.len)) };
                 if (comptime options.include_misc_nodes) {
                     node.name_or_text = decoded_span;
@@ -2407,7 +2511,6 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                 return .{ .value = node.valueSpan(idx).slice(self.source) };
             }
 
-            self.markTextState(idx, .decode_failed);
             const raw = original_span.slice(self.source);
             return .{
                 .value = try entities.decodeAllocWithEntityMap(alloc, raw, options.validate_well_formedness, self.entityMap()),
@@ -2480,28 +2583,85 @@ pub fn GetDocument(comptime options: ParseOptions) type {
 
         pub fn write(self: *const Self, writer: anytype) !void {
             const root_node = self.root() orelse return;
+            if (self.sourceDoctype()) |doctype| try writer.writeAll(doctype);
             try self.writeNode(writer, root_node);
+        }
+
+        /// Compact DOMs intentionally do not retain misc nodes, but a validated
+        /// DOCTYPE can still be required to keep custom entity references in the
+        /// serialized document well-formed. Recover only that grammar-critical
+        /// prolog token from the immutable source spans; comments/PIs remain
+        /// omitted when misc nodes are disabled.
+        fn sourceDoctype(self: *const Self) ?[]const u8 {
+            if (comptime options.include_misc_nodes) return null;
+
+            var root_open = self.source.len;
+            for (self.nodes, 0..) |*raw, index| {
+                const idx: IndexInt = @intCast(index);
+                if (raw.nodeKind(idx) != .element or raw.parent != 0) continue;
+                const name_start: usize = @intCast(raw.name_or_text.start);
+                if (name_start == 0) return null;
+                root_open = name_start - 1;
+                break;
+            }
+            if (root_open == self.source.len) return null;
+
+            var i: usize = utf8BomLen(self.source);
+            while (i < root_open) {
+                i = scanner.skipWhitespace(self.source, i);
+                if (i >= root_open) return null;
+                if (self.source[i] != '<' or i + 1 >= root_open) return null;
+                if (i + 3 < root_open and self.source[i + 1] == '!' and self.source[i + 2] == '-' and self.source[i + 3] == '-') {
+                    const end = scanner.findSequence(self.source, i + 4, "-->") orelse return null;
+                    i = end + 3;
+                    continue;
+                }
+                if (self.source[i + 1] == '?') {
+                    const end = scanner.findSequence(self.source, i + 2, "?>") orelse return null;
+                    i = end + 2;
+                    continue;
+                }
+                if (scanner.isDoctypeExact(self.source, i)) {
+                    const end = scanner.findDoctypeEnd(self.source, i + 9) orelse return null;
+                    if (end >= root_open) return null;
+                    return self.source[i .. end + 1];
+                }
+                return null;
+            }
+            return null;
         }
 
         fn writeNode(self: *const Self, writer: anytype, node: Node) !void {
             if (node.index == InvalidIndex or node.index >= self.nodes.len) return;
             const start = node.index;
-            const end = self.subtreeEndAt(start);
+            const start_pos: usize = @intCast(start);
+            const end_pos: usize = if (node.kind == .document)
+                self.nodes.len - 1
+            else
+                @intCast(self.subtreeEndAt(start));
+
+            // Preorder parent links already encode every close transition. Walk
+            // them directly instead of rescanning subtree tails for every node;
+            // the latter turns serialization of wide/flat documents into O(n^2).
             var open_idx: IndexInt = InvalidIndex;
-            var idx = start;
-            while (idx <= end and @as(usize, @intCast(idx)) < self.nodes.len) : (idx += 1) {
-                while (open_idx != InvalidIndex and self.kindAt(open_idx) == .element and self.subtreeEndAt(open_idx) < idx) {
+            var pos = start_pos;
+            while (pos <= end_pos) : (pos += 1) {
+                const idx: IndexInt = @intCast(pos);
+                const raw = &self.nodes[pos];
+                while (open_idx != InvalidIndex and open_idx != raw.parent) {
                     const closing = open_idx;
-                    open_idx = self.nodes[@intCast(closing)].parent;
+                    const parent = self.nodes[@intCast(closing)].parent;
+                    open_idx = if (parent != InvalidIndex and self.kindAt(parent) == .element) parent else InvalidIndex;
                     try self.writeCloseElement(writer, closing);
                 }
 
-                const raw = &self.nodes[@intCast(idx)];
                 switch (self.kindAt(idx)) {
                     .document => {},
                     .element => {
                         try self.writeOpenElement(writer, idx);
-                        if (self.subtreeEndAt(idx) == idx) {
+                        const next = pos + 1;
+                        const has_child = next <= end_pos and next < self.nodes.len and self.nodes[next].parent == idx;
+                        if (!has_child) {
                             try writer.writeAll("/>");
                         } else {
                             try writer.writeAll(">");
@@ -2510,7 +2670,11 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                     },
                     .text => {
                         const text = raw.valueSpan(idx).slice(self.source);
-                        if (comptime !options.non_destructive) {
+                        if (self.compactTextIsCdata(idx)) {
+                            try writer.writeAll("<![CDATA[");
+                            try writer.writeAll(text);
+                            try writer.writeAll("]]>");
+                        } else if (comptime !options.non_destructive) {
                             if (self.textState(idx) == .decoded) {
                                 try writeEscapedText(writer, text);
                             } else try writer.writeAll(text);
@@ -2549,9 +2713,10 @@ pub fn GetDocument(comptime options: ParseOptions) type {
                 }
             }
 
-            while (open_idx != InvalidIndex and open_idx >= start and self.kindAt(open_idx) == .element) {
+            while (open_idx != InvalidIndex) {
                 const closing = open_idx;
-                open_idx = self.nodes[@intCast(closing)].parent;
+                const parent = self.nodes[@intCast(closing)].parent;
+                open_idx = if (parent != InvalidIndex and parent >= start and self.kindAt(parent) == .element) parent else InvalidIndex;
                 try self.writeCloseElement(writer, closing);
             }
         }
@@ -3120,5 +3285,159 @@ test "vector UTF-8 validation rejects illegal sequences at every lane boundary" 
         while (!std.unicode.utf8ValidateSlice(valid[0..boundary])) : (boundary -= 1) {}
         try std.testing.expectEqual(boundary, try xmlValidPrefixLen(valid[0..end]));
         try std.testing.expectEqual(boundary, try xmlValidPrefixLenStreaming(valid[0..end]));
+    }
+}
+
+test "text entity materialization never uses following markup as cache storage" {
+    inline for (.{ "abc", "EXPANDED" }) |replacement| {
+        var source_buf: [128]u8 = undefined;
+        const source = try std.fmt.bufPrint(&source_buf, "<!DOCTYPE r [<!ENTITY e '{s}'>]><r>&e;<x/></r>", .{replacement});
+        const before = try std.testing.allocator.dupe(u8, source);
+        defer std.testing.allocator.free(before);
+        const opts: ParseOptions = .{ .validate_well_formedness = true, .expand_dtd_entities = true };
+        var doc = try opts.parse(std.testing.allocator, source);
+        defer doc.deinit();
+        const text = doc.nodeAt(1).?.firstChild() orelse return error.TestUnexpectedResult;
+        const value = try text.value(std.testing.allocator);
+        defer value.free(std.testing.allocator);
+        try std.testing.expectEqualStrings(replacement, value.value);
+        try std.testing.expectEqualSlices(u8, before, source);
+        try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.lastChild().?.nameSlice());
+    }
+}
+
+test "empty DTD entity text materialization stays a text node" {
+    var source = "<!DOCTYPE r [<!ENTITY e ''>]><r>&e;</r>".*;
+    const opts: ParseOptions = .{ .validate_well_formedness = true, .expand_dtd_entities = true };
+    var doc = try opts.parse(std.testing.allocator, &source);
+    defer doc.deinit();
+
+    const text = doc.nodeAt(1).?.firstChild() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(NodeType.text, text.kind);
+    const before = try std.testing.allocator.dupe(u8, text.valueRawSlice());
+    defer std.testing.allocator.free(before);
+    inline for (0..2) |_| {
+        const value = try text.value(std.testing.allocator);
+        defer value.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("", value.value);
+        try std.testing.expectEqual(NodeType.text, doc.kindAt(text.index));
+        try std.testing.expectEqualSlices(u8, before, text.valueRawSlice());
+    }
+}
+
+test "parse diagnostic columns count UTF-8 scalar values" {
+    const diagnostic: ParseDiagnostic = .{ .err = error.InvalidClosingTagName, .offset = 9, .source = "<r>é</x>" };
+    try std.testing.expectEqual(@as(usize, 1), diagnostic.location().line);
+    try std.testing.expectEqual(@as(usize, 9), diagnostic.location().column);
+
+    const multiline: ParseDiagnostic = .{ .err = error.InvalidClosingTagName, .offset = 10, .source = "é\r\n漢</x>" };
+    try std.testing.expectEqual(@as(usize, 2), multiline.location().line);
+    try std.testing.expectEqual(@as(usize, 5), multiline.location().column);
+    const bom: ParseDiagnostic = .{ .err = error.InvalidXmlCharacter, .offset = 6, .source = "\xEF\xBB\xBF<r>\x01</r>" };
+    try std.testing.expectEqual(@as(usize, 1), bom.location().line);
+    try std.testing.expectEqual(@as(usize, 4), bom.location().column);
+}
+
+test "diagnostic XML character locator reports the offending byte" {
+    try std.testing.expectEqual(@as(?usize, 6), firstInvalidXmlCharacterOffset("<r>abc\x01def</r>"));
+    try std.testing.expectEqual(@as(?usize, 4), firstInvalidXmlCharacterOffset("<r>\xC3(</r>"));
+    try std.testing.expectEqual(@as(?usize, 3), firstInvalidXmlCharacterOffset("<r>\xEF\xBF\xBE</r>"));
+    try std.testing.expectEqual(@as(?usize, null), firstInvalidXmlCharacterOffset("<r>é漢😀</r>"));
+}
+
+test "plain destructive text value does not overwrite following markup" {
+    var source = "<r>text<x/></r>".*;
+    const before = source;
+    const opts: ParseOptions = .{};
+    var doc = try opts.parse(std.testing.allocator, &source);
+    defer doc.deinit();
+
+    const text = doc.nodeAt(1).?.firstChild().?;
+    const value = try text.value(std.testing.allocator);
+    defer value.free(std.testing.allocator);
+    try std.testing.expect(!value.owned);
+    try std.testing.expectEqualStrings("text", value.value);
+    try std.testing.expectEqualSlices(u8, &before, &source);
+}
+
+test "compact CDATA stays literal and serializes as safe character data" {
+    inline for (.{ false, true }) |immutable| {
+        var source = "<r><![CDATA[&amp;<x>]]></r>".*;
+        const opts: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = immutable };
+        const parse_input = if (immutable) @as([]const u8, &source) else @as([]u8, &source);
+        var doc = try opts.parse(std.testing.allocator, parse_input);
+        defer doc.deinit();
+
+        const text = doc.nodeAt(1).?.firstChild() orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(NodeType.text, text.kind);
+        try std.testing.expectEqualStrings("&amp;<x>", text.valueRawSlice());
+        const value = try text.value(std.testing.allocator);
+        defer value.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("&amp;<x>", value.value);
+
+        var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        try doc.write(&out.writer);
+
+        const check: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = true };
+        var reparsed = try check.parse(std.testing.allocator, out.written());
+        defer reparsed.deinit();
+        const reparsed_text = reparsed.nodeAt(1).?.firstChild() orelse return error.TestUnexpectedResult;
+        const reparsed_value = try reparsed_text.value(std.testing.allocator);
+        defer reparsed_value.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("&amp;<x>", reparsed_value.value);
+    }
+}
+
+test "empty CDATA is safe in compact and rich DOM layouts" {
+    inline for (.{ false, true }) |misc| {
+        var source = "<r><![CDATA[]]></r>".*;
+        const opts: ParseOptions = .{ .validate_well_formedness = true, .include_misc_nodes = misc };
+        var doc = try opts.parse(std.testing.allocator, &source);
+        defer doc.deinit();
+        const root = doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+        if (misc) {
+            const cdata = root.firstChild() orelse return error.TestUnexpectedResult;
+            try std.testing.expectEqual(NodeType.cdata, cdata.kind);
+            try std.testing.expectEqualStrings("", cdata.valueRawSlice());
+        } else {
+            try std.testing.expect(root.firstChild() == null);
+        }
+    }
+}
+
+test "compact permissive serialization preserves a well formed required DOCTYPE" {
+    var source = "<!DOCTYPE r [<!ENTITY e 'x'>]><r>&e;</r>".*;
+    const opts: ParseOptions = .{};
+    var doc = try opts.parse(std.testing.allocator, &source);
+    defer doc.deinit();
+
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    try doc.write(&out.writer);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "<!DOCTYPE r [<!ENTITY e 'x'>]><r>"));
+
+    const check: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = true };
+    var reparsed = try check.parse(std.testing.allocator, out.written());
+    defer reparsed.deinit();
+}
+
+test "compact validated serialization preserves a required DOCTYPE" {
+    inline for (.{ false, true }) |immutable| {
+        var source = "<?xml version='1.0'?><!--before--><!DOCTYPE r [<!ENTITY e 'x'>]><!--after--><r a='&e;'>&e;</r>".*;
+        const opts: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = immutable };
+        const parse_input = if (immutable) @as([]const u8, &source) else @as([]u8, &source);
+        var doc = try opts.parse(std.testing.allocator, parse_input);
+        defer doc.deinit();
+
+        var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+        defer out.deinit();
+        try doc.write(&out.writer);
+        try std.testing.expect(std.mem.startsWith(u8, out.written(), "<!DOCTYPE r [<!ENTITY e 'x'>]><r"));
+
+        const check: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = true };
+        var reparsed = try check.parse(std.testing.allocator, out.written());
+        defer reparsed.deinit();
+        try std.testing.expectEqualStrings("&e;", reparsed.nodeAt(1).?.getAttributeValueRaw("a").?);
     }
 }

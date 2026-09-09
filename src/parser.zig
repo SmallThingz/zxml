@@ -102,12 +102,12 @@ noinline fn duplicateAttributeInSource(allocator: std.mem.Allocator, input: []co
 }
 
 pub fn parse(comptime opts: ParseOptions, allocator: std.mem.Allocator, input: opts.Input()) ParseError!opts.Document() {
-    return parseTracked(opts, allocator, input, null);
+    return parseTracked(opts, allocator, input, null, false);
 }
 
 pub fn parseDiagnostic(comptime opts: ParseOptions, allocator: std.mem.Allocator, input: opts.Input()) ?document.ParseDiagnostic {
     var error_offset: usize = 0;
-    var doc = parseTracked(opts, allocator, input, &error_offset) catch |err| return .{
+    var doc = parseTracked(opts, allocator, input, &error_offset, true) catch |err| return .{
         .err = err,
         .offset = error_offset,
         .source = input,
@@ -121,6 +121,7 @@ fn parseTracked(
     allocator: std.mem.Allocator,
     input: opts.Input(),
     error_offset: ?*usize,
+    comptime diagnostics: bool,
 ) ParseError!opts.Document() {
     if (error_offset) |offset| offset.* = 0;
     if (!common.lenFits(input.len)) return error.InputTooLarge;
@@ -131,7 +132,14 @@ fn parseTracked(
         }
     }
     if (comptime opts.validate_well_formedness and opts.validate_xml_characters) {
-        document.validateXmlCharacters(input) catch |err| return err;
+        if (comptime diagnostics) {
+            document.validateXmlCharacters(input) catch |err| {
+                if (error_offset) |offset| offset.* = document.firstInvalidXmlCharacterOffset(input) orelse 0;
+                return err;
+            };
+        } else {
+            try @call(.always_inline, document.validateXmlCharacters, .{input});
+        }
     }
     if (comptime opts.validate_well_formedness) {
         if (input.len >= 64 * 1024) {
@@ -162,10 +170,12 @@ fn parseTracked(
     // Keep the uninitialized node buffer outside the aggregate initializer:
     // materializing an undefined array field can otherwise emit a full memset.
     var inline_nodes: [SmallInitialNodeCapacity]Doc.RawNode = undefined;
-    var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = 0, .nodes = .initBuffer(&inline_nodes) };
+    var p = Parser(opts, Doc){ .doc = &doc, .input = input, .i = document.utf8BomLen(input), .nodes = .initBuffer(&inline_nodes) };
     errdefer if (p.nodes.capacity > SmallInitialNodeCapacity) p.nodes.deinit(allocator);
     p.parse() catch |err| {
-        if (error_offset) |offset| offset.* = @min(p.i, input.len);
+        if (comptime diagnostics) {
+            if (error_offset) |offset| offset.* = @min(p.i, input.len);
+        }
         return err;
     };
     doc.nodes = if (p.nodes.capacity == SmallInitialNodeCapacity)
@@ -560,6 +570,12 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         doctype_value: ValidationSpan = if (validated) .{} else {},
 
         const Self = @This();
+
+        inline fn isValidGeneratedXmlName(name: []const u8) bool {
+            if (comptime opts.validate_xml_characters) return document.isValidXmlNameAssumeValidUtf8(name);
+            return document.isValidXmlName(name);
+        }
+
         const RawNode = DocType.RawNode;
         const expand_dtd_entities = opts.expand_dtd_entities;
         const drop_whitespace_text_nodes = opts.drop_whitespace_text_nodes;
@@ -822,7 +838,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 }
             }
             if (comptime validated) {
-                if (name_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[name_start..name_end])) return error.ExpectedElementName;
+                if (name_scan.needs_unicode_validation and !isValidGeneratedXmlName(self.input[name_start..name_end])) return error.ExpectedElementName;
             }
             self.i = name_end;
 
@@ -1004,7 +1020,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                 };
                 const attr_name_end = self.i;
                 if (comptime validated) {
-                    if (attr_name_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
+                    if (attr_name_needs_unicode_validation and !isValidGeneratedXmlName(self.input[attr_name_start..attr_name_end])) return error.ExpectedAttributeName;
                 }
                 const input = self.input;
                 const input_len = input.len;
@@ -1203,7 +1219,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             const close_scan = scanOpeningName(self.input, close_start);
             const close_end = close_scan.end;
             if (comptime validated) {
-                if (close_scan.needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[close_start..close_end])) {
+                if (close_scan.needs_unicode_validation and !isValidGeneratedXmlName(self.input[close_start..close_end])) {
                     return error.InvalidClosingTagName;
                 }
             }
@@ -1251,16 +1267,30 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
         }
 
         fn parsePiOrDeclaration(noalias self: *Self) ParseError!void {
+            if (comptime validated) {
+                if (self.i == 3 and document.utf8BomLen(self.input) == 3) {
+                    @branchHint(.unlikely);
+                    return self.parsePiOrDeclarationBom();
+                }
+            }
+            return self.parsePiOrDeclarationAt(0);
+        }
+
+        noinline fn parsePiOrDeclarationBom(noalias self: *Self) ParseError!void {
+            return self.parsePiOrDeclarationAt(3);
+        }
+
+        inline fn parsePiOrDeclarationAt(noalias self: *Self, comptime declaration_start: usize) ParseError!void {
             const markup_start = self.i;
             if (comptime validated and !opts.include_misc_nodes) {
-                if (markup_start == 0 and self.input.len >= 5 and std.mem.eql(u8, self.input[0..5], "<?xml")) {
+                if (markup_start == declaration_start and self.input.len - declaration_start >= 5 and std.mem.eql(u8, self.input[declaration_start..][0..5], "<?xml")) {
                     inline for (.{
                         "<?xml version=\"1.0\"?>",
                         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>",
                         "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\" ?>",
                     }) |canonical| {
-                        if (self.input.len >= canonical.len and std.mem.eql(u8, self.input[0..canonical.len], canonical)) {
-                            self.i = canonical.len;
+                        if (self.input.len - declaration_start >= canonical.len and std.mem.eql(u8, self.input[declaration_start..][0..canonical.len], canonical)) {
+                            self.i = declaration_start + canonical.len;
                             self.validation_flags.standalone_yes = false;
                             return;
                         }
@@ -1295,13 +1325,13 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
             };
             const target_end = self.i;
             if (comptime validated) {
-                if (target_needs_unicode_validation and !document.isValidXmlNameAssumeValidUtf8(self.input[target_start..target_end])) return error.ExpectedPiTarget;
+                if (target_needs_unicode_validation and !isValidGeneratedXmlName(self.input[target_start..target_end])) return error.ExpectedPiTarget;
             }
             const xml_target = target_end - target_start == 3 and
                 std.ascii.eqlIgnoreCase(self.input[target_start..target_end], "xml");
             if (comptime validated) {
                 if (xml_target and !std.mem.eql(u8, self.input[target_start..target_end], "xml")) return error.ExpectedPiTarget;
-                if (xml_target and markup_start != 0) return error.InvalidDeclaration;
+                if (xml_target and markup_start != declaration_start) return error.InvalidDeclaration;
                 if (xml_target and (target_end >= self.input.len or !tables.isWhitespace(self.input[target_end]))) return error.InvalidDeclaration;
                 if (!xml_target) {
                     if (target_end >= self.input.len) return error.UnexpectedEndOfData;
@@ -1404,7 +1434,7 @@ fn Parser(comptime opts: ParseOptions, comptime DocType: type) type {
                         .{ .start = @intCast(value_start), .end = @intCast(end) },
                         .{},
                     );
-                } else {
+                } else if (value_start != end) {
                     _ = try self.appendTextNodeTo(parent_idx, value_start, end);
                 }
                 return;
@@ -2096,5 +2126,27 @@ test "direct closing match preserves whitespace mismatch and partial tails" {
     inline for (.{ "<r></", "<r></r", "<r><abcdefghX></abcdefgh" }) |text| {
         var input = text.*;
         try std.testing.expectError(error.UnexpectedEndOfData, options.parse(std.testing.allocator, &input));
+    }
+}
+
+test "parseDiagnostic reports XML character error location" {
+    const options: ParseOptions = .{ .validate_well_formedness = true };
+    var source = "<r>abc\x01def</r>".*;
+    const diagnostic = options.parseDiagnostic(std.testing.allocator, &source) orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqual(error.InvalidXmlCharacter, diagnostic.err);
+    try std.testing.expectEqual(@as(usize, 6), diagnostic.offset);
+    try std.testing.expectEqual(@as(usize, 1), diagnostic.location().line);
+    try std.testing.expectEqual(@as(usize, 7), diagnostic.location().column);
+}
+
+test "validated DOM accepts a leading UTF-8 BOM" {
+    inline for (.{ false, true }) |immutable| {
+        var source = "\xEF\xBB\xBF<?xml version='1.0'?><r>text</r>".*;
+        const options: ParseOptions = .{ .validate_well_formedness = true, .non_destructive = immutable };
+        const input = if (immutable) @as([]const u8, &source) else @as([]u8, &source);
+        var doc = try options.parse(std.testing.allocator, input);
+        defer doc.deinit();
+        try std.testing.expectEqualStrings("r", doc.nodeAt(1).?.nameSlice());
+        try std.testing.expectEqualStrings("text", doc.nodeAt(1).?.firstChild().?.valueRawSlice());
     }
 }

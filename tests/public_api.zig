@@ -58,10 +58,9 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     assertDeclCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertDeclCoverage(T.AttributeIterator, &.{"next"});
     assertDeclCoverage(T.Node, &.{
-        "nameSlice",         "namespacePrefix", "localName",   "namespaceUri", "valueRawSlice", "value",
-        "firstChild",        "lastChild",       "nextSibling", "prevSibling",  "parentNode",    "getAttributeValueRaw",
-        "getAttributeValue", "firstAttribute",  "attributes",  "innerTextRaw", "innerText",     "querySelector",
-        "querySelectorAll",  "write",
+        "nameSlice",      "namespacePrefix", "localName",    "namespaceUri", "namespaceUriDecoded", "valueRawSlice",        "value",
+        "firstChild",     "lastChild",       "nextSibling",  "prevSibling",  "parentNode",          "getAttributeValueRaw", "getAttributeValue",
+        "firstAttribute", "attributes",      "innerTextRaw", "innerText",    "querySelector",       "querySelectorAll",     "write",
     });
     assertDeclCoverage(T.Document, &.{
         "Options", "RawNode", "Node",  "Attribute",               "AttributeIterator",
@@ -80,10 +79,9 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     assertFnCoverage(T.Attribute, &.{ "nameSlice", "valueRawSlice", "namespacePrefix", "localName", "value", "write" });
     assertFnCoverage(T.AttributeIterator, &.{"next"});
     assertFnCoverage(T.Node, &.{
-        "nameSlice",         "namespacePrefix", "localName",   "namespaceUri", "valueRawSlice", "value",
-        "firstChild",        "lastChild",       "nextSibling", "prevSibling",  "parentNode",    "getAttributeValueRaw",
-        "getAttributeValue", "firstAttribute",  "attributes",  "innerTextRaw", "innerText",     "querySelector",
-        "querySelectorAll",  "write",
+        "nameSlice",      "namespacePrefix", "localName",    "namespaceUri", "namespaceUriDecoded", "valueRawSlice",        "value",
+        "firstChild",     "lastChild",       "nextSibling",  "prevSibling",  "parentNode",          "getAttributeValueRaw", "getAttributeValue",
+        "firstAttribute", "attributes",      "innerTextRaw", "innerText",    "querySelector",       "querySelectorAll",     "write",
     });
     assertFnCoverage(T.Document, &.{
         "init", "deinit", "clear", "registerDoctypeEntities", "root", "kindAt", "nodeAt", "write",
@@ -131,6 +129,7 @@ fn exerciseTypes(comptime opts: zxml.ParseOptions) !void {
     _ = root.namespacePrefix();
     _ = root.localName();
     _ = root.namespaceUri();
+    if (try root.namespaceUriDecoded(std.testing.allocator)) |uri| uri.free(std.testing.allocator);
     _ = root.valueRawSlice();
     const root_value = try root.value(std.testing.allocator);
     root_value.free(std.testing.allocator);

@@ -143,6 +143,11 @@ const CompactIterator = struct {
     }
 };
 
+inline fn isNamespaceDeclaration(name: []const u8) bool {
+    return std.mem.eql(u8, name, "xmlns") or
+        (name.len > "xmlns:".len and std.mem.startsWith(u8, name, "xmlns:"));
+}
+
 /// Parse a tag's raw XML attributes once, decode every shrinkable value in
 /// place, and compact the result leftward. The compact form is
 /// `name[marker value]NUL ... >`; `=` marks decoded bytes while `/`, `'`, and
@@ -181,13 +186,17 @@ pub fn materializeAttributes(
     var write = name_end;
     while (raw.next()) |item| {
         const name = item.name.slice(source);
+        const namespace_declaration = isNamespaceDeclaration(name);
         std.mem.copyForwards(u8, source[write .. write + name.len], name);
         write += name.len;
 
         if (item.hasValue()) {
             var state = item.value_state;
             var value_len: usize = @intCast(item.value.len());
-            if (decode_in_place) {
+            // namespaceUri() is a borrowed lexical lookup. Keep namespace
+            // declaration values raw so its result does not depend on whether
+            // another attribute query happened to compact this element first.
+            if (decode_in_place and !namespace_declaration) {
                 const decoded = entities.decodeInPlaceWithEntityMap(item.value.sliceMut(source), validated, entity_map) catch null;
                 if (decoded) |result| {
                     if (result.complete) {
@@ -297,4 +306,18 @@ test "destructive materialization declines malformed literal NUL" {
     const before = source;
     try std.testing.expect(!materializeAttributes(false, &source, 2, null));
     try std.testing.expectEqualSlices(u8, &before, &source);
+}
+
+test "namespace declaration compaction preserves lexical value" {
+    var source = "<r xmlns:p='urn:a&amp;b' a='&amp;'><p:x/></r>".*;
+    const name_end: usize = 2;
+    try std.testing.expect(materializeAttributes(true, &source, name_end, null));
+    var it = Iterator(false, true).initElement(&source, @intCast(name_end));
+    const ns = it.next() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("xmlns:p", ns.name.slice(&source));
+    try std.testing.expectEqualStrings("urn:a&amp;b", ns.value.slice(&source));
+    try std.testing.expect(ns.value_state != .decoded);
+    const normal = it.next() orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("&", normal.value.slice(&source));
+    try std.testing.expect(normal.value_state.isDecoded());
 }

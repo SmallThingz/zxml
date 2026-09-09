@@ -802,6 +802,29 @@ test "namespace-like element and attribute names parse" {
     try std.testing.expectEqualStrings("7", item.getAttributeValueRaw("data.id").?);
 }
 
+test "namespace URI access decodes declaration entities with explicit ownership" {
+    inline for (.{ false, true }) |immutable| {
+        var parsed = try parseTestDoc("<r xmlns='urn:a&amp;b' a='&amp;'><x/></r>", .{
+            .validate_well_formedness = true,
+            .non_destructive = immutable,
+        });
+        defer parsed.deinit();
+
+        const root = parsed.doc.nodeAt(1) orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqualStrings("urn:a&amp;b", root.namespaceUri().?);
+        if (try root.getAttributeValue(std.testing.allocator, "a")) |value| value.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("urn:a&amp;b", root.namespaceUri().?);
+        const root_uri = (try root.namespaceUriDecoded(std.testing.allocator)) orelse return error.TestUnexpectedResult;
+        defer root_uri.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("urn:a&b", root_uri.value);
+
+        const child = root.firstChild() orelse return error.TestUnexpectedResult;
+        const child_uri = (try child.namespaceUriDecoded(std.testing.allocator)) orelse return error.TestUnexpectedResult;
+        defer child_uri.free(std.testing.allocator);
+        try std.testing.expectEqualStrings("urn:a&b", child_uri.value);
+    }
+}
+
 test "element and attribute names preserve case exactly" {
     var parsed = try parseTestDoc("<Root Attr='x' attr='y'/>", .{});
     defer parsed.deinit();
@@ -1918,4 +1941,34 @@ test "validated validates DOCTYPE grammar" {
         "<!DOCTYPE r [<!ELEMENT \xC3\xA9l\xC3\xA9ment EMPTY>]><r/>",
     };
     for (valid) |source| try resetParsed(&doc, source);
+}
+
+test "validated names stay bounded when XML character validation is disabled" {
+    inline for (.{ false, true }) |immutable| {
+        const opts: ParseOptions = .{
+            .validate_well_formedness = true,
+            .validate_xml_characters = false,
+            .non_destructive = immutable,
+        };
+        var doc = initDoc(opts);
+        defer doc.deinit();
+        const invalid = [_]struct { source: []const u8, err: ParseError }{
+            .{ .source = "<\xC3/>", .err = error.ExpectedElementName },
+            .{ .source = "<r \xC3='x'/>", .err = error.ExpectedAttributeName },
+            .{ .source = "<é></\xC3>", .err = error.InvalidClosingTagName },
+            .{ .source = "<?\xC3?><r/>", .err = error.ExpectedPiTarget },
+        };
+        for (invalid) |case| {
+            const source = try std.testing.allocator.dupe(u8, case.source);
+            defer std.testing.allocator.free(source);
+            const input = if (immutable) @as([]const u8, source) else @as([]u8, source);
+            try expectParseError(&doc, case.err, input);
+        }
+
+        var valid_source = "<é 名='x'></é>".*;
+        const valid_input = if (immutable) @as([]const u8, &valid_source) else @as([]u8, &valid_source);
+        try resetParsed(&doc, valid_input);
+        try std.testing.expectEqualStrings("é", doc.nodeAt(1).?.nameSlice());
+        try std.testing.expectEqualStrings("x", doc.nodeAt(1).?.getAttributeValueRaw("名").?);
+    }
 }

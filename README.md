@@ -69,7 +69,7 @@ _ = try parser.parseAvailable(buffer_so_far, &ctx, onNode);
 try parser.finish();
 ```
 
-`parseAvailable` consumes a cumulative buffer. Save/restore and incomplete-token handling are supported for incremental parsing. Full-buffer `parse` uses additional fast paths but preserves the same event sequence and callback semantics.
+`parseAvailable` consumes a cumulative buffer. Save/restore and incomplete-token handling are supported for incremental parsing. Full-buffer `parse` uses additional fast paths and preserves the same semantic event order and callback control. Cumulative chunk boundaries may split contiguous character data into multiple `.text` callbacks; concatenate adjacent text events at the same depth when exact segmentation is not significant.
 
 ## Invalid input
 

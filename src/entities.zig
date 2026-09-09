@@ -287,7 +287,29 @@ pub fn decodeInPlaceWithEntityMap(
     validated: bool,
     entity_map: ?*const std.StringHashMap([]u8),
 ) DecodeError!InPlaceResult {
+    return decodeInPlaceImpl(input, validated, entity_map, false);
+}
+
+/// As `decodeInPlaceWithEntityMap`, but refuses a complete in-place decode
+/// unless it leaves at least one byte of slack in `input`. Compact text nodes
+/// use that slack for their materialization marker; attribute compaction has a
+/// separate marker and therefore uses the unrestricted entry point above.
+pub fn decodeInPlaceShrinkingWithEntityMap(
+    input: []u8,
+    validated: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+) DecodeError!InPlaceResult {
+    return decodeInPlaceImpl(input, validated, entity_map, true);
+}
+
+fn decodeInPlaceImpl(
+    input: []u8,
+    validated: bool,
+    entity_map: ?*const std.StringHashMap([]u8),
+    comptime require_shrink: bool,
+) DecodeError!InPlaceResult {
     var scan: usize = 0;
+    var shrink_by: usize = 0;
     while (std.mem.indexOfScalarPos(u8, input, scan, '&')) |amp| {
         const token = parseEntityToken(input, amp) catch |err| switch (err) {
             error.UnterminatedEntity, error.InvalidNumericCharacterEntity => {
@@ -306,11 +328,16 @@ pub fn decodeInPlaceWithEntityMap(
 
         if (replacement_len) |len| {
             if (len > token.consumed) return .{ .len = input.len, .complete = false };
+            shrink_by += token.consumed - len;
             scan = amp + token.consumed;
         } else {
             if (validated) return error.InvalidNumericCharacterEntity;
             scan = amp + 1;
         }
+    }
+
+    if (comptime require_shrink) {
+        if (shrink_by == 0) return .{ .len = input.len, .complete = false };
     }
 
     var src: usize = 0;
