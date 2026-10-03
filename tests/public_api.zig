@@ -10,8 +10,8 @@ fn assertDeclCoverage(comptime T: type, comptime expected: []const []const u8) v
     comptime {
         const decls = std.meta.declarations(T);
         for (decls) |decl| {
-            if (!contains(expected, decl.name)) {
-                @compileError("public API declaration is not covered: " ++ @typeName(T) ++ "." ++ decl.name);
+            if (!contains(expected, decl)) {
+                @compileError("public API declaration is not covered: " ++ @typeName(T) ++ "." ++ decl);
             }
         }
         if (decls.len != expected.len) @compileError("public API declaration coverage list contains a missing declaration for " ++ @typeName(T));
@@ -22,11 +22,11 @@ fn assertFnCoverage(comptime T: type, comptime expected: []const []const u8) voi
     comptime {
         var actual: usize = 0;
         for (std.meta.declarations(T)) |decl| {
-            const value = @field(T, decl.name);
+            const value = @field(T, decl);
             if (@typeInfo(@TypeOf(value)) != .@"fn") continue;
             actual += 1;
-            if (!contains(expected, decl.name)) {
-                @compileError("public API function is not exercised: " ++ @typeName(T) ++ "." ++ decl.name);
+            if (!contains(expected, decl)) {
+                @compileError("public API function is not exercised: " ++ @typeName(T) ++ "." ++ decl);
             }
         }
         if (actual != expected.len) @compileError("public API coverage list contains a missing/non-function declaration for " ++ @typeName(T));

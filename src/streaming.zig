@@ -1651,13 +1651,13 @@ const CallbackKind = enum {
 
 fn callbackKind(comptime callback: anytype, comptime Node: type) CallbackKind {
     const cb_info = @typeInfo(@TypeOf(callback)).@"fn";
-    return switch (cb_info.params.len) {
-        1 => switch (cb_info.params[0].type.?) {
+    return switch (cb_info.param_types.len) {
+        1 => switch (cb_info.param_types[0].?) {
             Node => .node,
             *const Node => .node_ptr,
             else => @compileError("streaming callback node parameter must be Node or *const Node"),
         },
-        2 => switch (cb_info.params[1].type.?) {
+        2 => switch (cb_info.param_types[1].?) {
             Node => .ctx_node,
             *const Node => .ctx_node_ptr,
             else => @compileError("streaming callback node parameter must be Node or *const Node"),

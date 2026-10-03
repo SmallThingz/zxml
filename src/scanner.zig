@@ -11,7 +11,7 @@ const byte_scan_vector_len: comptime_int = switch (builtin.cpu.arch) {
 pub noinline fn countByte(source: []const u8, value: u8) usize {
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     const needle: Vec = @splat(value);
     var i: usize = 0;
     var count: usize = 0;
@@ -145,7 +145,7 @@ pub inline fn findTextEnd(noalias haystack: []const u8, start: usize) ?usize {
     const Vec = @Vector(byte_scan_vector_len, u8);
     if (haystack.len - start >= @sizeOf(Vec)) {
         const Bits = @Vector(byte_scan_vector_len, u1);
-        const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+        const Mask = @Int(.unsigned, byte_scan_vector_len);
         // Load the vector directly; array coercion can reconstruct it from scalar loads.
         const bytes = @as(*align(1) const Vec, @ptrCast(haystack.ptr + start)).*;
         const lt_vec: Vec = @splat('<');
@@ -170,7 +170,7 @@ pub noinline fn scanStartTagEnd(noalias input: []const u8, start: usize) ?StartT
 
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     const gt_vec: Vec = @splat('>');
     const sq_vec: Vec = @splat('\'');
     const dq_vec: Vec = @splat('"');
@@ -250,7 +250,7 @@ pub noinline fn scanStartTagEndFast(noalias input: []const u8, start: usize) usi
     if (start >= input.len) return 0;
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     if (input.len - start < @sizeOf(Vec)) return scanStartTagEndFastLong(input, start, start, 0, false);
 
     const bytes: Vec = input[start..][0..@sizeOf(Vec)].*;
@@ -277,7 +277,7 @@ noinline fn scanStartTagEndFastLong(
 ) usize {
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     var seen_quotes = initial_seen_quotes;
     var odd = initial_odd;
     var i = initial_i;
@@ -490,7 +490,7 @@ pub inline fn scanQuotedValueSpecials(noalias hay: []const u8, start: usize, quo
 
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     const quote_vec: Vec = @splat(quote);
     const lt_vec: Vec = @splat('<');
     const amp_vec: Vec = @splat('&');
@@ -730,7 +730,7 @@ pub inline fn scanTextSpecials(noalias hay: []const u8, start: usize) TextSpecia
 
     const Vec = @Vector(byte_scan_vector_len, u8);
     const Bits = @Vector(byte_scan_vector_len, u1);
-    const Mask = std.meta.Int(.unsigned, byte_scan_vector_len);
+    const Mask = @Int(.unsigned, byte_scan_vector_len);
     const lt_vec: Vec = @splat('<');
     const close_vec: Vec = @splat(']');
     const amp_vec: Vec = @splat('&');
@@ -1110,7 +1110,7 @@ test "bytePairPresence finds either sentinel in short and vector-sized inputs" {
     try std.testing.expect(both.first);
     try std.testing.expect(both.second);
 
-    var long = [_]u8{'x'} ** (byte_scan_vector_len * 2 + 3);
+    var long: [byte_scan_vector_len * 2 + 3]u8 = @splat('x');
     long[byte_scan_vector_len - 1] = ']';
     long[byte_scan_vector_len * 2 + 1] = '&';
     const vector = bytePairPresence(&long, ']', '&');
