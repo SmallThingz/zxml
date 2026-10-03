@@ -206,7 +206,7 @@ pub fn materializeAttributes(
                 }
             }
 
-            source[write] = @intFromEnum(state);
+            source[write] = @backingInt(state);
             write += 1;
             const value_start: usize = @intCast(item.value.start);
             std.mem.copyForwards(u8, source[write .. write + value_len], source[value_start .. value_start + value_len]);
