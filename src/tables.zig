@@ -1,7 +1,7 @@
 const std = @import("std");
 
 pub const WhitespaceTable = blk: {
-    var t = [_]bool{false} ** 256;
+    var t: [256]bool = @splat(false);
     t[' '] = true;
     t['\t'] = true;
     t['\n'] = true;
@@ -10,7 +10,7 @@ pub const WhitespaceTable = blk: {
 };
 
 pub const NameStartTable = blk: {
-    var t = [_]bool{false} ** 256;
+    var t: [256]bool = @splat(false);
     for ('A'..('Z' + 1)) |c| t[c] = true;
     for ('a'..('z' + 1)) |c| t[c] = true;
     for (0x80..256) |c| t[c] = true;
@@ -20,7 +20,7 @@ pub const NameStartTable = blk: {
 };
 
 pub const NameCharTable = blk: {
-    var t = [_]bool{false} ** 256;
+    var t: [256]bool = @splat(false);
     for ('A'..('Z' + 1)) |c| t[c] = true;
     for ('a'..('z' + 1)) |c| t[c] = true;
     for ('0'..('9' + 1)) |c| t[c] = true;
@@ -33,7 +33,7 @@ pub const NameCharTable = blk: {
 };
 
 pub const AttrUnquotedValueCharTable = blk: {
-    var t = [_]bool{true} ** 256;
+    var t: [256]bool = @splat(true);
     t['<'] = false;
     t['>'] = false;
     t['&'] = false;

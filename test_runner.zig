@@ -515,7 +515,7 @@ fn printTestOutput(name: []const u8, res: ChildResult) void {
 
     switch (res.term) {
         .exited => |code| if (code != 0) print(" | exit {d}", .{code}),
-        .signal => |sig| print(" | signal {d} ({s})", .{ @intFromEnum(sig), @tagName(sig) }),
+        .signal => |sig| print(" | signal {d} ({s})", .{ @backingInt(sig), @tagName(sig) }),
         .stopped => |code| print(" | stopped {d}", .{code}),
         .unknown => |code| print(" | unknown {d}", .{code}),
     }
@@ -544,11 +544,11 @@ fn runSingleTest(name: []const u8, seed: ?u32) void {
         std.process.exit(1);
     };
 
-    std.testing.allocator_instance = .{};
+    std.testing.allocator_instance = .init(std.heap.page_allocator, .{ .check_write_after_free = true });
     const result = test_fn.func();
     const leak_status = std.testing.allocator_instance.deinit();
 
-    if (leak_status == .leak) {
+    if (leak_status != 0) {
         print("memory leak\n", .{});
         std.process.exit(3);
     }

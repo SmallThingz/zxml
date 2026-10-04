@@ -108,7 +108,7 @@ fn runStreamValidated(io: std.Io, alloc: std.mem.Allocator, input: []const u8, i
 
         fn onNode(self: *@This(), node: *const StreamingEventType) bool {
             self.count +%= 1;
-            self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+            self.checksum +%= @as(u64, @backingInt(node.kind)) +% 1;
             switch (node.kind) {
                 .element => {
                     self.checksum +%= @as(u64, node.name.end - node.name.start);
@@ -143,7 +143,7 @@ fn runStreamValidatedTrusted(io: std.Io, alloc: std.mem.Allocator, input: []cons
 
         fn onNode(self: *@This(), node: *const StreamingEventType) bool {
             self.count +%= 1;
-            self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+            self.checksum +%= @as(u64, @backingInt(node.kind)) +% 1;
             switch (node.kind) {
                 .element => {
                     self.checksum +%= @as(u64, node.name.end - node.name.start);
@@ -175,7 +175,7 @@ fn runStreamPermissive(io: std.Io, alloc: std.mem.Allocator, input: []const u8, 
 
         fn onNode(self: *@This(), node: *const StreamingEventType) bool {
             self.count +%= 1;
-            self.checksum +%= @as(u64, @intFromEnum(node.kind)) +% 1;
+            self.checksum +%= @as(u64, @backingInt(node.kind)) +% 1;
             switch (node.kind) {
                 .element => {
                     self.checksum +%= @as(u64, node.name.end - node.name.start);

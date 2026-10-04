@@ -1564,11 +1564,11 @@ fn refAllDeclsRecursiveSeen(comptime T: type, comptime seen: []const type) void 
     // Recurse into namespace-style containers only; value-carrying types blow
     // up the traversal without contributing additional declaration coverage.
     inline for (comptime std.meta.declarations(T)) |decl| {
-        const decl_value = @field(T, decl.name);
+        const decl_value = @field(T, decl);
         if (@TypeOf(decl_value) != type) continue;
         const Child = decl_value;
         if (comptime switch (@typeInfo(Child)) {
-            .@"struct" => |s| s.fields.len != 0,
+            .@"struct" => |s| s.field_names.len != 0,
             .@"union", .@"enum", .@"opaque" => true,
             else => true,
         }) continue;

@@ -1656,8 +1656,9 @@ fn consumeMixedContent(input: []const u8, i: *usize) ParseError!void {
 
 fn consumeChildrenContent(allocator: std.mem.Allocator, input: []const u8, i: *usize) ParseError!void {
     std.debug.assert(input[i.*] == '(');
-    var stack_fallback = std.heap.stackFallback(512, allocator);
-    const temp_allocator = stack_fallback.get();
+    var stack_buffer: [512]u8 align(@alignOf(ContentFrame)) = undefined;
+    var stack_fallback: std.heap.BufferFirstAllocator = .init(&stack_buffer, allocator);
+    const temp_allocator = stack_fallback.allocator();
     var stack: std.ArrayList(ContentFrame) = .empty;
     defer stack.deinit(temp_allocator);
 
@@ -2470,7 +2471,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
             const end: usize = @intCast(span.end);
             if (end >= self.source.len) return .raw;
             return switch (self.source[end]) {
-                @intFromEnum(TextMaterializationState.decoded) => .decoded,
+                @backingInt(TextMaterializationState.decoded) => .decoded,
                 else => .raw,
             };
         }
@@ -2478,7 +2479,7 @@ pub fn GetDocument(comptime options: ParseOptions) type {
         inline fn markTextState(self: *Self, idx: IndexInt, state: TextMaterializationState) void {
             if (comptime options.non_destructive) return;
             const end: usize = @intCast(self.nodes[@intCast(idx)].valueSpan(idx).end);
-            if (end < self.source.len) self.source[end] = @intFromEnum(state);
+            if (end < self.source.len) self.source[end] = @backingInt(state);
         }
 
         fn materializeText(self: *Self, idx: IndexInt, alloc: std.mem.Allocator) ValueError!common.SliceResult {
@@ -3253,7 +3254,7 @@ test "XML character vector exits never skip invalid controls or encodings" {
 }
 
 test "XML character validation crosses dense Unicode and ASCII windows" {
-    const source = "é漢😀" ** 20 ++ " ASCII " ** 20 ++ "Ω漢é" ** 35;
+    const source = &(comptime repeatTestBytes("é漢😀", 20) ++ repeatTestBytes(" ASCII ", 20) ++ repeatTestBytes("Ω漢é", 35));
     for (0..source.len + 1) |split| {
         var expected = split;
         while (!std.unicode.utf8ValidateSlice(source[0..expected])) : (expected -= 1) {}
@@ -3279,7 +3280,7 @@ test "vector UTF-8 validation rejects illegal sequences at every lane boundary" 
             try std.testing.expectError(error.InvalidXmlCharacter, xmlValidPrefixLenStreaming(&input));
         }
     }
-    const valid = "é漢😀Ω" ** 12 ++ " \t\n\rASCII" ** 4;
+    const valid = &(comptime repeatTestBytes("é漢😀Ω", 12) ++ repeatTestBytes(" \t\n\rASCII", 4));
     for (0..valid.len + 1) |end| {
         var boundary = end;
         while (!std.unicode.utf8ValidateSlice(valid[0..boundary])) : (boundary -= 1) {}
@@ -3440,4 +3441,10 @@ test "compact validated serialization preserves a required DOCTYPE" {
         defer reparsed.deinit();
         try std.testing.expectEqualStrings("&e;", reparsed.nodeAt(1).?.getAttributeValueRaw("a").?);
     }
+}
+
+fn repeatTestBytes(comptime bytes: []const u8, comptime count: usize) [bytes.len * count]u8 {
+    var result: [bytes.len * count]u8 = undefined;
+    for (0..count) |i| @memcpy(result[i * bytes.len ..][0..bytes.len], bytes);
+    return result;
 }

@@ -104,8 +104,8 @@ const BenchmarkEnvironment = struct {
     cxx_driver: []const u8,
 
     fn deinit(self: BenchmarkEnvironment, alloc: std.mem.Allocator) void {
-        inline for (std.meta.fields(BenchmarkEnvironment)) |field| {
-            alloc.free(@field(self, field.name));
+        inline for (comptime std.meta.fieldNames(BenchmarkEnvironment)) |field_name| {
+            alloc.free(@field(self, field_name));
         }
     }
 };
@@ -862,7 +862,7 @@ fn buildRunners(io: std.Io, alloc: std.mem.Allocator, force_external_rebuild: bo
 
     // Match zhtml: build the installed benchmark binary directly. The tools
     // executable is already running, so bench-only avoids recursive tool builds.
-    const zig_build = [_][]const u8{ "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native" };
+    const zig_build = [_][]const u8{ "zig", "build", "bench-only", "-Doptimize=fast", "-Dcpu=native" };
     try runInheritWithBenchTmp(io, alloc, &zig_build, REPO_ROOT);
 
     const pugixml_sources = [_][]const u8{
@@ -1576,7 +1576,7 @@ fn writeBenchmarkEnvironmentTable(w: anytype, heading: []const u8, environment: 
     try w.print("| CPU | {s} |\n", .{environment.cpu_model});
     try w.print("| CPU frequency scaling | {s} |\n", .{environment.cpu_scaling});
     try w.print("| CPU MHz range | {s}–{s} |\n", .{ environment.cpu_min_mhz, environment.cpu_max_mhz });
-    try w.print("| Zig | {s} (`ReleaseFast -Dcpu=native`) |\n", .{environment.zig_version});
+    try w.print("| Zig | {s} (`fast -Dcpu=native`) |\n", .{environment.zig_version});
     try w.print("| C++ driver | {s} (`-O3 -DNDEBUG -march=native`) |\n\n", .{environment.cxx_driver});
 }
 
@@ -2840,7 +2840,7 @@ fn compareWorktrees(io: std.Io, alloc: std.mem.Allocator, args: []const []const 
         const seed_text = try std.fmt.allocPrint(alloc, "{d}", .{seed});
         defer alloc.free(seed_text);
         try common.runInherit(io, alloc, &.{
-            "zig", "build", "bench-only", "-Doptimize=ReleaseFast", "-Dcpu=native", "--seed", seed_text,
+            "zig", "build", "bench-only", "-Doptimize=fast", "-Dcpu=native", "--seed", seed_text,
         }, worktree);
     }
 

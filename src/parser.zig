@@ -2092,7 +2092,12 @@ test "inline node storage spills safely and releases every failed allocation" {
     const Check = struct {
         fn run(allocator: std.mem.Allocator) !void {
             const options: ParseOptions = .{ .validate_well_formedness = true };
-            var source = ("<r>" ++ "<a>value</a>" ** 90 ++ "</r>").*;
+            var source = comptime blk: {
+                const child = "<a>value</a>";
+                var children: [child.len * 90]u8 = undefined;
+                for (0..90) |i| @memcpy(children[i * child.len ..][0..child.len], child);
+                break :blk "<r>".* ++ children ++ "</r>".*;
+            };
             var doc = try options.parse(allocator, &source);
             defer doc.deinit();
             try std.testing.expectEqual(@as(usize, 182), doc.nodes.len);

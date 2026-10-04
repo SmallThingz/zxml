@@ -4,6 +4,8 @@ Fast XML parsing for Zig with comptime-generated DOM and streaming types.
 
 The default parser is destructive and permissive. Attributes and text stay source-backed and are materialized lazily; the DOM does not build an attribute array or a separate open-element stack.
 
+Requires Zig `0.17.0`.
+
 ## Quick start
 
 ```zig
